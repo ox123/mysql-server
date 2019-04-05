@@ -1,4 +1,4 @@
-/* Copyright (c) 2011, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2011, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -55,6 +55,7 @@
 #include "mysql/thread_type.h"
 #include "mysqld_error.h"
 #include "sql/binlog.h"
+#include "sql/binlog_reader.h"
 #include "sql/current_thd.h"
 #include "sql/debug_sync.h"
 #include "sql/log.h"
@@ -62,6 +63,7 @@
 #include "sql/mysqld.h"  // key_mutex_slave_parallel_worker
 #include "sql/psi_memory_key.h"
 #include "sql/rpl_info_handler.h"
+#include "sql/rpl_msr.h"  // For channel_map
 #include "sql/rpl_reporting.h"
 #include "sql/rpl_slave_commit_order_manager.h"  // Commit_order_manager
 #include "sql/sql_error.h"
@@ -260,7 +262,7 @@ Slave_worker::Slave_worker(Relay_log_info *rli
       id(param_id),
       checkpoint_relay_log_pos(0),
       checkpoint_master_log_pos(0),
-      checkpoint_seqno(0),
+      worker_checkpoint_seqno(0),
       running_status(NOT_RUNNING),
       exit_incremented(false) {
   /*
@@ -287,9 +289,14 @@ Slave_worker::~Slave_worker() {
   mysql_cond_destroy(&jobs_cond);
   mysql_cond_destroy(&logical_clock_cond);
   mysql_mutex_lock(&info_thd_lock);
-  info_thd = NULL;
+  info_thd = nullptr;
   mysql_mutex_unlock(&info_thd_lock);
-  set_rli_description_event(NULL);
+  if (set_rli_description_event(nullptr)) {
+#ifndef DBUG_OFF
+    bool set_rli_description_event_failed = false;
+#endif
+    DBUG_ASSERT(set_rli_description_event_failed);
+  }
 }
 
 /**
@@ -338,7 +345,7 @@ int Slave_worker::init_worker(Relay_log_info *rli, ulong i) {
   jobs.waited_overfill = 0;
   jobs.entry = jobs.size = c_rli->mts_slave_worker_queue_len_max;
   jobs.inited_queue = true;
-  curr_group_seen_begin = curr_group_seen_gtid = false;
+  curr_group_seen_gtid = false;
 #ifndef DBUG_OFF
   curr_group_seen_sequence_number = false;
 #endif
@@ -512,7 +519,7 @@ bool Slave_worker::read_info(Rpl_info_handler *from) {
   group_master_log_pos = temp_group_master_log_pos;
   checkpoint_relay_log_pos = temp_checkpoint_relay_log_pos;
   checkpoint_master_log_pos = temp_checkpoint_master_log_pos;
-  checkpoint_seqno = temp_checkpoint_seqno;
+  worker_checkpoint_seqno = temp_checkpoint_seqno;
 
   DBUG_RETURN(false);
 }
@@ -561,7 +568,7 @@ bool Slave_worker::write_info(Rpl_info_handler *to) {
       to->set_info((ulong)checkpoint_relay_log_pos) ||
       to->set_info(checkpoint_master_log_name) ||
       to->set_info((ulong)checkpoint_master_log_pos) ||
-      to->set_info((ulong)checkpoint_seqno) || to->set_info(nbytes) ||
+      to->set_info(worker_checkpoint_seqno) || to->set_info(nbytes) ||
       to->set_info(buffer, (size_t)nbytes) || to->set_info(channel))
     DBUG_RETURN(true);
 
@@ -649,7 +656,7 @@ bool Slave_worker::commit_positions(Log_event *ev, Slave_job_group *ptr_g,
   DBUG_ASSERT(ptr_g->checkpoint_seqno <= (c_rli->checkpoint_group - 1));
 
   bitmap_set_bit(&group_executed, ptr_g->checkpoint_seqno);
-  checkpoint_seqno = ptr_g->checkpoint_seqno;
+  worker_checkpoint_seqno = ptr_g->checkpoint_seqno;
   group_relay_log_pos = ev->future_event_relay_log_pos;
   group_master_log_pos = ev->common_header->log_pos;
 
@@ -664,7 +671,7 @@ bool Slave_worker::commit_positions(Log_event *ev, Slave_job_group *ptr_g,
   DBUG_PRINT("mts", ("Committing worker-id %lu group master log pos %llu "
                      "group master log name %s checkpoint sequence number %lu.",
                      id, group_master_log_pos, group_master_log_name,
-                     checkpoint_seqno));
+                     worker_checkpoint_seqno));
 
   DBUG_EXECUTE_IF("mts_debug_concurrent_access",
                   { mts_debug_concurrent_access++; };);
@@ -1246,7 +1253,7 @@ void Slave_worker::slave_worker_ends_group(Log_event *ev, int error) {
     curr_group_seen_sequence_number = false;
 #endif
   }
-  curr_group_seen_gtid = curr_group_seen_begin = false;
+  curr_group_seen_gtid = false;
 
   DBUG_VOID_RETURN;
 }
@@ -1511,6 +1518,8 @@ void Slave_worker::do_report(loglevel level, int err_code, const char *msg,
   const char *log_name =
       const_cast<Slave_worker *>(this)->get_master_log_name();
   ulonglong log_pos = const_cast<Slave_worker *>(this)->get_master_log_pos();
+  bool is_group_replication_applier_channel =
+      channel_map.is_group_replication_channel_name(c_rli->get_channel(), true);
   const Gtid_specification *gtid_next = &info_thd->variables.gtid_next;
   THD *thd = info_thd;
 
@@ -1521,16 +1530,28 @@ void Slave_worker::do_report(loglevel level, int err_code, const char *msg,
                                    Transaction_ctx::SESSION))) {
     char coordinator_errmsg[MAX_SLAVE_ERRMSG];
 
-    snprintf(coordinator_errmsg, MAX_SLAVE_ERRMSG,
-             "Coordinator stopped because there were error(s) in the "
-             "worker(s). "
-             "The most recent failure being: Worker %u failed executing "
-             "transaction '%s' at master log %s, end_log_pos %llu. "
-             "See error log and/or "
-             "performance_schema.replication_applier_status_by_worker "
-             "table for "
-             "more details about this failure or others, if any.",
-             internal_id, buff_gtid, log_name, log_pos);
+    if (is_group_replication_applier_channel) {
+      snprintf(coordinator_errmsg, MAX_SLAVE_ERRMSG,
+               "Coordinator stopped because there were error(s) in the "
+               "worker(s). "
+               "The most recent failure being: Worker %u failed executing "
+               "transaction '%s'. See error log and/or "
+               "performance_schema.replication_applier_status_by_worker "
+               "table for "
+               "more details about this failure or others, if any.",
+               internal_id, buff_gtid);
+    } else {
+      snprintf(coordinator_errmsg, MAX_SLAVE_ERRMSG,
+               "Coordinator stopped because there were error(s) in the "
+               "worker(s). "
+               "The most recent failure being: Worker %u failed executing "
+               "transaction '%s' at master log %s, end_log_pos %llu. "
+               "See error log and/or "
+               "performance_schema.replication_applier_status_by_worker "
+               "table for "
+               "more details about this failure or others, if any.",
+               internal_id, buff_gtid, log_name, log_pos);
+    }
 
     /*
       We want to update the errors in coordinator as well as worker.
@@ -1543,10 +1564,16 @@ void Slave_worker::do_report(loglevel level, int err_code, const char *msg,
     c_rli->fill_coord_err_buf(level, err_code, coordinator_errmsg);
   }
 
-  snprintf(buff_coord, sizeof(buff_coord),
-           "Worker %u failed executing transaction '%s' at "
-           "master log %s, end_log_pos %llu",
-           internal_id, buff_gtid, log_name, log_pos);
+  if (is_group_replication_applier_channel) {
+    snprintf(buff_coord, sizeof(buff_coord),
+             "Worker %u failed executing transaction '%s'", internal_id,
+             buff_gtid);
+  } else {
+    snprintf(buff_coord, sizeof(buff_coord),
+             "Worker %u failed executing transaction '%s' at "
+             "master log %s, end_log_pos %llu",
+             internal_id, buff_gtid, log_name, log_pos);
+  }
 
   /*
     Error reporting by the worker. The worker updates its error fields as well
@@ -1759,7 +1786,49 @@ bool Slave_worker::retry_transaction(uint start_relay_number,
     /* Simulate a lock deadlock error */
     uint error = 0;
 
-    if (found_order_commit_deadlock()) error = ER_LOCK_DEADLOCK;
+    if (found_order_commit_deadlock()) {
+      /*
+        This transaction was allowed to be executed in parallel with other that
+        happened earlier according to binary log order. It was asked to be
+        rolled back by the other transaction as it was holding a lock that is
+        needed by the other transaction to progress, according to binary log
+        order this configure a deadlock.
+
+        At this point, this transaction *should* have no non-temporary errors.
+
+        Having a non-temporary error may be a sign of:
+
+        a) Slave has diverged from the master;
+        b) There is an issue in the logical clock allowing a transaction to be
+           applied in parallel with its dependencies (the two transactions are
+           trying to change the same record in parallel).
+
+        For (a), a retry of this transaction will produce the same error. For
+        (b), this transaction might succeed upon retry, allowing the slave to
+        progress without manual intervention, but it is a sign of problems in LC
+        generation at the master.
+
+        So, we will make the worker to retry this transaction only if there is
+        no error or the error is a temporary error.
+      */
+      Diagnostics_area *da = thd->get_stmt_da();
+      if (!thd->get_stmt_da()->is_error() ||
+          has_temporary_error(thd, da->is_error() ? da->mysql_errno() : error,
+                              &silent)) {
+        error = ER_LOCK_DEADLOCK;
+      }
+#ifndef DBUG_OFF
+      else {
+        /*
+          The non-debug binary will not retry this transactions, stopping the
+          SQL thread because of the non-temporary error. But, as this situation
+          is not supposed to happen as described in the comment above, we will
+          fail an assert to ease the issue investigation when it happens.
+        */
+        if (DBUG_EVALUATE_IF("rpl_fake_cod_deadlock", 0, 1)) DBUG_ASSERT(false);
+      }
+#endif
+    }
 
     if (!has_temporary_error(thd, error, &silent) ||
         thd->get_transaction()->cannot_safely_rollback(
@@ -1767,7 +1836,7 @@ bool Slave_worker::retry_transaction(uint start_relay_number,
       DBUG_RETURN(true);
 
     if (trans_retries >= slave_trans_retries) {
-      thd->is_fatal_error = 1;
+      thd->fatal_error();
       c_rli->report(ERROR_LEVEL, thd->get_stmt_da()->mysql_errno(),
                     "worker thread retried transaction %lu time(s) "
                     "in vain, giving up. Consider raising the value of "
@@ -1776,7 +1845,28 @@ bool Slave_worker::retry_transaction(uint start_relay_number,
       DBUG_RETURN(true);
     }
 
-    if (!silent) trans_retries++;
+    if (!silent) {
+      trans_retries++;
+      if (current_thd->rli_slave->is_processing_trx()) {
+        // if the error code is zero, we get the top of the error stack
+        uint transient_error =
+            (error == 0) ? thd->get_stmt_da()->mysql_errno() : error;
+        current_thd->rli_slave->retried_processing(
+            transient_error, ER_THD(thd, transient_error), trans_retries);
+#ifndef DBUG_OFF
+        if (trans_retries == 2 || trans_retries == 6)
+          DBUG_EXECUTE_IF("rpl_ps_tables_worker_retry", {
+            char const act[] =
+                "now SIGNAL signal.rpl_ps_tables_worker_retry_pause "
+                "WAIT_FOR signal.rpl_ps_tables_worker_retry_continue";
+            DBUG_ASSERT(opt_debug_sync_timeout > 0);
+            // we can't add the usual DBUG_ASSERT here because thd->is_error()
+            // is true (and that's OK)
+            debug_sync_set_action(thd, STRING_WITH_LEN(act));
+          });
+#endif
+      }
+    }
 
     mysql_mutex_lock(&c_rli->data_lock);
     c_rli->retried_trans++;
@@ -1811,42 +1901,38 @@ bool Slave_worker::read_and_apply_events(uint start_relay_number,
   DBUG_ENTER("Slave_worker::read_and_apply_events");
 
   Relay_log_info *rli = c_rli;
-  IO_CACHE relay_io;
   char file_name[FN_REFLEN + 1];
   uint file_number = start_relay_number;
   bool error = true;
   bool arrive_end = false;
+  Relaylog_file_reader relaylog_file_reader(opt_slave_sql_verify_checksum);
 
   relay_log_number_to_name(start_relay_number, file_name);
 
   while (!arrive_end) {
     Log_event *ev = NULL;
 
-    if (!my_b_inited(&relay_io)) {
-      const char *errmsg;
-
+    if (!relaylog_file_reader.is_open()) {
       DBUG_PRINT("info", ("Open relay log %s", file_name));
 
-      if (open_binlog_file(&relay_io, file_name, &errmsg) == -1) {
-        LogErr(ERROR_LEVEL, ER_RPL_FAILED_TO_OPEN_RELAY_LOG, file_name, errmsg);
+      if (relaylog_file_reader.open(file_name, start_relay_pos)) {
+        LogErr(ERROR_LEVEL, ER_RPL_FAILED_TO_OPEN_RELAY_LOG, file_name,
+               relaylog_file_reader.get_error_str());
         goto end;
       }
-      my_b_seek(&relay_io, start_relay_pos);
     }
 
     /* If it is the last event, then set arrive_end as true */
-    arrive_end = (my_b_tell(&relay_io) == end_relay_pos &&
+    arrive_end = (relaylog_file_reader.position() == end_relay_pos &&
                   file_number == end_relay_number);
 
-    ev = Log_event::read_log_event(&relay_io, NULL,
-                                   rli->get_rli_description_event(),
-                                   opt_slave_sql_verify_checksum);
+    ev = relaylog_file_reader.read_event_object();
     if (ev != NULL) {
       /* It is a event belongs to the transaction */
       if (!ev->is_mts_sequential_exec()) {
         int ret = 0;
 
-        ev->future_event_relay_log_pos = my_b_tell(&relay_io);
+        ev->future_event_relay_log_pos = relaylog_file_reader.position();
         ev->mts_group_idx = gaq_index;
 
         if (is_mts_db_partitioned(rli) && ev->contains_partition_info(true))
@@ -1869,12 +1955,14 @@ bool Slave_worker::read_and_apply_events(uint start_relay_number,
       }
     } else {
       /*
-        IO error happens if relay_io.error != 0, otherwise it arrives the
+        IO error happens if error_type is not READ_EOF, otherwise it arrives the
         end of the relay log
       */
-      if (relay_io.error != 0) {
+      if (relaylog_file_reader.get_error_type() !=
+          Binlog_read_error::READ_EOF) {
         LogErr(ERROR_LEVEL, ER_RPL_WORKER_CANT_READ_RELAY_LOG,
-               rli->get_event_relay_log_name(), my_b_tell(&relay_io));
+               rli->get_event_relay_log_name(),
+               relaylog_file_reader.position());
         goto end;
       }
 
@@ -1885,18 +1973,13 @@ bool Slave_worker::read_and_apply_events(uint start_relay_number,
 
       file_number = relay_log_name_to_number(file_name);
 
-      end_io_cache(&relay_io);
-      mysql_file_close(relay_io.file, MYF(0));
+      relaylog_file_reader.close();
       start_relay_pos = BIN_LOG_HEADER_SIZE;
     }
   }
 
   error = false;
 end:
-  if (my_b_inited(&relay_io)) {
-    end_io_cache(&relay_io);
-    mysql_file_close(relay_io.file, MYF(0));
-  }
   DBUG_RETURN(error);
 }
 
@@ -2379,7 +2462,8 @@ int slave_worker_exec_job_group(Slave_worker *worker, Relay_log_info *rli) {
     /* Adapting to possible new Format_description_log_event */
     ptr_g = rli->gaq->get_job_group(ev->mts_group_idx);
     if (ptr_g->new_fd_event) {
-      worker->set_rli_description_event(ptr_g->new_fd_event);
+      error = worker->set_rli_description_event(ptr_g->new_fd_event);
+      if (unlikely(error)) goto err;
       ptr_g->new_fd_event = NULL;
     }
 

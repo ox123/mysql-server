@@ -23,6 +23,7 @@
 #include "sql/dd/impl/types/table_impl.h"
 
 #include <string.h>
+#include <set>
 #include <sstream>
 #include <string>
 
@@ -34,18 +35,19 @@
 #include "m_string.h"
 #include "my_dbug.h"
 #include "my_sys.h"
-#include "mysqld_error.h"                         // ER_*
-#include "sql/current_thd.h"                      // current_thd
-#include "sql/dd/impl/dictionary_impl.h"          // Dictionary_impl
-#include "sql/dd/impl/properties_impl.h"          // Properties_impl
-#include "sql/dd/impl/raw/raw_record.h"           // Raw_record
-#include "sql/dd/impl/raw/raw_record_set.h"       // Raw_record_set
-#include "sql/dd/impl/raw/raw_table.h"            // Raw_table
-#include "sql/dd/impl/sdi_impl.h"                 // sdi read/write functions
-#include "sql/dd/impl/tables/columns.h"           // Columns
-#include "sql/dd/impl/tables/foreign_keys.h"      // Foreign_keys
-#include "sql/dd/impl/tables/indexes.h"           // Indexes
-#include "sql/dd/impl/tables/schemata.h"          // Schemata
+#include "mysqld_error.h"                     // ER_*
+#include "sql/current_thd.h"                  // current_thd
+#include "sql/dd/impl/bootstrap_ctx.h"        // dd::bootstrap::DD_bootstrap_ctx
+#include "sql/dd/impl/dictionary_impl.h"      // Dictionary_impl
+#include "sql/dd/impl/properties_impl.h"      // Properties_impl
+#include "sql/dd/impl/raw/raw_record.h"       // Raw_record
+#include "sql/dd/impl/raw/raw_record_set.h"   // Raw_record_set
+#include "sql/dd/impl/raw/raw_table.h"        // Raw_table
+#include "sql/dd/impl/sdi_impl.h"             // sdi read/write functions
+#include "sql/dd/impl/tables/columns.h"       // Columns
+#include "sql/dd/impl/tables/foreign_keys.h"  // Foreign_keys
+#include "sql/dd/impl/tables/indexes.h"       // Indexes
+#include "sql/dd/impl/tables/schemata.h"      // Schemata
 #include "sql/dd/impl/tables/table_partitions.h"  // Table_partitions
 #include "sql/dd/impl/tables/tables.h"            // Tables
 #include "sql/dd/impl/tables/triggers.h"          // Triggers
@@ -74,14 +76,21 @@ namespace dd {
 class Sdi_rcontext;
 class Sdi_wcontext;
 
+static const std::set<String_type> default_valid_se_private_data_keys = {
+    // NDB keys:
+    "object_version",
+    // InnoDB keys:
+    "autoinc", "data_directory", "discard", "instant_col", "version"};
+
 ///////////////////////////////////////////////////////////////////////////
 // Table_impl implementation.
 ///////////////////////////////////////////////////////////////////////////
 
 Table_impl::Table_impl()
     : m_se_private_id(INVALID_OBJECT_ID),
-      m_se_private_data(new Properties_impl()),
+      m_se_private_data(default_valid_se_private_data_keys),
       m_row_format(RF_FIXED),
+      m_is_temporary(false),
       m_partition_type(PT_NONE),
       m_default_partitioning(DP_NONE),
       m_subpartition_type(ST_NONE),
@@ -94,26 +103,6 @@ Table_impl::Table_impl()
       m_tablespace_id(INVALID_OBJECT_ID) {}
 
 Table_impl::~Table_impl() { delete_container_pointers(m_foreign_key_parents); }
-
-///////////////////////////////////////////////////////////////////////////
-
-bool Table_impl::set_se_private_data_raw(
-    const String_type &se_private_data_raw) {
-  Properties *properties =
-      Properties_impl::parse_properties(se_private_data_raw);
-
-  if (!properties)
-    return true;  // Error status, current values has not changed.
-
-  m_se_private_data.reset(properties);
-  return false;
-}
-
-///////////////////////////////////////////////////////////////////////////
-
-void Table_impl::set_se_private_data(const Properties &se_private_data) {
-  m_se_private_data->assign(se_private_data);
-}
 
 ///////////////////////////////////////////////////////////////////////////
 
@@ -156,9 +145,9 @@ bool Table_impl::load_foreign_key_parents(Open_dictionary_tables_ctx *otx) {
   if (schema_rec == nullptr) return true;
 
   // 2. Build a key for searching the FK table.
-  const int index_no = 3;  // Key on tables::Foreign_keys.
   Table_reference_range_key parent_ref_key(
-      index_no, tables::Foreign_keys::FIELD_REFERENCED_TABLE_CATALOG,
+      tables::Foreign_keys::INDEX_K_REF_CATALOG_REF_SCHEMA_REF_TABLE,
+      tables::Foreign_keys::FIELD_REFERENCED_TABLE_CATALOG,
       String_type(Dictionary_impl::default_catalog_name()),
       tables::Foreign_keys::FIELD_REFERENCED_TABLE_SCHEMA,
       schema_rec->read_str(tables::Schemata::FIELD_NAME),
@@ -415,10 +404,18 @@ bool Table_impl::restore_attributes(const Raw_record &r) {
   m_collation_id = r.read_ref_id(Tables::FIELD_COLLATION_ID);
   m_tablespace_id = r.read_ref_id(Tables::FIELD_TABLESPACE_ID);
 
-  set_se_private_data_raw(r.read_str(Tables::FIELD_SE_PRIVATE_DATA, ""));
+  set_se_private_data(r.read_str(Tables::FIELD_SE_PRIVATE_DATA, ""));
 
   m_engine = r.read_str(Tables::FIELD_ENGINE);
 
+  // m_last_checked_for_upgrade_version added in 80012
+  if (bootstrap::DD_bootstrap_ctx::instance().is_dd_upgrade_from_before(
+          bootstrap::DD_VERSION_80013)) {
+    m_last_checked_for_upgrade_version_id = 0;
+  } else {
+    m_last_checked_for_upgrade_version_id =
+        r.read_int(Tables::FIELD_LAST_CHECKED_FOR_UPGRADE_VERSION_ID, 0);
+  }
   m_partition_expression = r.read_str(Tables::FIELD_PARTITION_EXPRESSION, "");
   m_partition_expression_utf8 =
       r.read_str(Tables::FIELD_PARTITION_EXPRESSION_UTF8, "");
@@ -453,12 +450,23 @@ bool Table_impl::store_attributes(Raw_record *r) {
   //   - Store NULL in default subpartitioning if not set.
   //
 
+  // Temporary table definitions are never persisted.
+  DBUG_ASSERT(!m_is_temporary);
+
+  // Store last_checked_for_upgrade_version_id only if we're not upgrading
+  if (!bootstrap::DD_bootstrap_ctx::instance().is_dd_upgrade_from_before(
+          bootstrap::DD_VERSION_80013) &&
+      r->store(Tables::FIELD_LAST_CHECKED_FOR_UPGRADE_VERSION_ID,
+               m_last_checked_for_upgrade_version_id)) {
+    return true;
+  }
+
   // Store field values
   return Abstract_table_impl::store_attributes(r) ||
          r->store(Tables::FIELD_ENGINE, m_engine) ||
          r->store_ref_id(Tables::FIELD_COLLATION_ID, m_collation_id) ||
          r->store(Tables::FIELD_COMMENT, m_comment) ||
-         r->store(Tables::FIELD_SE_PRIVATE_DATA, *m_se_private_data) ||
+         r->store(Tables::FIELD_SE_PRIVATE_DATA, m_se_private_data) ||
          r->store(Tables::FIELD_SE_PRIVATE_ID, m_se_private_id,
                   m_se_private_id == (Object_id)-1) ||
          r->store(Tables::FIELD_ROW_FORMAT, m_row_format) ||
@@ -488,10 +496,15 @@ bool Table_impl::store_attributes(Raw_record *r) {
 ///////////////////////////////////////////////////////////////////////////
 
 void Table_impl::serialize(Sdi_wcontext *wctx, Sdi_writer *w) const {
+  // Temporary table definitions are never persisted.
+  DBUG_ASSERT(!m_is_temporary);
+
   w->StartObject();
   Abstract_table_impl::serialize(wctx, w);
   write(w, m_se_private_id, STRING_WITH_LEN("se_private_id"));
   write(w, m_engine, STRING_WITH_LEN("engine"));
+  write(w, m_last_checked_for_upgrade_version_id,
+        STRING_WITH_LEN("last_checked_for_upgrade_version_id"));
   write(w, m_comment, STRING_WITH_LEN("comment"));
   write_properties(w, m_se_private_data, STRING_WITH_LEN("se_private_data"));
   write_enum(w, m_row_format, STRING_WITH_LEN("row_format"));
@@ -523,6 +536,8 @@ bool Table_impl::deserialize(Sdi_rcontext *rctx, const RJ_Value &val) {
   Abstract_table_impl::deserialize(rctx, val);
   read(&m_se_private_id, val, "se_private_id");
   read(&m_engine, val, "engine");
+  read(&m_last_checked_for_upgrade_version_id, val,
+       "last_checked_for_upgrade_version_id");
   read(&m_comment, val, "comment");
   read_properties(&m_se_private_data, val, "se_private_data");
   read_enum(&m_row_format, val, "row_format");
@@ -565,11 +580,14 @@ void Table_impl::debug_print(String_type &outb) const {
 
   dd::Stringstream_type ss;
   ss << "TABLE OBJECT: { " << s << "m_engine: " << m_engine << "; "
+     << "m_last_checked_for_upgrade_version_id: "
+     << m_last_checked_for_upgrade_version_id << "; "
      << "m_collation: {OID: " << m_collation_id << "}; "
      << "m_comment: " << m_comment << "; "
-     << "m_se_private_data " << m_se_private_data->raw_string() << "; "
+     << "m_se_private_data " << m_se_private_data.raw_string() << "; "
      << "m_se_private_id: {OID: " << m_se_private_id << "}; "
      << "m_row_format: " << m_row_format << "; "
+     << "m_is_temporary: " << m_is_temporary << "; "
      << "m_tablespace: {OID: " << m_tablespace_id << "}; "
      << "m_partition_type " << m_partition_type << "; "
      << "m_default_partitioning " << m_default_partitioning << "; "
@@ -751,8 +769,14 @@ Trigger *Table_impl::add_trigger(Trigger::enum_action_timing at,
 ///////////////////////////////////////////////////////////////////////////
 
 const Trigger *Table_impl::get_trigger(const char *name) const {
+  const uchar *src_trg_name = pointer_cast<const uchar *>(name);
+  size_t src_trg_name_len = strlen(name);
   for (const Trigger *trigger : triggers()) {
-    if (!strcmp(name, trigger->name().c_str())) return trigger;
+    if (!my_strnncoll(dd::tables::Triggers::name_collation(), src_trg_name,
+                      src_trg_name_len,
+                      pointer_cast<const uchar *>(trigger->name().c_str()),
+                      trigger->name().length()))
+      return trigger;
   }
 
   return nullptr;
@@ -766,21 +790,22 @@ Trigger *Table_impl::add_trigger_following(const Trigger *trigger,
   DBUG_ASSERT(trigger != nullptr && trigger->action_timing() == at &&
               trigger->event_type() == et);
 
-  int new_pos = dynamic_cast<const Trigger_impl *>(trigger)->ordinal_position();
-
   // Allocate new Trigger object.
   Trigger_impl *new_trigger = create_trigger();
   if (new_trigger == nullptr) return nullptr;
 
-  m_triggers.push_back(new_trigger);
+  Trigger_collection::iterator it =
+      m_triggers.find(dynamic_cast<const Trigger_impl *>(trigger));
+
+  if (++it != m_triggers.end())
+    m_triggers.insert(it, new_trigger);
+  else
+    m_triggers.push_back(new_trigger);
+
   new_trigger->set_action_timing(at);
   new_trigger->set_event_type(et);
 
-  int last_pos = dynamic_cast<Trigger_impl *>(new_trigger)->ordinal_position();
-  if (last_pos > (new_pos + 1)) m_triggers.move(last_pos - 1, new_pos);
-
   reorder_action_order(at, et);
-
   return new_trigger;
 }
 
@@ -795,13 +820,12 @@ Trigger *Table_impl::add_trigger_preceding(const Trigger *trigger,
   Trigger_impl *new_trigger = create_trigger();
   if (new_trigger == nullptr) return nullptr;
 
-  int new_pos = dynamic_cast<const Trigger_impl *>(trigger)->ordinal_position();
-  m_triggers.push_back(new_trigger);
   new_trigger->set_action_timing(at);
   new_trigger->set_event_type(et);
 
-  int last_pos = dynamic_cast<Trigger_impl *>(new_trigger)->ordinal_position();
-  m_triggers.move(last_pos - 1, new_pos - 1);
+  Trigger_collection::iterator it =
+      m_triggers.find(dynamic_cast<const Trigger_impl *>(trigger));
+  m_triggers.insert(it, new_trigger);
 
   reorder_action_order(at, et);
 
@@ -915,9 +939,11 @@ Table_impl::Table_impl(const Table_impl &src)
       m_se_private_id(src.m_se_private_id),
       m_engine(src.m_engine),
       m_comment(src.m_comment),
-      m_se_private_data(Properties_impl::parse_properties(
-          src.m_se_private_data->raw_string())),
+      m_last_checked_for_upgrade_version_id{
+          src.m_last_checked_for_upgrade_version_id},
+      m_se_private_data(src.m_se_private_data),
       m_row_format(src.m_row_format),
+      m_is_temporary(src.m_is_temporary),
       m_partition_type(src.m_partition_type),
       m_partition_expression(src.m_partition_expression),
       m_partition_expression_utf8(src.m_partition_expression_utf8),

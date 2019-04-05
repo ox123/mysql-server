@@ -1,4 +1,4 @@
-/* Copyright (c) 2014, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2014, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -45,6 +45,12 @@ const Schemata &Schemata::instance() {
 
 ///////////////////////////////////////////////////////////////////////////
 
+const CHARSET_INFO *Schemata::name_collation() {
+  return Object_table_definition_impl::fs_name_collation();
+}
+
+///////////////////////////////////////////////////////////////////////////
+
 Schemata::Schemata() {
   m_target_def.set_table_name("schemata");
 
@@ -52,19 +58,16 @@ Schemata::Schemata() {
                          "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT");
   m_target_def.add_field(FIELD_CATALOG_ID, "FIELD_CATALOG_ID",
                          "catalog_id BIGINT UNSIGNED NOT NULL");
-  m_target_def.add_field(
-      FIELD_NAME, "FIELD_NAME",
-      "name VARCHAR(64) NOT NULL COLLATE " +
-          String_type(Object_table_definition_impl::fs_name_collation()->name));
+  m_target_def.add_field(FIELD_NAME, "FIELD_NAME",
+                         "name VARCHAR(64) NOT NULL COLLATE " +
+                             String_type(name_collation()->name));
   m_target_def.add_field(FIELD_DEFAULT_COLLATION_ID,
                          "FIELD_DEFAULT_COLLATION_ID",
                          "default_collation_id BIGINT UNSIGNED NOT NULL");
   m_target_def.add_field(FIELD_CREATED, "FIELD_CREATED",
-                         "created TIMESTAMP NOT NULL\n"
-                         " DEFAULT CURRENT_TIMESTAMP\n"
-                         " ON UPDATE CURRENT_TIMESTAMP");
+                         "created TIMESTAMP NOT NULL");
   m_target_def.add_field(FIELD_LAST_ALTERED, "FIELD_LAST_ALTERED",
-                         "last_altered TIMESTAMP NOT NULL DEFAULT NOW()");
+                         "last_altered TIMESTAMP NOT NULL");
   m_target_def.add_field(FIELD_OPTIONS, "FIELD_OPTIONS", "options MEDIUMTEXT");
 
   m_target_def.add_index(INDEX_PK_ID, "INDEX_PK_ID", "PRIMARY KEY (id)");
@@ -85,16 +88,16 @@ Schemata::Schemata() {
   m_target_def.add_populate_statement(
       "INSERT INTO schemata (catalog_id, name, default_collation_id, created, "
       "last_altered, options) VALUES "
-      "(1,'information_schema',33, now(), now(), NULL)");
+      "(1,'information_schema',33, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, "
+      "NULL)");
 }
 
 ///////////////////////////////////////////////////////////////////////////
 
 bool Schemata::update_object_key(Item_name_key *key, Object_id catalog_id,
                                  const String_type &schema_name) {
-  char buf[NAME_LEN + 1];
-  key->update(FIELD_CATALOG_ID, catalog_id, FIELD_NAME,
-              Object_table_definition_impl::fs_name_case(schema_name, buf));
+  key->update(FIELD_CATALOG_ID, catalog_id, FIELD_NAME, schema_name,
+              name_collation());
   return false;
 }
 

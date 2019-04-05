@@ -1718,6 +1718,8 @@ DROP TABLE t;
 # JSON_ARRAY::INSERT_ALIAS
 #
 PREPARE s FROM 'do json_array(1, database(), bit_or(@c:=0xe9))';
+Warnings:
+Warning	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
 EXECUTE s;
 EXECUTE s;
 DEALLOCATE PREPARE s;

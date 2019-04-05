@@ -47,7 +47,7 @@ SET @old_sql_mode = @@session.sql_mode, @@session.sql_mode = '';
 
 INSERT IGNORE INTO mysql.user
 (host, user, select_priv, plugin, authentication_string, ssl_cipher, x509_issuer, x509_subject)
-VALUES ('localhost','mysql.infoschema','Y','mysql_native_password','*THISISNOTAVALIDPASSWORDTHATCANBEUSEDHERE','','','');
+VALUES ('localhost','mysql.infoschema','Y','caching_sha2_password','$A$005$THISISACOMBINATIONOFINVALIDSALTANDPASSWORDTHATMUSTNEVERBRBEUSED','','','');
 
 FLUSH PRIVILEGES;
 
@@ -301,6 +301,8 @@ ALTER TABLE func
 
 SET @old_log_state = @@global.general_log;
 SET GLOBAL general_log = 'OFF';
+SET @old_sql_require_primary_key = @@session.sql_require_primary_key;
+SET @@session.sql_require_primary_key = 0;
 ALTER TABLE general_log
   MODIFY event_time TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
   MODIFY user_host MEDIUMTEXT NOT NULL,
@@ -332,6 +334,7 @@ ALTER TABLE slow_log
   MODIFY thread_id BIGINT(21) UNSIGNED NOT NULL;
 SET GLOBAL slow_query_log = @old_log_state;
 
+SET @@session.sql_require_primary_key = @old_sql_require_primary_key;
 ALTER TABLE plugin
   MODIFY name varchar(64) COLLATE utf8_general_ci NOT NULL DEFAULT '',
   MODIFY dl varchar(128) COLLATE utf8_general_ci NOT NULL DEFAULT '',
@@ -628,7 +631,7 @@ SET GLOBAL automatic_sp_privileges = @global_automatic_sp_privileges;
 --
 
 ALTER TABLE user ADD password_last_changed timestamp NULL;
-UPDATE user SET password_last_changed = CURRENT_TIMESTAMP WHERE plugin in ('mysql_native_password','sha256_password') and password_last_changed is NULL;
+UPDATE user SET password_last_changed = CURRENT_TIMESTAMP WHERE plugin in ('caching_sha2_password','mysql_native_password','sha256_password') and password_last_changed is NULL;
 
 ALTER TABLE user ADD password_lifetime smallint unsigned NULL;
 
@@ -682,6 +685,20 @@ COMMIT;
 SET @hadResourceGroupAdminPriv = (SELECT COUNT(*) FROM global_grants WHERE priv = 'RESOURCE_GROUP_ADMIN');
 INSERT INTO global_grants SELECT user, host, 'RESOURCE_GROUP_ADMIN',
 IF(grant_priv = 'Y', 'Y', 'N') FROM mysql.user WHERE super_priv = 'Y' AND @hadResourceGroupAdminPriv = 0;
+COMMIT;
+
+-- Add the privilege SERVICE_CONNECTION_ADMIN for every user who has the privilege SUPER
+-- provided that there isn't a user who already has the privilege SERVICE_CONNECTION_ADMIN.
+SET @hadServiceConnectionAdminPriv = (SELECT COUNT(*) FROM global_grants WHERE priv = 'SERVICE_CONNECTION_ADMIN');
+INSERT INTO global_grants SELECT user, host, 'SERVICE_CONNECTION_ADMIN', IF(grant_priv = 'Y', 'Y', 'N')
+FROM mysql.user WHERE super_priv = 'Y' AND @hadServiceConnectionAdminPriv = 0;
+
+-- Add the privilege APPLICATION_PASSWORD_ADMIN for every user who has the
+-- privilege CREATE USER provided that there isn't a user who already has
+-- privilege APPLICATION_PASSWORD_ADMIN
+SET @hadApplicationPasswordAdminPriv = (SELECT COUNT(*) FROM global_grants WHERE priv = 'APPLICATION_PASSWORD_ADMIN');
+INSERT INTO global_grants SELECT user, host, 'APPLICATION_PASSWORD_ADMIN', IF(grant_priv = 'Y', 'Y', 'N')
+FROM mysql.user WHERE Create_user_priv = 'Y' AND @hadApplicationPasswordAdminPriv = 0;
 COMMIT;
 
 # Activate the new, possible modified privilege tables
@@ -739,17 +756,6 @@ ALTER TABLE slave_master_info
 ALTER TABLE slave_master_info
   MODIFY COLUMN Get_public_key BOOLEAN NOT NULL COMMENT 'Preference to get public key from master.'
   AFTER Public_key_path;
-
-SET @have_innodb= (SELECT COUNT(engine) FROM information_schema.engines WHERE engine='InnoDB' AND support != 'NO');
-SET @str=IF(@have_innodb <> 0, "ALTER TABLE innodb_table_stats STATS_PERSISTENT=0", "SET @dummy = 0");
-PREPARE stmt FROM @str;
-EXECUTE stmt;
-DROP PREPARE stmt;
-
-SET @str=IF(@have_innodb <> 0, "ALTER TABLE innodb_index_stats STATS_PERSISTENT=0", "SET @dummy = 0");
-PREPARE stmt FROM @str;
-EXECUTE stmt;
-DROP PREPARE stmt;
 
 #
 # Alter mysql.ndb_binlog_index only if it exists already.
@@ -888,10 +894,13 @@ ALTER TABLE user MODIFY Drop_role_priv enum('N','Y') COLLATE utf8_general_ci DEF
 UPDATE user SET Create_role_priv= 'Y', Drop_role_priv= 'Y' WHERE Create_user_priv = 'Y';
 
 --
--- Password_reuse_history and Password_reuse_time
+-- Password_reuse_history, Password_reuse_time and Password_require_current
 --
 ALTER TABLE user ADD Password_reuse_history smallint unsigned NULL DEFAULT NULL AFTER Drop_role_priv;
 ALTER TABLE user ADD Password_reuse_time smallint unsigned NULL DEFAULT NULL AFTER Password_reuse_history;
+ALTER TABLE user ADD Password_require_current enum('N', 'Y') COLLATE utf8_general_ci DEFAULT NULL AFTER Password_reuse_time;
+ALTER TABLE user MODIFY Password_require_current enum('N','Y') COLLATE utf8_general_ci DEFAULT NULL AFTER Password_reuse_time;
+ALTER TABLE user ADD User_attributes JSON DEFAULT NULL AFTER Password_require_current;
 
 --
 -- Change engine of the firewall tables to InnoDB
@@ -917,13 +926,42 @@ EXECUTE stmt;
 DROP PREPARE stmt;
 
 --
--- Change engine of the audit log tables to InnoDB
+-- Add a column that serves as a primary key of the table
 --
+SET @firewall_whitelist_id_column =
+  (SELECT COUNT(column_name) FROM information_schema.columns
+     WHERE table_schema = 'mysql' AND table_name = 'firewall_whitelist' AND column_name = 'ID');
+SET @cmd="ALTER TABLE mysql.firewall_whitelist ADD ID INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY";
+SET @str = IF(@had_firewall_whitelist > 0 AND @firewall_whitelist_id_column = 0, @cmd, "SET @dummy = 0");
+PREPARE stmt FROM @str;
+EXECUTE stmt;
+DROP PREPARE stmt;
+
+--
+-- Change engine, size and charset for audit log tables.
+--
+
+SET @had_audit_log_user =
+  (SELECT COUNT(table_name) FROM information_schema.tables
+     WHERE table_schema = 'mysql' AND table_name = 'audit_log_user' AND
+           table_type = 'BASE TABLE');
+SET @cmd="ALTER TABLE mysql.audit_log_user DROP FOREIGN KEY audit_log_user_ibfk_1";
+SET @str = IF(@had_audit_log_user > 0, @cmd, "SET @dummy = 0");
+PREPARE stmt FROM @str;
+EXECUTE stmt;
+DROP PREPARE stmt;
+
 SET @had_audit_log_filter =
   (SELECT COUNT(table_name) FROM information_schema.tables
      WHERE table_schema = 'mysql' AND table_name = 'audit_log_filter' AND
            table_type = 'BASE TABLE');
 SET @cmd="ALTER TABLE mysql.audit_log_filter ENGINE=InnoDB";
+SET @str = IF(@had_audit_log_filter > 0, @cmd, "SET @dummy = 0");
+PREPARE stmt FROM @str;
+EXECUTE stmt;
+DROP PREPARE stmt;
+
+SET @cmd="ALTER TABLE mysql.audit_log_filter CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_as_ci";
 SET @str = IF(@had_audit_log_filter > 0, @cmd, "SET @dummy = 0");
 PREPARE stmt FROM @str;
 EXECUTE stmt;
@@ -939,6 +977,23 @@ PREPARE stmt FROM @str;
 EXECUTE stmt;
 DROP PREPARE stmt;
 
+SET @cmd="ALTER TABLE mysql.audit_log_user CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_as_ci";
+SET @str = IF(@had_audit_log_user > 0, @cmd, "SET @dummy = 0");
+PREPARE stmt FROM @str;
+EXECUTE stmt;
+DROP PREPARE stmt;
+
+SET @cmd="ALTER TABLE mysql.audit_log_user MODIFY COLUMN USER VARCHAR(32)";
+SET @str = IF(@had_audit_log_user > 0, @cmd, "SET @dummy = 0");
+PREPARE stmt FROM @str;
+EXECUTE stmt;
+DROP PREPARE stmt;
+
+SET @cmd="ALTER TABLE mysql.audit_log_user ADD FOREIGN KEY (FILTERNAME) REFERENCES mysql.audit_log_filter(NAME)";
+SET @str = IF(@had_audit_log_user > 0, @cmd, "SET @dummy = 0");
+PREPARE stmt FROM @str;
+EXECUTE stmt;
+DROP PREPARE stmt;
 
 --
 -- Update default_value column for cost tables to new defaults
@@ -989,17 +1044,24 @@ DROP PREPARE stmt;
 # internal server session service
 # Notes:
 # This user is disabled for login
-# This user has super privileges and select privileges into performance schema
-# tables the mysql.user table.
+# This user has:
+# Select privileges into performance schema tables the mysql.user table.
+# SUPER, PERSIST_RO_VARIABLES_ADMIN, SYSTEM_VARIABLES_ADMIN privileges
 #
 
-INSERT IGNORE INTO mysql.user VALUES ('localhost','mysql.session','N','N','N','N','N','N','N','N','N','N','N','N','N','N','N','Y','N','N','N','N','N','N','N','N','N','N','N','N','N','','','','',0,0,0,0,'mysql_native_password','*THISISNOTAVALIDPASSWORDTHATCANBEUSEDHERE','N',CURRENT_TIMESTAMP,NULL,'Y', 'N', 'N', NULL, NULL);
+INSERT IGNORE INTO mysql.user VALUES ('localhost','mysql.session','N','N','N','N','N','N','N','N','N','N','N','N','N','N','N','Y','N','N','N','N','N','N','N','N','N','N','N','N','N','','','','',0,0,0,0,'caching_sha2_password','$A$005$THISISACOMBINATIONOFINVALIDSALTANDPASSWORDTHATMUSTNEVERBRBEUSED','N',CURRENT_TIMESTAMP,NULL,'Y', 'N', 'N', NULL, NULL, NULL, NULL);
 
 UPDATE user SET Create_role_priv= 'N', Drop_role_priv= 'N' WHERE User= 'mysql.session';
 
 INSERT IGNORE INTO mysql.tables_priv VALUES ('localhost', 'mysql', 'mysql.session', 'user', 'root\@localhost', CURRENT_TIMESTAMP, 'Select', '');
 
 INSERT IGNORE INTO mysql.db VALUES ('localhost', 'performance_schema', 'mysql.session','Y','N','N','N','N','N','N','N','N','N','N','N','N','N','N','N','N','N','N');
+
+INSERT IGNORE INTO mysql.global_grants VALUES ('mysql.session', 'localhost', 'PERSIST_RO_VARIABLES_ADMIN', 'N');
+
+INSERT IGNORE INTO mysql.global_grants VALUES ('mysql.session', 'localhost', 'SYSTEM_VARIABLES_ADMIN', 'N');
+
+INSERT IGNORE INTO mysql.global_grants VALUES ('mysql.session', 'localhost', 'SESSION_VARIABLES_ADMIN', 'N');
 
 FLUSH PRIVILEGES;
 

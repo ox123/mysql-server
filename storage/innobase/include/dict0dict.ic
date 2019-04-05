@@ -691,7 +691,7 @@ ulint dict_index_get_n_fields(
   ut_ad(index);
   ut_ad(index->magic_n == DICT_INDEX_MAGIC_N);
 
-  return (index->n_fields);
+  return index->n_fields;
 }
 
 /** Gets the number of fields in the internal representation of an index
@@ -708,7 +708,7 @@ ulint dict_index_get_n_unique(
   ut_ad(index->magic_n == DICT_INDEX_MAGIC_N);
   ut_ad(index->cached);
 
-  return (index->n_uniq);
+  return static_cast<uint16_t>(index->n_uniq);
 }
 
 /** Gets the number of fields in the internal representation of an index
@@ -728,7 +728,7 @@ ulint dict_index_get_n_unique_in_tree(
     return (dict_index_get_n_unique(index));
   }
 
-  return (dict_index_get_n_fields(index));
+  return (static_cast<uint16_t>(dict_index_get_n_fields(index)));
 }
 
 /**
@@ -739,7 +739,7 @@ include page no field.
 @param[in]	index	index
 @return number of fields */
 UNIV_INLINE
-ulint dict_index_get_n_unique_in_tree_nonleaf(const dict_index_t *index) {
+uint16_t dict_index_get_n_unique_in_tree_nonleaf(const dict_index_t *index) {
   ut_ad(index != NULL);
   ut_ad(index->magic_n == DICT_INDEX_MAGIC_N);
   ut_ad(index->cached);
@@ -750,7 +750,7 @@ ulint dict_index_get_n_unique_in_tree_nonleaf(const dict_index_t *index) {
     there's one field there. */
     return (DICT_INDEX_SPATIAL_NODEPTR_SIZE);
   } else {
-    return (dict_index_get_n_unique_in_tree(index));
+    return static_cast<uint16_t>(dict_index_get_n_unique_in_tree(index));
   }
 }
 
@@ -1056,15 +1056,6 @@ bool dict_table_is_discarded(
   return (DICT_TF2_FLAG_IS_SET(table, DICT_TF2_DISCARDED));
 }
 
-/** Check if it is a encrypted table.
- @return true if table encrypted flag is set. */
-UNIV_INLINE
-bool dict_table_is_encrypted(
-    const dict_table_t *table) /*!< in: table to check */
-{
-  return (DICT_TF2_FLAG_IS_SET(table, DICT_TF2_ENCRYPTION));
-}
-
 #ifndef UNIV_HOTBACKUP
 /** Check whether the table is DDTableBuffer. See class DDTableBuffer
 @param[in]	table	table to check
@@ -1177,7 +1168,6 @@ dict_index_t *dict_table_get_index_on_first_col(
     }
   }
   ut_error;
-  return (0);
 }
 
 /** Get table session row-id and increment the row-id counter for next use.
@@ -1212,6 +1202,20 @@ inline uint64_t dict_table_t::get_ref_count() const { return (n_ref_count); }
 inline void dict_table_t::acquire() {
   ut_ad(mutex_own(&dict_sys->mutex) || is_intrinsic());
   ++n_ref_count;
+}
+
+inline void dict_table_t::acquire_with_lock() {
+  ut_ad(mutex_own(&dict_sys->mutex));
+  ut_ad(!is_intrinsic());
+
+  /* Acquiring the lock first, to prevent race between n_ref_count and
+  stat_initialized in dict_table_close(). This lock makes sure the close
+  code path either destroys the stats information before increasing
+  n_ref_count, or finds the n_ref_count is not 0, so not to destry the stats
+  information. */
+  lock();
+  ++n_ref_count;
+  unlock();
 }
 
 /** Release the table handle. */
@@ -1400,7 +1404,6 @@ bool dict_table_is_sdi(table_id_t table_id) {
 }
 
 /** Return a SDI Index id for given SDI copy
-@param[in]	copy_num	SDI Index copy number
 @return index_id for SDI copy */
 UNIV_INLINE
 space_index_t dict_sdi_get_index_id() { return (IB_UINT64_MAX); }
@@ -1409,6 +1412,13 @@ space_index_t dict_sdi_get_index_id() { return (IB_UINT64_MAX); }
 @return true if table is DD table or SDI table, else false */
 inline bool dict_table_t::skip_gap_locks() const {
   return (is_dd_table || dict_table_is_sdi(id));
+}
+
+/** Determine if the table can support instant ADD COLUMN */
+inline bool dict_table_t::support_instant_add() const {
+  return (!DICT_TF_GET_ZIP_SSIZE(flags) && space != dict_sys_t::s_space_id &&
+          !DICT_TF2_FLAG_IS_SET(this, DICT_TF2_FTS_HAS_DOC_ID) &&
+          !is_temporary());
 }
 
 /** Check whether the dict_table_t is a partition.

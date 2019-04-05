@@ -32,12 +32,12 @@
 #include "plugin/group_replication/libmysqlgcs/src/bindings/xcom/gcs_message_stages.h"
 #include "plugin/group_replication/libmysqlgcs/src/bindings/xcom/gcs_xcom_group_member_information.h"
 #include "plugin/group_replication/libmysqlgcs/src/bindings/xcom/gcs_xcom_interface.h"
+#include "plugin/group_replication/libmysqlgcs/src/bindings/xcom/gcs_xcom_proxy.h"
 #include "plugin/group_replication/libmysqlgcs/src/bindings/xcom/gcs_xcom_state_exchange.h"
 #include "plugin/group_replication/libmysqlgcs/src/bindings/xcom/gcs_xcom_statistics_interface.h"
-#include "plugin/group_replication/libmysqlgcs/src/bindings/xcom/gcs_xcom_utils.h"
 
 /**
-  @interface Gcs_xcom_communication_interface
+  @class Gcs_xcom_communication_interface
 
   Abstraction layer that adds XCom specific methods to the generic
   communication interface.
@@ -59,7 +59,8 @@ class Gcs_xcom_communication_interface : public Gcs_communication_interface {
     of messages sent.
 
     @param[in]  message_to_send the message to send
-    @param[out] message_length  the length of message which was send
+    @param[out] message_length the length of message which was send if GCS_OK,
+                               unspecified otherwise
     @param[in] cargo internal message header cargo type
     @return the xcom broadcast message error
       @retval GCS_OK message is transmitted successfully
@@ -70,7 +71,7 @@ class Gcs_xcom_communication_interface : public Gcs_communication_interface {
 
   virtual enum_gcs_error send_binding_message(
       const Gcs_message &message_to_send, unsigned long long *message_length,
-      Gcs_internal_message_header::enum_cargo_type cargo) = 0;
+      Gcs_internal_message_header::cargo_type cargo) = 0;
 
   /**
     The purpose of this method is to be called when in Gcs_xcom_interface
@@ -87,8 +88,6 @@ class Gcs_xcom_communication_interface : public Gcs_communication_interface {
     passed as parameter and must be excuted by the same thread that
     processes global view messages and data message in order to avoid
     any concurrency issue.
-
-    @param message
   */
 
   virtual bool xcom_receive_data(Gcs_message *message) = 0;
@@ -202,7 +201,7 @@ class Gcs_xcom_communication : public Gcs_xcom_communication_interface {
   // Implementation of the Gcs_xcom_communication_interface
   enum_gcs_error send_binding_message(
       const Gcs_message &message_to_send, unsigned long long *message_length,
-      Gcs_internal_message_header::enum_cargo_type cargo);
+      Gcs_internal_message_header::cargo_type cargo);
 
   // For unit testing purposes
   std::map<int, const Gcs_communication_event_listener &>

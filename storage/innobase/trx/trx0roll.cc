@@ -32,14 +32,11 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
 #include <sys/types.h>
 
-#include <current_thd.h>
 #include "dict0dd.h"
 #include "fsp0fsp.h"
 #include "ha_prototypes.h"
 #include "lock0lock.h"
 #include "mach0data.h"
-#include "my_compiler.h"
-#include "my_inttypes.h"
 #include "os0thread-create.h"
 #include "pars0pars.h"
 #include "que0que.h"
@@ -56,6 +53,8 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "trx0trx.h"
 #include "trx0undo.h"
 #include "usr0sess.h"
+
+#include "current_thd.h"
 
 /** This many pages must be undone before a truncate is tried within
 rollback */
@@ -250,7 +249,6 @@ static dberr_t trx_rollback_low(trx_t *trx) {
   }
 
   ut_error;
-  return (DB_CORRUPTION);
 }
 
 /** Rollback a transaction used in MySQL.
@@ -314,7 +312,6 @@ dberr_t trx_rollback_last_sql_stat_for_mysql(
   }
 
   ut_error;
-  return (DB_CORRUPTION);
 }
 
 /** Search for a savepoint using name.

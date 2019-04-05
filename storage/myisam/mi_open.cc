@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -43,14 +43,17 @@
 #include <time.h>
 
 #include "m_ctype.h"
+#include "my_byteorder.h"
 #include "my_compiler.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
 #include "my_io.h"
 #include "my_macros.h"
 #include "my_pointer_arithmetic.h"
+#include "sql/field.h"
 #include "storage/myisam/fulltext.h"
 #include "storage/myisam/myisam_sys.h"
+#include "storage/myisam/myisamdef.h"
 #include "storage/myisam/rt_index.h"
 #include "storage/myisam/sp_defs.h"
 
@@ -522,13 +525,6 @@ MI_INFO *mi_open_share(const char *name, MYISAM_SHARE *old_share, int mode,
         share->lock.check_status = mi_check_status;
       }
     }
-    /*
-      Memory mapping can only be requested after initializing intern_lock.
-    */
-    if (open_flags & HA_OPEN_MMAP) {
-      info.s = share;
-      mi_extra(&info, HA_EXTRA_MMAP, 0);
-    }
   } else {
     share = old_share;
     if (mode == O_RDWR && share->mode == O_RDONLY) {
@@ -639,6 +635,7 @@ err:
     case 5:
       (void)mysql_file_close(info.dfile, MYF(0));
       if (old_share) break; /* Don't remove open table */
+
       /* fall through */
     case 4:
       my_free(share);

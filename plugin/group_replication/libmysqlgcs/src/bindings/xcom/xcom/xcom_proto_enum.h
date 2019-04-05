@@ -22,7 +22,15 @@
 #ifndef PROTO_ENUM_H
 #define PROTO_ENUM_H
 
-enum xcom_proto { x_unknown_proto = 0, x_1_0 = 1, x_1_1 = 2, x_1_2 = 3 };
+enum xcom_proto {
+  x_unknown_proto = 0,
+  x_1_0 = 1,
+  x_1_1 = 2,
+  x_1_2 = 3,
+  x_1_3 = 4,
+  x_1_4 = 5,
+  x_1_5 = 6
+};
 
 typedef enum xcom_proto xcom_proto;
 

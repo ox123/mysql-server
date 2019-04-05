@@ -206,7 +206,7 @@ lock_t *lock_rec_expl_exist_on_page(space_id_t space,  /*!< in: space id */
  be suspended for some reason; if not, then puts the transaction and
  the query thread to the lock wait state and inserts a waiting request
  for a gap x-lock to the lock queue.
- @return DB_SUCCESS, DB_LOCK_WAIT, DB_DEADLOCK, or DB_QUE_THR_SUSPENDED */
+ @return DB_SUCCESS, DB_LOCK_WAIT, or DB_DEADLOCK */
 dberr_t lock_rec_insert_check_and_lock(
     ulint flags,         /*!< in: if BTR_NO_LOCKING_FLAG bit is
                          set, does nothing */
@@ -221,34 +221,13 @@ dberr_t lock_rec_insert_check_and_lock(
                          record */
     MY_ATTRIBUTE((warn_unused_result));
 
-/** Enqueues a waiting request for a lock which cannot be granted immediately.
-Checks for deadlocks.
-@param[in]	type_mode	lock mode this transaction is requesting:
-                                LOCK_S or LOCK_X, possibly ORed with LOCK_GAP
-                                or LOCK_REC_NOT_GAP, ORed with
-                                LOCK_INSERT_INTENTION if this waiting lock
-                                request is set when performing an insert of an
-                                index record
-@param[in]	block		buffer block containing the record
-@param[in]	heap_no		heap number of the record
-@param[in]	index		index of record
-@param[in]	thr		query thread
-@param[in]	prdt		Minimum Bounding Box
-@return DB_LOCK_WAIT, DB_DEADLOCK, or DB_QUE_THR_SUSPENDED, or
-DB_SUCCESS_LOCKED_REC; DB_SUCCESS_LOCKED_REC means that there was a deadlock,
-but another transaction was chosen as a victim, and we got the lock
-immediately: no need to wait then */
-dberr_t lock_rec_enqueue_waiting(ulint type_mode, const buf_block_t *block,
-                                 ulint heap_no, dict_index_t *index,
-                                 que_thr_t *thr, lock_prdt_t *prdt);
-
 /** Checks if locks of other transactions prevent an immediate modify (update,
  delete mark, or delete unmark) of a clustered index record. If they do,
  first tests if the query thread should anyway be suspended for some
  reason; if not, then puts the transaction and the query thread to the
  lock wait state and inserts a waiting request for a record x-lock to the
  lock queue.
- @return DB_SUCCESS, DB_LOCK_WAIT, DB_DEADLOCK, or DB_QUE_THR_SUSPENDED */
+ @return DB_SUCCESS, DB_LOCK_WAIT, or DB_DEADLOCK */
 dberr_t lock_clust_rec_modify_check_and_lock(
     ulint flags,              /*!< in: if BTR_NO_LOCKING_FLAG
                               bit is set, does nothing */
@@ -261,7 +240,7 @@ dberr_t lock_clust_rec_modify_check_and_lock(
     MY_ATTRIBUTE((warn_unused_result));
 /** Checks if locks of other transactions prevent an immediate modify
  (delete mark or delete unmark) of a secondary index record.
- @return DB_SUCCESS, DB_LOCK_WAIT, DB_DEADLOCK, or DB_QUE_THR_SUSPENDED */
+ @return DB_SUCCESS, DB_LOCK_WAIT, or DB_DEADLOCK */
 dberr_t lock_sec_rec_modify_check_and_lock(
     ulint flags,         /*!< in: if BTR_NO_LOCKING_FLAG
                          bit is set, does nothing */
@@ -293,7 +272,7 @@ secondary index record.
 @param[in]	gap_mode	LOCK_ORDINARY, LOCK_GAP, or LOCK_REC_NOT_GAP
 @param[in,out]	thr		query thread
 @return DB_SUCCESS, DB_SUCCESS_LOCKED_REC, DB_LOCK_WAIT, DB_DEADLOCK,
-DB_QUE_THR_SUSPENDED, DB_SKIP_LOCKED, or DB_LOCK_NOWAIT */
+DB_SKIP_LOCKED, or DB_LOCK_NOWAIT */
 dberr_t lock_sec_rec_read_check_and_lock(ulint flags, const buf_block_t *block,
                                          const rec_t *rec, dict_index_t *index,
                                          const ulint *offsets,
@@ -320,7 +299,7 @@ lock on the record.
 @param[in]	gap_mode	LOCK_ORDINARY, LOCK_GAP, or LOCK_REC_NOT_GAP
 @param[in,out]	thr		query thread
 @return DB_SUCCESS, DB_SUCCESS_LOCKED_REC, DB_LOCK_WAIT, DB_DEADLOCK,
-DB_QUE_THR_SUSPENDED, DB_SKIP_LOCKED, or DB_LOCK_NOWAIT */
+DB_SKIP_LOCKED, or DB_LOCK_NOWAIT */
 dberr_t lock_clust_rec_read_check_and_lock(
     ulint flags, const buf_block_t *block, const rec_t *rec,
     dict_index_t *index, const ulint *offsets, select_mode sel_mode,
@@ -334,7 +313,7 @@ dberr_t lock_clust_rec_read_check_and_lock(
  lock on the record. This is an alternative version of
  lock_clust_rec_read_check_and_lock() that does not require the parameter
  "offsets".
- @return DB_SUCCESS, DB_LOCK_WAIT, DB_DEADLOCK, or DB_QUE_THR_SUSPENDED */
+ @return DB_SUCCESS, DB_LOCK_WAIT, or DB_DEADLOCK */
 dberr_t lock_clust_rec_read_check_and_lock_alt(
     ulint flags,              /*!< in: if BTR_NO_LOCKING_FLAG
                               bit is set, does nothing */
@@ -380,7 +359,7 @@ bool lock_sec_rec_cons_read_sees(
     MY_ATTRIBUTE((warn_unused_result));
 /** Locks the specified database table in the mode given. If the lock cannot
  be granted immediately, the query thread is put to wait.
- @return DB_SUCCESS, DB_LOCK_WAIT, DB_DEADLOCK, or DB_QUE_THR_SUSPENDED */
+ @return DB_SUCCESS, DB_LOCK_WAIT, or DB_DEADLOCK */
 dberr_t lock_table(ulint flags, /*!< in: if BTR_NO_LOCKING_FLAG bit is set,
                                 does nothing */
                    dict_table_t *table, /*!< in/out: database table
@@ -518,8 +497,19 @@ ulint lock_number_of_tables_locked(
 uint32_t lock_get_type(const lock_t *lock); /*!< in: lock */
 
 /** Gets the id of the transaction owning a lock.
- @return transaction id */
-trx_id_t lock_get_trx_id(const lock_t *lock); /*!< in: lock */
+@param[in]  lock  A lock of the transaction we are interested in
+@return the transaction's id */
+trx_id_t lock_get_trx_id(const lock_t *lock);
+
+/** Gets the immutable id of the transaction owning a lock
+@param[in]  lock   A lock of the transaction we are interested in
+@return the transaction's immutable id */
+uint64_t lock_get_trx_immutable_id(const lock_t *lock);
+
+/** Gets the immutable id of this lock.
+@param[in]  lock   The lock we are interested in
+@return The lock's immutable id */
+uint64_t lock_get_immutable_id(const lock_t *lock);
 
 /** Get the performance schema event (thread_id, event_id)
 that created the lock.
@@ -587,12 +577,6 @@ bool lock_table_has_locks(
 /** A thread which wakes up threads whose lock wait may have lasted too long. */
 void lock_wait_timeout_thread();
 
-/** Releases a user OS thread waiting for a lock to be released, if the
- thread is already suspended. */
-void lock_wait_release_thread_if_suspended(
-    que_thr_t *thr); /*!< in: query thread associated with the
-                     user OS thread	 */
-
 /** Puts a user OS thread to wait for a lock to be released. If an error
  occurs during the wait trx->error_state associated with thr is
  != DB_SUCCESS when we return. DB_LOCK_WAIT_TIMEOUT and DB_DEADLOCK
@@ -610,9 +594,6 @@ void lock_unlock_table_autoinc(trx_t *trx); /*!< in/out: transaction */
  the wait lock.
  @return DB_DEADLOCK, DB_LOCK_WAIT or DB_SUCCESS */
 dberr_t lock_trx_handle_wait(trx_t *trx); /*!< in/out: trx lock state */
-/** Get the number of locks on a table.
- @return number of locks */
-ulint lock_table_get_n_locks(const dict_table_t *table); /*!< in: table */
 /** Initialise the trx lock list. */
 void lock_trx_lock_list_init(
     trx_lock_list_t *lock_list); /*!< List to initialise */

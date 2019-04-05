@@ -31,6 +31,7 @@
 
 #include <string.h>
 #include <algorithm>
+#include <bitset>
 #include <cstring>
 #include <functional>
 #include <string>
@@ -310,10 +311,10 @@ bool Item_sum::check_sum_func(THD *thd, Item **ref) {
         for set functions.
     */
     if (!aggr_select->inner_sum_func_list)
-      next = this;
+      next_sum = this;
     else {
-      next = aggr_select->inner_sum_func_list->next;
-      aggr_select->inner_sum_func_list->next = this;
+      next_sum = aggr_select->inner_sum_func_list->next_sum;
+      aggr_select->inner_sum_func_list->next_sum = this;
     }
     aggr_select->inner_sum_func_list = this;
     aggr_select->with_sum_func = true;
@@ -331,11 +332,14 @@ bool Item_sum::check_sum_func(THD *thd, Item **ref) {
 
       with_sum_func being set for a query block means that this query block
       has set functions directly referenced (i.e. not through a subquery).
+
+      If, going up, we meet a derived table, we do nothing special for it:
+      it doesn't need this information.
     */
-    for (SELECT_LEX *sl = base_select;
-         sl && sl != aggr_select && sl->master_unit()->item;
-         sl = sl->outer_select())
-      sl->master_unit()->item->set_aggregation();
+    for (SELECT_LEX *sl = base_select; sl && sl != aggr_select;
+         sl = sl->outer_select()) {
+      if (sl->master_unit()->item) sl->master_unit()->item->set_aggregation();
+    }
 
     base_select->mark_as_dependent(aggr_select, true);
   }
@@ -394,7 +398,7 @@ Item_sum::Item_sum(const POS &pos, PT_item_list *opt_list, PT_window *w)
     : super(pos),
       m_window(w),
       m_window_resolved(false),
-      next(NULL),
+      next_sum(nullptr),
       arg_count(opt_list == NULL ? 0 : opt_list->elements()),
       args(nullptr),
       used_tables_cache(0),
@@ -421,7 +425,7 @@ Item_sum::Item_sum(THD *thd, Item_sum *item)
     : Item_result_field(thd, item),
       m_window(item->m_window),
       m_window_resolved(false),
-      next(NULL),
+      next_sum(nullptr),
       base_select(item->base_select),
       aggr_select(item->aggr_select),
       quick_group(item->quick_group),
@@ -436,6 +440,7 @@ Item_sum::Item_sum(THD *thd, Item_sum *item)
   init_aggregator();
   with_distinct = item->with_distinct;
   if (item->aggr) set_aggregator(item->aggr->Aggrtype());
+  DBUG_ASSERT(!m_is_window_function);  // WF items are never copied
 }
 
 void Item_sum::mark_as_sum_func() {
@@ -525,17 +530,17 @@ bool Item_sum::clean_up_after_removal(uchar *) {
   */
   if (!fixed ||                                                           // 1
       aggr_select == NULL || aggr_select->inner_sum_func_list == NULL ||  // 2
-      next == NULL)                                                       // 3
+      next_sum == NULL)                                                   // 3
     return false;
 
-  if (next == this)
+  if (next_sum == this)
     aggr_select->inner_sum_func_list = NULL;
   else {
     Item_sum *prev;
-    for (prev = this; prev->next != this; prev = prev->next)
+    for (prev = this; prev->next_sum != this; prev = prev->next_sum)
       ;
-    prev->next = next;
-    next = NULL;
+    prev->next_sum = next_sum;
+    next_sum = NULL;
 
     if (aggr_select->inner_sum_func_list == this)
       aggr_select->inner_sum_func_list = prev;
@@ -949,8 +954,9 @@ bool Aggregator_distinct::setup(THD *thd) {
     table->no_rows = 1;
     if (table->hash_field) table->file->ha_index_init(0, 0);
 
-    if (table->s->db_type() == temptable_hton ||
-        table->s->db_type() == heap_hton) {
+    if ((table->s->db_type() == temptable_hton ||
+         table->s->db_type() == heap_hton) &&
+        (table->s->blob_fields == 0)) {
       /*
         No blobs:
         set up a compare function and its arguments to use with Unique.
@@ -1044,8 +1050,12 @@ bool Aggregator_distinct::setup(THD *thd) {
     enum enum_field_types field_type =
         calc_tmp_field_type(arg->data_type(), arg->result_type());
 
-    field_def.init_for_tmp_table(field_type, arg->max_length, arg->decimals,
-                                 arg->maybe_null, arg->unsigned_flag, 0);
+    field_def.init_for_tmp_table(
+        field_type, arg->max_length,
+        field_type == MYSQL_TYPE_NEWDECIMAL
+            ? min<unsigned int>(arg->decimals, DECIMAL_MAX_SCALE)
+            : arg->decimals,
+        arg->maybe_null, arg->unsigned_flag, 0);
 
     if (!(table = create_tmp_table_from_fields(thd, field_list)))
       DBUG_RETURN(true);
@@ -1082,11 +1092,8 @@ void Aggregator_distinct::clear() {
   if (item_sum->sum_func() == Item_sum::COUNT_FUNC ||
       item_sum->sum_func() == Item_sum::COUNT_DISTINCT_FUNC) {
     if (!tree && table) {
-      table->file->extra(HA_EXTRA_NO_CACHE);
-      table->file->ha_index_or_rnd_end();
-      table->file->ha_delete_all_rows();
+      (void)table->empty_result_table();
       if (table->hash_field) table->file->ha_index_init(0, 0);
-      table->file->extra(HA_EXTRA_WRITE_CACHE);
     }
   } else {
     item_sum->null_value = 1;
@@ -1296,7 +1303,7 @@ bool Item_sum_bit::fix_fields(THD *thd, Item **ref) {
   return false;
 }
 
-bool Item_sum_bit::resolve_type(THD *) {
+bool Item_sum_bit::resolve_type(THD *thd) {
   max_length = 0;
   if (bit_func_returns_binary(args[0], nullptr)) {
     hybrid_type = STRING_RESULT;
@@ -1314,16 +1321,24 @@ bool Item_sum_bit::resolve_type(THD *) {
       my_error(ER_INVALID_BITWISE_AGGREGATE_OPERANDS_SIZE, MYF(0), func_name());
       return true;
     }
+    m_digit_cnt_card = max_length * 8;
     /*
-     One extra byte needed to store a per-group boolean flag
-     if Item_sum_bit_field is used.
+      One extra byte needed to store a per-group boolean flag
+      if Item_sum_bit_field is used.
     */
     max_length++;
     set_data_type(MYSQL_TYPE_VARCHAR);
   } else {
+    m_digit_cnt_card = DIGIT_CNT_CARD;
     hybrid_type = INT_RESULT;
     max_length = MAX_BIGINT_WIDTH + 1;
     set_data_type(MYSQL_TYPE_LONGLONG);
+  }
+
+  if (m_window != nullptr && !m_is_xor) {
+    m_digit_cnt = new (thd->mem_root) ulonglong[m_digit_cnt_card];
+    if (m_digit_cnt == nullptr) return true;
+    std::memset(m_digit_cnt, 0, m_digit_cnt_card * sizeof(ulonglong));
   }
 
   maybe_null = false;
@@ -1335,72 +1350,221 @@ bool Item_sum_bit::resolve_type(THD *) {
   return reject_geometry_args(arg_count, args, this);
 }
 
+void Item_sum_bit::remove_bits(const String *s1, ulonglong b1) {
+  if (m_is_xor) {
+    // XOR satisfies ((A OP B) OP B) == A, so inverting is easy:
+    (void)add_bits(s1, b1);  // add_bits() cannot fail here.
+    return;
+  }
+
+  const uchar *s1_c_p;
+  uchar *value_bits;
+  size_t buff_length;
+
+  if (hybrid_type == STRING_RESULT) {
+    s1_c_p = pointer_cast<const uchar *>(s1->ptr());
+    value_bits = pointer_cast<uchar *>(const_cast<char *>(value_buff.ptr()));
+    buff_length = value_buff.length() - 1;
+  } else {
+    s1_c_p = pointer_cast<const uchar *>(&b1);
+    value_bits = pointer_cast<uchar *>(&bits);
+    buff_length = sizeof(b1);
+  }
+
+  /*
+    Execute the bitwise inverse operation. We could have executed this
+    with a combination of std::bitset<sizeeof(ulonglong) * 8> and
+    std::bitset<8>, as does add_bits(), but longer bits shifting
+    to get bits in place might not be beneficial, so use just bytes.
+    Microbenchmarking showed little difference.
+  */
+  for (size_t i = 0; i < buff_length; i++) {
+    std::bitset<8> s1_bits(s1_c_p[i]);
+    if (is_and()) {
+      for (uint bit = 0; bit < 8; bit++) {
+        m_digit_cnt[(i * 8) + bit] -= !s1_bits[bit];  // one less 0 in frame
+        // Temporarily save updated bit in s1_bits:
+        s1_bits.set(bit, m_digit_cnt[(i * 8) + bit] == 0);
+      }
+    } else  // OR
+    {
+      for (uint bit = 0; bit < 8; bit++) {
+        m_digit_cnt[(i * 8) + bit] -= s1_bits[bit];  // one less 1 in frame
+        s1_bits.set(bit, m_digit_cnt[(i * 8) + bit] > 0);
+      }
+    }
+
+    value_bits[i] = s1_bits.to_ulong();
+  }
+}
+
 /**
-   Executes the requested bitwise operation, taking args[0] as argument.
-   If the result type is 'binary string':
-   - takes value_buff as second argument and stores the result in value_buff.
-   - sets the last character of value_buff to be a 'char' equal to
-   1 if at least one non-NULL value has been seen for this group, to 0
-   otherwise.
-   If the result type is integer:
-   - takes 'bits' as second argument and stores the result in 'bits'.
+  Helper for Item_sum_bit::add_bits().
+
+  Does value_bits = s1_c_p bit_op value_bits.
+
+  @tparam Char_op  class offering a bit operation for a uchar: AND, OR
+                   or XOR
+  @tparam Int_op   class offering a bit operation for a ulonglong: ditto
+  @param  buff_length  length of s1_c_p
+  @param  s1_c_p             first argument of bit op
+  @param[in,out] value_bits  second argument of bit op, and result
 */
 template <class Char_op, class Int_op>
-bool Item_sum_bit::eval_op(Char_op char_op, Int_op int_op) {
+static inline void apply_bit_op(size_t buff_length, const uchar *s1_c_p,
+                                uchar *value_bits) {
+  auto int_op = Int_op();
+  auto char_op = Char_op();
+  size_t i = 0;
+  // Execute the bitwise operation.
+  while (i + sizeof(longlong) <= buff_length) {
+    int8store(&value_bits[i],
+              int_op(uint8korr(&s1_c_p[i]), uint8korr(&value_bits[i])));
+    i += sizeof(longlong);
+  }
+  while (i < buff_length) {
+    value_bits[i] = char_op(s1_c_p[i], value_bits[i]);
+    i++;
+  }
+}
+
+bool Item_sum_bit::add_bits(const String *s1, ulonglong b1) {
+  DBUG_ASSERT(!args[0]->null_value);
+
+  const uchar *s1_c_p;
+  size_t buff_length;
+
   if (hybrid_type == STRING_RESULT) {
-    String tmp_str;
-    const String *s1 = args[0]->val_str(&tmp_str);
-
-    if (!s1 || args[0]->null_value) return false;
-
+    DBUG_ASSERT(s1 != nullptr);
+    s1_c_p = pointer_cast<const uchar *>(s1->ptr());
+    buff_length = s1->length();
     DBUG_ASSERT(value_buff.length() > 0);
-    // See if there has been a non-NULL value in this group:
-    const bool non_nulls = value_buff.ptr()[value_buff.length() - 1];
+    // See if there has been a non-NULL value in this group/frame:
+    const bool non_nulls = value_buff[value_buff.length() - 1];
     if (!non_nulls) {
       // Allocate length of argument + one extra byte for non_nulls
-      value_buff.alloc(s1->length() + 1);
-      value_buff.length(s1->length() + 1);
+      if (value_buff.alloc(buff_length + 1)) {
+        null_value = true;
+        return true;
+      }
+      value_buff.length(buff_length + 1);
       // This is the first non-NULL value of the group, accumulate it.
-      std::memcpy(value_buff.c_ptr_quick(), s1->ptr(), s1->length());
+      std::memcpy(&value_buff[0], s1->ptr(), buff_length);
       // Store that a non-NULL value has been seen.
-      value_buff.c_ptr_quick()[s1->length()] = 1;
+      value_buff[buff_length] = 1;
+    } else {
+      /*
+        If current value's length is different from the length of the
+        accumulated value for this group, return error.
+      */
+      if ((value_buff.length() - 1) != buff_length) {
+        my_error(ER_INVALID_BITWISE_OPERANDS_SIZE, MYF(0), func_name());
+        return true;
+      }
 
-      return false;
+      // At this point the values should be not-null and have the same size.
+      uchar *value_bits =
+          pointer_cast<uchar *>(const_cast<char *>(value_buff.ptr()));
+      if (m_is_xor)
+        apply_bit_op<std::bit_xor<char>, std::bit_xor<ulonglong>>(
+            buff_length, s1_c_p, value_bits);
+      else if (is_and())
+        apply_bit_op<std::bit_and<char>, std::bit_and<ulonglong>>(
+            buff_length, s1_c_p, value_bits);
+      else
+        apply_bit_op<std::bit_or<char>, std::bit_or<ulonglong>>(
+            buff_length, s1_c_p, value_bits);
     }
+  } else {
+    bits = m_is_xor ? (bits ^ b1) : (is_and() ? (bits & b1) : (bits | b1));
+    // Consider the integer's bytes as a string for the rest of this function
+    s1_c_p = pointer_cast<const uchar *>(&b1);
+    buff_length = sizeof(b1);
+  }
 
-    DBUG_ASSERT(value_buff.length() > 0);
-    size_t buff_length = value_buff.length() - 1;
-    /*
-      If current value's length is different from the length of the
-      accumulated value for this group, return error.
-     */
-    if (buff_length != s1->length()) {
-      my_error(ER_INVALID_BITWISE_OPERANDS_SIZE, MYF(0), func_name());
-      return true;
-    }
+  /*
+    For each bit in s1's bytes, update the bit's counter (m_digit_cnt) for
+    that bit as follows: for BIT_AND, increment the counter if we see a zero in
+    that bit; for BIT_OR increment the counter if we see a 1 in that bit.
+    BIT_XOR doesn't need special treatment. And set functions don't use
+    inversion so don't need the counter.
+  */
 
-    // At this point the values should be not-null and have the same size.
-    const uchar *s1_c_p = pointer_cast<const uchar *>(s1->ptr());
-    uchar *str_bits =
-        pointer_cast<uchar *>(const_cast<char *>(value_buff.ptr()));
-    size_t i = 0;
-    // Execute the bitwise operation.
-    while (i + sizeof(longlong) <= buff_length) {
-      int8store(&str_bits[i],
-                int_op(uint8korr(&s1_c_p[i]), uint8korr(&str_bits[i])));
-      i += sizeof(longlong);
-    }
-    while (i < buff_length) {
-      str_bits[i] = char_op(s1_c_p[i], str_bits[i]);
-      i++;
-    }
+  if (!m_is_window_function || m_is_xor) return false;
 
-    return false;
-  }     // end hybrid_type == STRING_RESULT
-  else  // hybrid_type == INT_RESULT
-  {
-    ulonglong value = (ulonglong)args[0]->val_int();
-    if (!args[0]->null_value) bits = int_op(bits, value);
+  for (size_t i = 0; i < buff_length; i++) {
+    std::bitset<8> s1_bits(s1_c_p[i]);
+    for (uint bit = 0; bit < 8; bit++) {
+      m_digit_cnt[(i * 8) + bit] += s1_bits[bit] ^ is_and();
+    }
+  }
+
+  return false;
+}
+
+/**
+  Executes the requested bitwise operation, using args[0] as first argument.
+  If the result type is 'binary string':
+   - takes value_buff as second argument and stores the result in value_buff.
+   - sets the last character of value_buff to be a 'char' equal to
+     1 if at least one non-NULL value has been seen for this group, to 0
+     otherwise.
+  If the result type is integer:
+   - takes 'bits' as second argument and stores the result in 'bits'.
+*/
+bool Item_sum_bit::add() {
+  char buff[CONVERT_IF_BIGGER_TO_BLOB - 1];
+
+  const String *argval_s = nullptr;
+  ulonglong argval_i = 0;
+
+  String tmp_str(buff, sizeof(buff), &my_charset_bin);
+  if (hybrid_type == STRING_RESULT) {
+    argval_s = args[0]->val_str(&tmp_str);
+  } else
+    argval_i = (ulonglong)args[0]->val_int();
+
+  /*
+    Handle grouped aggregates first
+  */
+  if (!m_is_window_function) {
+    if (args[0]->null_value)
+      return false;  // NULLs are ignorable for the set function
+    return add_bits(argval_s, argval_i);
+  }
+
+  /*
+    The next section follows the normal pattern for optimized window function
+    aggregates.
+  */
+  if (!args[0]->null_value) {
+    if (m_window->do_inverse()) {
+      DBUG_ASSERT(m_count > 0 && m_count > m_frame_null_count);
+      remove_bits(argval_s, argval_i);
+      m_count--;
+    } else {
+      if (add_bits(argval_s, argval_i))
+        return true;  // error, typically different length
+      m_count++;
+    }
+  } else {
+    if (m_window->do_inverse()) {
+      DBUG_ASSERT(m_count >= m_frame_null_count && m_frame_null_count > 0);
+      m_count--;
+      m_frame_null_count--;
+    } else {
+      m_count++;
+      m_frame_null_count++;
+    }
+  }
+
+  if (m_count == m_frame_null_count) {
+    if (hybrid_type == STRING_RESULT) {
+      // Mark that there are only NULLs; val_str() will set default value
+      const size_t buff_length = value_buff.length() - 1;
+      value_buff[buff_length] = 0;
+    } else
+      bits = reset_bits;
   }
 
   return false;
@@ -1630,6 +1794,7 @@ bool Item_sum_sum::check_wf_semantics(THD *thd, SELECT_LEX *select,
 
 bool Item_sum_sum::add() {
   DBUG_ENTER("Item_sum_sum::add");
+  DBUG_ASSERT(!m_is_window_function);
   if (hybrid_type == DECIMAL_RESULT) {
     my_decimal value;
     const my_decimal *val = aggr->arg_val_decimal(&value);
@@ -1650,10 +1815,14 @@ longlong Item_sum_sum::val_int() {
   DBUG_ENTER("Item_sum_sum::val_int");
   DBUG_ASSERT(fixed == 1);
   if (m_window != nullptr) {
+    if (hybrid_type == REAL_RESULT) {
+      longlong result = llrint(val_real());
+      DBUG_RETURN(result);
+    }
     longlong result = 0;
     my_decimal tmp;
     my_decimal *r = Item_sum_sum::val_decimal(&tmp);
-    if (r != nullptr)
+    if (r != nullptr && !null_value)
       my_decimal2int(E_DEC_FATAL_ERROR, r, unsigned_flag, &result);
     DBUG_RETURN(result);
   }
@@ -1678,26 +1847,25 @@ double Item_sum_sum::val_real() {
     if (hybrid_type == DECIMAL_RESULT) {
       my_decimal tmp;
       my_decimal *r = Item_sum_sum::val_decimal(&tmp);
-      if (r != nullptr) my_decimal2double(E_DEC_FATAL_ERROR, r, &sum);
+      if (r != nullptr && !null_value)
+        my_decimal2double(E_DEC_FATAL_ERROR, r, &sum);
     } else {
       double d = args[0]->val_real();
 
       if (!args[0]->null_value) {
         if (m_window->do_inverse()) {
-          if (m_count > 0) {
-            if (m_count > m_frame_null_count) sum -= d;
-            m_count--;
-          }
+          DBUG_ASSERT(m_count > 0 && m_count > m_frame_null_count);
+          sum -= d;
+          m_count--;
         } else {
           sum += d;
           m_count++;
         }
       } else {
         if (m_window->do_inverse()) {
-          if (m_count > 0) {
-            m_count--;
-            m_frame_null_count--;
-          }
+          DBUG_ASSERT(m_count >= m_frame_null_count && m_frame_null_count > 0);
+          m_count--;
+          m_frame_null_count--;
         } else {
           m_count++;
           m_frame_null_count++;
@@ -1715,19 +1883,6 @@ double Item_sum_sum::val_real() {
 }
 
 String *Item_sum_sum::val_str(String *str) {
-  if (m_is_window_function) {
-    my_decimal tmp1;
-    DBUG_ASSERT(hybrid_type == DECIMAL_RESULT);
-    my_decimal *const argd = Item_sum_sum::val_decimal(&tmp1);
-
-    if (null_value) return nullptr;
-
-    my_decimal tmp2;
-    my_decimal_round(E_DEC_FATAL_ERROR, argd, decimals, false, &tmp2);
-    my_decimal2string(E_DEC_FATAL_ERROR, &tmp2, 0, 0, 0, str);
-    return str;
-  }
-
   if (aggr) aggr->endup();
   if (hybrid_type == DECIMAL_RESULT) return val_string_from_decimal(str);
   return val_string_from_real(str);
@@ -1745,19 +1900,10 @@ my_decimal *Item_sum_sum::val_decimal(my_decimal *val) {
     if (!args[0]->null_value) {
       my_decimal tmp;
       if (m_window->do_inverse()) {
-        if (m_count > 0) {
-          /*
-            After a NULL it may arise that m_count == 0, e.g. with
-            a frame like RANGE BETWEEN n FOLLOWING AND m FOLLOWING, in which
-            several rows after a null rows be "inverted" in optimized
-            evaluation, so we must guard against going below m_count == 0.
-          */
-          if (m_count > m_frame_null_count) {
-            my_decimal_sub(E_DEC_FATAL_ERROR, &tmp, &dec_buffs[1], argd);
-            tmp.swap(dec_buffs[1]);
-          }
-          m_count--;
-        }
+        DBUG_ASSERT(m_count > 0 && m_count > m_frame_null_count);
+        my_decimal_sub(E_DEC_FATAL_ERROR, &tmp, &dec_buffs[1], argd);
+        tmp.swap(dec_buffs[1]);
+        m_count--;
       } else {
         my_decimal_add(E_DEC_FATAL_ERROR, &tmp, &dec_buffs[1], argd);
         tmp.swap(dec_buffs[1]);
@@ -1765,10 +1911,9 @@ my_decimal *Item_sum_sum::val_decimal(my_decimal *val) {
       }
     } else {
       if (m_window->do_inverse()) {
-        if (m_count > 0) {
-          m_count--;
-          m_frame_null_count--;
-        }
+        DBUG_ASSERT(m_count >= m_frame_null_count && m_frame_null_count > 0);
+        m_count--;
+        m_frame_null_count--;
       } else {
         m_count++;
         m_frame_null_count++;
@@ -1880,6 +2025,7 @@ Item *Item_sum_count::copy_or_same(THD *thd) {
 void Item_sum_count::clear() { count = 0; }
 
 bool Item_sum_count::add() {
+  DBUG_ASSERT(!m_is_window_function);
   if (aggr->arg_is_null(false)) return 0;
   count++;
   return 0;
@@ -1979,6 +2125,7 @@ Field *Item_sum_avg::create_tmp_field(bool group, TABLE *table) {
 void Item_sum_avg::clear() { Item_sum_sum::clear(); }
 
 bool Item_sum_avg::add() {
+  DBUG_ASSERT(!m_is_window_function);
   if (Item_sum_sum::add()) return true;
   if (!aggr->arg_is_null(true)) m_count++;
   return false;
@@ -1988,9 +2135,6 @@ double Item_sum_avg::val_real() {
   DBUG_ASSERT(fixed == 1);
   if (m_is_window_function) {
     if (wf_common_init()) return 0.0;
-
-    if (m_window->needs_buffering() && m_window->rowno_in_frame() == 1)
-      m_frame_null_count = 0;  // a new frame, so reset
 
     double sum = Item_sum_sum::val_real();
 
@@ -2024,9 +2168,6 @@ my_decimal *Item_sum_avg::val_decimal(my_decimal *val) {
       DBUG_RETURN(null_value ? nullptr : val);
     }
 
-    if (m_window->needs_buffering() && m_window->rowno_in_frame() == 1)
-      m_frame_null_count = 0;  // a new frame, so reset
-
     /*
       dec_buff[0]:   the current value
       dec_buff[1]:   holds sum so far
@@ -2036,13 +2177,10 @@ my_decimal *Item_sum_avg::val_decimal(my_decimal *val) {
     if (!args[0]->null_value) {
       my_decimal tmp;
       if (m_window->do_inverse()) {
-        if (m_count > 0) {
-          if (m_count > m_frame_null_count) {
-            my_decimal_sub(E_DEC_FATAL_ERROR, &tmp, &dec_buffs[1], argd);
-            tmp.swap(dec_buffs[1]);
-          }
-          m_count--;
-        }
+        DBUG_ASSERT(m_count > 0 && m_count > m_frame_null_count);
+        my_decimal_sub(E_DEC_FATAL_ERROR, &tmp, &dec_buffs[1], argd);
+        tmp.swap(dec_buffs[1]);
+        m_count--;
       } else {
         my_decimal_add(E_DEC_FATAL_ERROR, &tmp, &dec_buffs[1], argd);
         tmp.swap(dec_buffs[1]);
@@ -2050,10 +2188,10 @@ my_decimal *Item_sum_avg::val_decimal(my_decimal *val) {
       }
     } else {
       if (m_window->do_inverse()) {
-        if (m_count > 0) {
-          m_frame_null_count--;
-          m_count--;
-        }  // else no need to inverse if we only saw nulls
+        DBUG_ASSERT(m_count >= m_frame_null_count && m_frame_null_count > 0);
+        m_frame_null_count--;
+        m_count--;
+        // else no need to inverse if we only saw nulls
       } else {
         m_frame_null_count++;
         m_count++;
@@ -2100,19 +2238,6 @@ my_decimal *Item_sum_avg::val_decimal(my_decimal *val) {
 }
 
 String *Item_sum_avg::val_str(String *str) {
-  if (m_is_window_function) {
-    my_decimal tmp1;
-    DBUG_ASSERT(hybrid_type == DECIMAL_RESULT);
-    my_decimal *const argd = Item_sum_avg::val_decimal(&tmp1);
-
-    if (null_value) return nullptr;
-
-    my_decimal tmp2;
-    my_decimal_round(E_DEC_FATAL_ERROR, argd, decimals, false, &tmp2);
-    my_decimal2string(E_DEC_FATAL_ERROR, &tmp2, 0, 0, 0, str);
-    return str;
-  }
-
   if (aggr) aggr->endup();
   if (hybrid_type == DECIMAL_RESULT) return val_string_from_decimal(str);
   return val_string_from_real(str);
@@ -2396,7 +2521,7 @@ double Item_sum_variance::val_real() {
     if (wf_common_init()) return 0.0;
     /*
       For a group aggregate function, add() is called by Aggregator* classes;
-      for a window function, which does not use Aggregator, it has be called
+      for a window function, which does not use Aggregator, it has to be called
       here.
     */
     add();
@@ -2792,10 +2917,21 @@ bool Item_sum_max::add() {
 }
 
 String *Item_sum_bit::val_str(String *str) {
+  if (m_is_window_function) {
+    /*
+      For a group aggregate function, add() is called by Aggregator* classes;
+      for a window function, which does not use Aggregator, it has to be called
+      here.
+    */
+    if (!wf_common_init()) {
+      if (add()) return str;
+    }
+  }
+
   if (hybrid_type == INT_RESULT) return val_string_from_int(str);
 
   DBUG_ASSERT(value_buff.length() > 0);
-  const bool non_nulls = value_buff.ptr()[value_buff.length() - 1];
+  const bool non_nulls = value_buff[value_buff.length() - 1];
   // If the group has no non-NULLs repeat the default value max_length times.
   if (!non_nulls) {
     str->length(0);
@@ -2826,6 +2962,15 @@ bool Item_sum_bit::get_time(MYSQL_TIME *ltime) {
 }
 
 my_decimal *Item_sum_bit::val_decimal(my_decimal *dec_buf) {
+  if (m_is_window_function) {
+    /*
+      For a group aggregate function, add() is called by Aggregator* classes;
+      for a window function, which does not use Aggregator, it has be called
+      here.
+    */
+    if (!wf_common_init()) add();
+  }
+
   if (hybrid_type == INT_RESULT)
     return val_decimal_from_int(dec_buf);
   else
@@ -2834,6 +2979,16 @@ my_decimal *Item_sum_bit::val_decimal(my_decimal *dec_buf) {
 
 double Item_sum_bit::val_real() {
   DBUG_ASSERT(fixed);
+
+  if (m_is_window_function) {
+    /*
+      For a group aggregate function, add() is called by Aggregator* classes;
+      for a window function, which does not use Aggregator, it has be called
+      here.
+    */
+    if (!wf_common_init()) add();
+  }
+
   if (hybrid_type == INT_RESULT) return bits;
   String *res;
   if (!(res = val_str(&str_value))) return 0.0;
@@ -2848,6 +3003,15 @@ double Item_sum_bit::val_real() {
 
 longlong Item_sum_bit::val_int() {
   DBUG_ASSERT(fixed);
+  if (m_is_window_function) {
+    /*
+      For a group aggregate function, add() is called by Aggregator* classes;
+      for a window function, which does not use Aggregator, it has be called
+      here.
+    */
+    if (!wf_common_init()) add();
+  }
+
   if (hybrid_type == INT_RESULT) return (longlong)bits;
 
   String *res;
@@ -2863,9 +3027,15 @@ longlong Item_sum_bit::val_int() {
 void Item_sum_bit::clear() {
   if (hybrid_type == INT_RESULT)
     bits = reset_bits;
-  else
-    // Prepare value_buff for a new group.
-    value_buff.set(initial_value_buff_storage, 1, &my_charset_bin);
+  else {
+    // Prepare value_buff for a new group: no non-NULLs seen.
+    value_buff[value_buff.length() - 1] = 0;
+  }
+  m_count = 0;
+  m_frame_null_count = 0;
+  if (m_digit_cnt != nullptr) {
+    std::memset(m_digit_cnt, 0, m_digit_cnt_card * sizeof(ulonglong));
+  }
 }
 
 Item *Item_sum_or::copy_or_same(THD *thd) {
@@ -2875,10 +3045,6 @@ Item *Item_sum_or::copy_or_same(THD *thd) {
   DBUG_RETURN(result);
 }
 
-bool Item_sum_or::add() {
-  return eval_op(std::bit_or<char>(), std::bit_or<ulonglong>());
-}
-
 Item *Item_sum_xor::copy_or_same(THD *thd) {
   DBUG_ENTER("Item_sum_xor::copy_or_same");
   Item *result =
@@ -2886,19 +3052,11 @@ Item *Item_sum_xor::copy_or_same(THD *thd) {
   DBUG_RETURN(result);
 }
 
-bool Item_sum_xor::add() {
-  return eval_op(std::bit_xor<char>(), std::bit_xor<ulonglong>());
-}
-
 Item *Item_sum_and::copy_or_same(THD *thd) {
   DBUG_ENTER("Item_sum_and::copy_or_same");
   Item *result =
       m_is_window_function ? this : new (thd->mem_root) Item_sum_and(thd, this);
   DBUG_RETURN(result);
-}
-
-bool Item_sum_and::add() {
-  return eval_op(std::bit_and<char>(), std::bit_and<ulonglong>());
 }
 
 /************************************************************************
@@ -3275,6 +3433,7 @@ void Item_sum_hybrid::min_max_update_decimal_field() {
 }
 
 Item_avg_field::Item_avg_field(Item_result res_type, Item_sum_avg *item) {
+  DBUG_ASSERT(!item->m_is_window_function);
   item_name = item->item_name;
   decimals = item->decimals;
   max_length = item->max_length;
@@ -3331,6 +3490,7 @@ String *Item_avg_field::val_str(String *str) {
 
 Item_sum_bit_field::Item_sum_bit_field(Item_result res_type, Item_sum_bit *item,
                                        ulonglong neutral_element) {
+  DBUG_ASSERT(!item->m_is_window_function);
   reset_bits = neutral_element;
   item_name = item->item_name;
   decimals = item->decimals;
@@ -3481,9 +3641,6 @@ double Item_variance_field::val_real() {
 
 /****************************************************************************
 ** Functions to handle dynamic loadable aggregates
-** Original source by: Alexis Mikhailov <root@medinf.chuvashia.su>
-** Adapted for UDAs by: Andreas F. Bobak <bobak@relog.ch>.
-** Rewritten by: Monty.
 ****************************************************************************/
 
 bool Item_udf_sum::itemize(Parse_context *pc, Item **res) {
@@ -4429,20 +4586,10 @@ void Item_rank::cleanup() {
   m_previous.empty();
 }
 
-bool Item_cume_dist::fix_fields(THD *thd, Item **items) {
-  if (super::fix_fields(thd, items)) return true;
-
-  decimals = NOT_FIXED_DEC;
-  max_length = float_length(decimals);
-
-  return false;
-}
-
-bool Item_cume_dist::check_wf_semantics(
-    THD *thd MY_ATTRIBUTE((unused)), SELECT_LEX *select MY_ATTRIBUTE((unused)),
-    Window::Evaluation_requirements *r) {
-  r->needs_buffer =
-      true;  // we need to know partition cardinality, so two passes
+bool Item_cume_dist::check_wf_semantics(THD *, SELECT_LEX *,
+                                        Window::Evaluation_requirements *r) {
+  // we need to know partition cardinality, so two passes
+  r->needs_buffer = true;
   // Before we can compute for the current row we need the count of its peers
   r->needs_peerset = true;
   // SQL2015 6.10 <window function> SR 6.h: don't require ORDER BY.
@@ -4478,20 +4625,10 @@ my_decimal *Item_cume_dist::val_decimal(my_decimal *buffer) {
   return buffer;
 }
 
-bool Item_percent_rank::fix_fields(THD *thd, Item **items) {
-  if (super::fix_fields(thd, items)) return true;
-
-  decimals = NOT_FIXED_DEC;
-  max_length = float_length(decimals);
-
-  return false;
-}
-
-bool Item_percent_rank::check_wf_semantics(
-    THD *thd MY_ATTRIBUTE((unused)), SELECT_LEX *select MY_ATTRIBUTE((unused)),
-    Window::Evaluation_requirements *r) {
-  r->needs_buffer =
-      true;  // we need to know partition cardinality, so two passes
+bool Item_percent_rank::check_wf_semantics(THD *, SELECT_LEX *,
+                                           Window::Evaluation_requirements *r) {
+  // we need to know partition cardinality, so two passes
+  r->needs_buffer = true;
   /*
     The family of RANK functions doesn't need the peer set: even though they
     give the same value to peers, that value can be computed for the first row
@@ -4535,7 +4672,6 @@ double Item_percent_rank::val_real() {
 
   double percent_rank =
       (double)(m_rank_ctr - 1) / (m_window->last_rowno_in_cache() - 1);
-
   DBUG_RETURN(percent_rank);
 }
 
@@ -5254,6 +5390,11 @@ bool Item_lead_lag::compute() {
   return null_value || current_thd->is_error();
 }
 
+bool Item_sum_json::check_wf_semantics(THD *thd, SELECT_LEX *select,
+                                       Window::Evaluation_requirements *reqs) {
+  return Item_sum::check_wf_semantics(thd, select, reqs);
+}
+
 bool Item_sum_json::fix_fields(THD *thd, Item **ref) {
   DBUG_ASSERT(!fixed);
   result_field = nullptr;
@@ -5282,6 +5423,15 @@ bool Item_sum_json::fix_fields(THD *thd, Item **ref) {
 
 String *Item_sum_json::val_str(String *str) {
   DBUG_ASSERT(fixed == 1);
+  if (m_is_window_function) {
+    if (wf_common_init()) return str;
+    /*
+      For a group aggregate function, add() is called by Aggregator* classes;
+      for window functions, which does not use Aggregator, it has to be called
+      here.
+    */
+    if (add()) return str;
+  }
   if (null_value || m_wrapper.empty()) return nullptr;
   str->length(0);
   if (m_wrapper.to_string(str, true, func_name())) return error_str();
@@ -5290,6 +5440,15 @@ String *Item_sum_json::val_str(String *str) {
 }
 
 bool Item_sum_json::val_json(Json_wrapper *wr) {
+  if (m_is_window_function) {
+    if (wf_common_init()) return true;
+    /*
+      For a group aggregate function, add() is called by Aggregator* classes;
+      for window functions, which does not use Aggregator, it has to be called
+      here.
+    */
+    add();
+  }
   if (null_value || m_wrapper.empty()) return true;
 
   /*
@@ -5301,18 +5460,45 @@ bool Item_sum_json::val_json(Json_wrapper *wr) {
 }
 
 double Item_sum_json::val_real() {
+  if (m_is_window_function) {
+    if (wf_common_init()) return 0.0;
+    /*
+      For a group aggregate function, add() is called by Aggregator* classes;
+      for window functions, which does not use Aggregator, it has to be called
+      here.
+    */
+    add();
+  }
   if (null_value || m_wrapper.empty()) return 0.0;
 
   return m_wrapper.coerce_real(func_name());
 }
 
 longlong Item_sum_json::val_int() {
+  if (m_is_window_function) {
+    if (wf_common_init()) return 0;
+    /*
+      For a group aggregate function, add() is called by Aggregator* classes;
+      for window functions, which does not use Aggregator, it has to be called
+      here.
+    */
+    add();
+  }
   if (null_value || m_wrapper.empty()) return 0;
 
   return m_wrapper.coerce_int(func_name());
 }
 
 my_decimal *Item_sum_json::val_decimal(my_decimal *decimal_value) {
+  if (m_is_window_function) {
+    if (wf_common_init()) return nullptr;
+    /*
+      For a group aggregate function, add() is called by Aggregator* classes;
+      for window functions, which does not use Aggregator, it has to be called
+      here.
+    */
+    add();
+  }
   if (null_value || m_wrapper.empty()) {
     my_decimal_set_zero(decimal_value);
     return decimal_value;
@@ -5391,6 +5577,31 @@ void Item_sum_json_object::clear() {
   m_wrapper = Json_wrapper(&m_json_object);
   // But let Item_sum_json_object keep the ownership.
   m_wrapper.set_alias();
+  m_key_map.clear();
+}
+
+bool Item_sum_json_object::check_wf_semantics(
+    THD *thd, SELECT_LEX *select, Window::Evaluation_requirements *r) {
+  Item_sum_json::check_wf_semantics(thd, select, r);
+  /*
+    As Json_object always stores only the last value for a key,
+    optimization/inversion for windowing function is not possible
+    unless row of the stored key/value pair is known. In case of
+    an ordered result, if its known that a row is the last peer
+    in a window frame for a key, then that key/value pair can be
+    removed from the Json_object. So we let
+    process_buffered_windowing_record() know by setting
+    needs_last_peer_in_frame to true.
+  */
+  const PT_order_list *order = m_window->effective_order_by();
+  if (order != nullptr) {
+    ORDER *o = order->value.first;
+    if (o->item_ptr->real_item()->eq(args[0]->real_item(), 0)) {
+      r->needs_last_peer_in_frame = true;
+      m_optimize = true;
+    }
+  }
+  return false;
 }
 
 bool Item_sum_json_array::add() {
@@ -5406,6 +5617,14 @@ bool Item_sum_json_array::add() {
   if (thd->is_error()) return error_json();
 
   try {
+    if (m_is_window_function) {
+      if (m_window->do_inverse()) {
+        auto arr = down_cast<Json_array *>(m_wrapper.to_dom(thd));
+        arr->remove(0);  // Remove the first element from the array
+        arr->size() == 0 ? null_value = true : null_value = false;
+        return false;
+      }
+    }
     Json_wrapper value_wrapper;
     // Get the value.
     if (get_atom_null_as_null(args, 0, func_name(), &m_value,
@@ -5466,6 +5685,33 @@ bool Item_sum_json_object::add() {
 
     std::string key(safep, safe_length);
 
+    if (m_is_window_function) {
+      /*
+        When a row is leaving a frame, we have two options:
+        1. If rows are ordered according to the "key", then remove
+        the key/value pair from Json_object if this row is the
+        last row in peerset for that key.
+        2. If unordered, reduce the count in the key map for this key.
+        If the count is 0, remove the key/value pair from the Json_object.
+      */
+      if (m_window->do_inverse()) {
+        auto object = down_cast<Json_object *>(m_wrapper.to_dom(thd));
+        if (m_optimize)  // Option 1
+        {
+          if (m_window->is_last_row_in_peerset_within_frame())
+            object->remove(key);
+        } else  // Option 2
+        {
+          auto it = m_key_map.find(key);
+          if (it != m_key_map.end()) {
+            int count = it->second - 1;
+            count > 0 ? it->second = count : object->remove(key);
+          }
+        }
+        object->cardinality() == 0 ? null_value = true : null_value = false;
+        return false;
+      }
+    }
     // value
     Json_wrapper value_wrapper;
     if (get_atom_null_as_null(args, 1, func_name(), &m_value,
@@ -5479,6 +5725,19 @@ bool Item_sum_json_object::add() {
     Json_object *object = down_cast<Json_object *>(m_wrapper.to_dom(thd));
     if (object->add_alias(key, value_wrapper.to_dom(thd)))
       return error_json(); /* purecov: inspected */
+    /*
+      If rows in the window are not ordered based on "key", add this key
+      to the key map.
+    */
+    if (m_is_window_function && !m_optimize) {
+      int count = 1;
+      auto it = m_key_map.find(key);
+      if (it != m_key_map.end()) {
+        count = count + it->second;
+        it->second = count;
+      } else
+        m_key_map.emplace(key, 0).first->second = count;
+    }
 
     null_value = false;
     // object will take ownership of the value
@@ -5547,14 +5806,14 @@ bool Item_func_grouping::fix_fields(THD *thd, Item **ref) {
   }
 
   /*
-    GROUPING() is allowed to be present only in SELECT list and
-    HAVING clause.
+    GROUPING() is not allowed in a WHERE condition or a JOIN condition and
+    cannot be used without rollup.
   */
   SELECT_LEX *select = thd->lex->current_select();
 
   if (select->olap == UNSPECIFIED_OLAP_TYPE ||
-      (select->resolve_place != SELECT_LEX::RESOLVE_SELECT_LIST &&
-       select->resolve_place != SELECT_LEX::RESOLVE_HAVING)) {
+      select->resolve_place == SELECT_LEX::RESOLVE_JOIN_NEST ||
+      select->resolve_place == SELECT_LEX::RESOLVE_CONDITION) {
     my_error(ER_INVALID_GROUP_FUNC_USE, MYF(0));
     return true;
   }
@@ -5641,12 +5900,11 @@ bool Item_func_grouping::aggregate_check_group(uchar *arg) {
   return true;
 }
 
-/**
-  Resets the aggregation property which was set during creation of
-  references to GROUP BY fields in SELECT_LEX::change_func_or_wf_group_ref.
-  Calls Item_int_func::cleanup() to do the rest of the cleanup.
-*/
-void Item_func_grouping::cleanup() {
-  reset_aggregation();
-  Item_int_func::cleanup();
+void Item_func_grouping::update_used_tables() {
+  Item_int_func::update_used_tables();
+  /*
+    GROUPING function can never be a constant item. It's
+    result always depends on ROLLUP result.
+  */
+  used_tables_cache |= current_thd->lex->current_select()->all_tables_map();
 }

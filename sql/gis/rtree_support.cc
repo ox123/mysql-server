@@ -46,7 +46,7 @@
 #include "sql/gis/geometries_cs.h"
 #include "sql/gis/mbr_utils.h"
 #include "sql/gis/srid.h"
-#include "sql/gis/wkb_parser.h"
+#include "sql/gis/wkb.h"
 #include "sql/spatial.h"    // SRID_SIZE
 #include "sql/sql_class.h"  // THD
 #include "sql/srs_fetcher.h"
@@ -260,10 +260,7 @@ double mbr_join_area(const dd::Spatial_reference_system *srs, const double *a,
           gis::Geographic_point(srs->to_radians(b[1]), srs->to_radians(b[3])));
       bg::expand(a_box, b_box);
       area = bg::area(
-          a_box, bg::strategy::area::geographic<
-                     gis::Geographic_point, bg::strategy::andoyer,
-                     bg::strategy::default_order<bg::strategy::andoyer>::value,
-                     bg::srs::spheroid<double>>(bg::srs::spheroid<double>(
+          a_box, bg::strategy::area::geographic<>(bg::srs::spheroid<double>(
                      srs->semi_major_axis(), srs->semi_minor_axis())));
     }
   } catch (...) {
@@ -290,10 +287,7 @@ double compute_area(const dd::Spatial_reference_system *srs, const double *a,
           gis::Geographic_point(srs->to_radians(a[0]), srs->to_radians(a[2])),
           gis::Geographic_point(srs->to_radians(a[1]), srs->to_radians(a[3])));
       area = bg::area(
-          a_box, bg::strategy::area::geographic<
-                     gis::Geographic_point, bg::strategy::andoyer,
-                     bg::strategy::default_order<bg::strategy::andoyer>::value,
-                     bg::srs::spheroid<double>>(bg::srs::spheroid<double>(
+          a_box, bg::strategy::area::geographic<>(bg::srs::spheroid<double>(
                      srs->semi_major_axis(), srs->semi_minor_axis())));
     }
   } catch (...) {
@@ -318,9 +312,14 @@ int get_mbr_from_store(const dd::Spatial_reference_system *srs, uchar *store,
   if (srid != nullptr) *srid = uint4korr(store);
 
   try {
-    std::unique_ptr<gis::Geometry> g =
-        gis::parse_wkb(srs, pointer_cast<char *>(store) + sizeof(gis::srid_t),
-                       size - sizeof(gis::srid_t), true);
+    // Note: current_thd may be nullptr here if this function was called from an
+    // internal InnoDB thread. In that case, we won't get any stack size check
+    // in gis::parse_wkb, but the geometry has been parsed before with the stack
+    // size check enabled. We assume we have at least the same amount of stack
+    // when called from an internal thread as when called from a MySQL thread.
+    std::unique_ptr<gis::Geometry> g = gis::parse_wkb(
+        current_thd, srs, pointer_cast<char *>(store) + sizeof(gis::srid_t),
+        size - sizeof(gis::srid_t), true);
     if (g.get() == nullptr) {
       return -1; /* purecov: inspected */
     }
@@ -412,17 +411,11 @@ double rtree_area_increase(const dd::Spatial_reference_system *srs,
                                 gis::Geographic_point(srs->to_radians(b_xmax),
                                                       srs->to_radians(b_ymax)));
       a_area = bg::area(
-          a_box, bg::strategy::area::geographic<
-                     gis::Geographic_point, bg::strategy::andoyer,
-                     bg::strategy::default_order<bg::strategy::andoyer>::value,
-                     bg::srs::spheroid<double>>(bg::srs::spheroid<double>(
+          a_box, bg::strategy::area::geographic<>(bg::srs::spheroid<double>(
                      srs->semi_major_axis(), srs->semi_minor_axis())));
       bg::expand(a_box, b_box);
       *ab_area = bg::area(
-          a_box, bg::strategy::area::geographic<
-                     gis::Geographic_point, bg::strategy::andoyer,
-                     bg::strategy::default_order<bg::strategy::andoyer>::value,
-                     bg::srs::spheroid<double>>(bg::srs::spheroid<double>(
+          a_box, bg::strategy::area::geographic<>(bg::srs::spheroid<double>(
                      srs->semi_major_axis(), srs->semi_minor_axis())));
     }
     if (std::isinf(a_area)) a_area = std::numeric_limits<double>::max();
@@ -486,13 +479,10 @@ double rtree_area_overlapping(const dd::Spatial_reference_system *srs,
                        bg::strategy::intersection::geographic_segments<>(
                            bg::srs::spheroid<double>(srs->semi_major_axis(),
                                                      srs->semi_minor_axis())));
-      area = bg::area(
-          overlapping_box,
-          bg::strategy::area::geographic<
-              gis::Geographic_point, bg::strategy::andoyer,
-              bg::strategy::default_order<bg::strategy::andoyer>::value,
-              bg::srs::spheroid<double>>(bg::srs::spheroid<double>(
-              srs->semi_major_axis(), srs->semi_minor_axis())));
+      area =
+          bg::area(overlapping_box,
+                   bg::strategy::area::geographic<>(bg::srs::spheroid<double>(
+                       srs->semi_major_axis(), srs->semi_minor_axis())));
     }
   } catch (...) {
     DBUG_ASSERT(false); /* purecov: inspected */

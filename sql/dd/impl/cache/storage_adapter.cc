@@ -1,4 +1,4 @@
-/* Copyright (c) 2015, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -495,13 +495,13 @@ template bool Storage_adapter::drop(THD *, const Event *);
 template bool Storage_adapter::store(THD *, Event *);
 
 template bool Storage_adapter::get<Resource_group::Id_key, Resource_group>(
-    THD *, const Tablespace::Id_key &, enum_tx_isolation, bool,
+    THD *, const Resource_group::Id_key &, enum_tx_isolation, bool,
     const Resource_group **);
 template bool Storage_adapter::get<Resource_group::Name_key, Resource_group>(
-    THD *, const Tablespace::Name_key &, enum_tx_isolation, bool,
+    THD *, const Resource_group::Name_key &, enum_tx_isolation, bool,
     const Resource_group **);
 template bool Storage_adapter::get<Resource_group::Aux_key, Resource_group>(
-    THD *, const Tablespace::Aux_key &, enum_tx_isolation, bool,
+    THD *, const Resource_group::Aux_key &, enum_tx_isolation, bool,
     const Resource_group **);
 template bool Storage_adapter::drop(THD *, const Resource_group *);
 template bool Storage_adapter::store(THD *, Resource_group *);
@@ -594,6 +594,17 @@ template bool Storage_adapter::get<Index_stat::Name_key, Index_stat>(
     const Index_stat **);
 template bool Storage_adapter::store(THD *, Index_stat *);
 template bool Storage_adapter::drop(THD *, const Index_stat *);
+
+// Doxygen doesn't understand this explicit template instantiation.
+#ifndef IN_DOXYGEN
+template void Storage_adapter::core_drop<Schema>(THD *, const Schema *);
+template void Storage_adapter::core_drop<Table>(THD *, const Table *);
+template void Storage_adapter::core_drop<Tablespace>(THD *, const Tablespace *);
+
+template void Storage_adapter::core_store<Schema>(THD *, Schema *);
+template void Storage_adapter::core_store<Table>(THD *, Table *);
+template void Storage_adapter::core_store<Tablespace>(THD *, Tablespace *);
+#endif
 
 }  // namespace cache
 }  // namespace dd

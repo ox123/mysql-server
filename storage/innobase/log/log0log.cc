@@ -65,9 +65,8 @@ log_checksum_func_t log_checksum_algorithm_ptr;
 #include <debug_sync.h>
 #include <sys/types.h>
 #include <time.h>
-#include "ha_prototypes.h"
-
 #include "dict0boot.h"
+#include "ha_prototypes.h"
 #include "os0thread-create.h"
 #include "trx0sys.h"
 
@@ -513,6 +512,7 @@ bool log_sys_init(uint32_t n_files, uint64_t file_size, space_id_t space_id) {
   log_files_update_offsets(log, log.current_file_lsn);
 
   log.checkpointer_event = os_event_create("log_checkpointer_event");
+  log.closer_event = os_event_create("log_closer_event");
   log.write_notifier_event = os_event_create("log_write_notifier_event");
   log.flush_notifier_event = os_event_create("log_flush_notifier_event");
   log.writer_event = os_event_create("log_writer_event");
@@ -525,7 +525,13 @@ bool log_sys_init(uint32_t n_files, uint64_t file_size, space_id_t space_id) {
   mutex_create(LATCH_ID_LOG_WRITE_NOTIFIER, &log.write_notifier_mutex);
   mutex_create(LATCH_ID_LOG_FLUSH_NOTIFIER, &log.flush_notifier_mutex);
 
-  log.sn_lock.create(log_sn_lock_key, SYNC_LOG_SN, 64);
+  log.sn_lock.create(
+#ifdef UNIV_PFS_RWLOCK
+      log_sn_lock_key,
+#else
+      PSI_NOT_INSTRUMENTED,
+#endif
+      SYNC_LOG_SN, 64);
 
   /* Allocate buffers. */
   log_allocate_buffer(log);
@@ -563,6 +569,9 @@ void log_start(log_t &log, checkpoint_no_t checkpoint_no, lsn_t checkpoint_lsn,
   ut_a(checkpoint_lsn >= OS_FILE_LOG_BLOCK_SIZE);
   ut_a(checkpoint_lsn >= LOG_START_LSN);
   ut_a(start_lsn >= checkpoint_lsn);
+
+  log.write_to_file_requests_total.store(0);
+  log.write_to_file_requests_interval.store(0);
 
   log.recovered_lsn = start_lsn;
   log.last_checkpoint_lsn = checkpoint_lsn;
@@ -643,6 +652,7 @@ void log_sys_close() {
 
   os_event_destroy(log.write_notifier_event);
   os_event_destroy(log.flush_notifier_event);
+  os_event_destroy(log.closer_event);
   os_event_destroy(log.checkpointer_event);
   os_event_destroy(log.writer_event);
   os_event_destroy(log.flusher_event);
@@ -712,14 +722,14 @@ void log_start_background_threads(log_t &log) {
   ut_a(!srv_read_only_mode);
   ut_a(log.sn.load() > 0);
 
-  log.closer_thread_alive = true;
-  log.checkpointer_thread_alive = true;
-  log.writer_thread_alive = true;
-  log.flusher_thread_alive = true;
-  log.write_notifier_thread_alive = true;
-  log.flush_notifier_thread_alive = true;
+  log.closer_thread_alive.store(true);
+  log.checkpointer_thread_alive.store(true);
+  log.writer_thread_alive.store(true);
+  log.flusher_thread_alive.store(true);
+  log.write_notifier_thread_alive.store(true);
+  log.flush_notifier_thread_alive.store(true);
 
-  log.should_stop_threads = false;
+  log.should_stop_threads.store(false);
 
   std::atomic_thread_fence(std::memory_order_seq_cst);
 
@@ -758,7 +768,20 @@ void log_stop_background_threads(log_t &log) {
 
   ut_a(!srv_read_only_mode);
 
-  log.should_stop_threads = true;
+  log.should_stop_threads.store(true);
+
+  /* Log writer may wait on writer_event with 100ms timeout, so we better
+  wake him up, so he could notice that log.should_stop_threads has been
+  set to true, finish his work and exit. */
+  os_event_set(log.writer_event);
+
+  /* The same applies to log_checkpointer thread and log_closer thread.
+  However, it does not apply to others, because:
+    - log_flusher monitors log.writer_thread_alive,
+    - log_write_notifier monitors log.writer_thread_alive,
+    - log_flush_notifier monitors log.flusher_thread_alive. */
+  os_event_set(log.closer_event);
+  os_event_set(log.checkpointer_event);
 
   /* Wait until threads are closed. */
   while (log.closer_thread_alive.load() ||

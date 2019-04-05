@@ -1,4 +1,4 @@
-/* Copyright (c) 2014, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2014, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -47,15 +47,17 @@ Tablespaces::Tablespaces() {
                          "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT");
   // We allow name lengths up to 259 bytes, which may be needed for InnoDB
   // implicit tablespaces (schema + table + partition + subpartition).
-  m_target_def.add_field(FIELD_NAME, "FIELD_NAME",
-                         "name VARCHAR(259) NOT NULL COLLATE utf8_bin");
+  m_target_def.add_field(
+      FIELD_NAME, "FIELD_NAME",
+      "name VARCHAR(259) NOT NULL COLLATE " +
+          String_type(Object_table_definition_impl::name_collation()->name));
   m_target_def.add_field(FIELD_OPTIONS, "FIELD_OPTIONS", "options MEDIUMTEXT");
   m_target_def.add_field(FIELD_SE_PRIVATE_DATA, "FIELD_SE_PRIVATE_DATA",
                          "se_private_data MEDIUMTEXT");
   m_target_def.add_field(FIELD_COMMENT, "FIELD_COMMENT",
                          "comment VARCHAR(2048) NOT NULL");
   m_target_def.add_field(FIELD_ENGINE, "FIELD_ENGINE",
-                         "engine VARCHAR(64) NOT NULL");
+                         "engine VARCHAR(64) NOT NULL COLLATE utf8_general_ci");
 
   m_target_def.add_index(INDEX_PK_ID, "INDEX_PK_ID", "PRIMARY KEY(id)");
   m_target_def.add_index(INDEX_UK_NAME, "INDEX_UK_NAME", "UNIQUE KEY(name)");
@@ -71,7 +73,8 @@ Tablespace *Tablespaces::create_entity_object(const Raw_record &) const {
 
 bool Tablespaces::update_object_key(Global_name_key *key,
                                     const String_type &tablespace_name) {
-  key->update(FIELD_NAME, tablespace_name);
+  key->update(FIELD_NAME, tablespace_name,
+              Object_table_definition_impl::name_collation());
   return false;
 }
 

@@ -25,7 +25,6 @@ this program; if not, write to the Free Software Foundation, Inc.,
 *****************************************************************************/
 
 #include "my_dbug.h"
-#include "my_inttypes.h"
 
 /** @file dict/dict0stats.cc
  Code used for calculating and manipulating table statistics.
@@ -781,7 +780,7 @@ static void dict_stats_analyze_index_level(
   const rec_t *prev_rec;
   bool prev_rec_is_copied;
   byte *prev_rec_buf = NULL;
-  ulint prev_rec_buf_size = 0;
+  size_t prev_rec_buf_size = 0;
   ulint *rec_offsets;
   ulint *prev_rec_offsets;
   ulint i;
@@ -1246,8 +1245,8 @@ static void dict_stats_analyze_index_below_cur(const btr_cur_t *cur,
   /* descend to the leaf level on the B-tree */
   for (;;) {
     block = buf_page_get_gen(page_id, page_size, RW_S_LATCH,
-                             NULL /* no guessed block */, BUF_GET, __FILE__,
-                             __LINE__, &mtr);
+                             NULL /* no guessed block */, Page_fetch::NORMAL,
+                             __FILE__, __LINE__, &mtr);
 
     page = buf_block_get_frame(block);
 

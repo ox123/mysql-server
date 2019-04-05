@@ -791,8 +791,10 @@ ERROR 2201E: Invalid argument for logarithm
 DELETE IGNORE FROM t1 where a <=> ln(0);
 Warnings:
 Warning	3020	Invalid argument for logarithm
+Warning	3020	Invalid argument for logarithm
 SHOW WARNINGS;
 Level	Code	Message
+Warning	3020	Invalid argument for logarithm
 Warning	3020	Invalid argument for logarithm
 #
 # STRICT MODE and IGNORE test case for MULTI DELETE
@@ -851,6 +853,6 @@ CREATE TABLE t1(a INT);
 SET @org_safe_updates= @@sql_safe_updates;
 SET SESSION sql_safe_updates=ON;
 DELETE IGNORE FROM t1 WHERE a=1;
-ERROR HY000: You are using safe update mode and you tried to update a table without a WHERE that uses a KEY column
+ERROR HY000: You are using safe update mode and you tried to update a table without a WHERE that uses a KEY column. 
 DROP TABLE t1;
 SET sql_safe_updates= @org_safe_updates;

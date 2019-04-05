@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2004, 2017, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2004, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -130,9 +130,6 @@
 #define bzero(A,B) memset((A),0,(B))
 #endif
 #endif
-
-#include "m_ctype.h"
-#include <ctype.h>
 
 #ifdef HAVE_STDARG_H
 #include <stdarg.h>
@@ -270,15 +267,6 @@ extern "C" {
 #endif
 
 /**
- *  MY_ATTRIBUTE((noreturn)) was introduce in gcc 2.5
- */
-#ifdef __GNUC__
-#define ATTRIBUTE_NORETURN MY_ATTRIBUTE((noreturn))
-#else
-#define ATTRIBUTE_NORETURN
-#endif
-
-/**
  *  MY_ATTRIBUTE((noinline)) was introduce in gcc 3.1
  */
 #ifdef __GNUC__
@@ -313,9 +301,11 @@ extern "C" {
  */
 typedef int(*RequirePrinter)(const char *fmt, ...)
   ATTRIBUTE_FORMAT(printf, 1, 2);
-void require_failed(int exitcode, RequirePrinter p,
-                    const char* expr, const char* file, int line)
-                    ATTRIBUTE_NORETURN;
+[[noreturn]] void require_failed(int exitcode,
+                                 RequirePrinter p,
+                                 const char* expr,
+                                 const char* file,
+                                 int line);
 int ndbout_printer(const char * fmt, ...)
   ATTRIBUTE_FORMAT(printf, 1, 2);
 /*
@@ -396,7 +386,7 @@ SegmentedSectionPtrPOD::assign(struct SegmentedSectionPtr& src)
 #ifdef __cplusplus
 struct GenericSectionIterator
 {
-  virtual ~GenericSectionIterator() {};
+  virtual ~GenericSectionIterator() {}
   virtual void reset()=0;
   virtual const Uint32* getNextWords(Uint32& sz)=0;
 };

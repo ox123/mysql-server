@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2016, 2017, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2016, 2018, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
@@ -108,6 +108,13 @@ struct z_first_page_t {
     return (flst_get_len(flst) == 0);
   }
 
+  /** Get the length of the index list.
+  @return length of the index list. */
+  ulint get_index_list_length() const {
+    flst_base_node_t *flst = index_list();
+    return (flst_get_len(flst));
+  }
+
   void set_version_0() {
     mlog_write_ulint(frame() + OFFSET_VERSION, 0, MLOG_1BYTE, m_mtr);
   }
@@ -135,7 +142,7 @@ struct z_first_page_t {
 
   void import(trx_id_t trx_id);
 
-  ulint get_page_type() const {
+  page_type_t get_page_type() const {
     return (mach_read_from_2(frame() + FIL_PAGE_TYPE));
   }
 
@@ -211,11 +218,12 @@ struct z_first_page_t {
   }
 
   /** Get the page number. */
-  ulint get_page_no() const {
-    return (mach_read_from_4(frame() + FIL_PAGE_OFFSET));
+  page_no_t get_page_no() const {
+    return static_cast<page_no_t>(mach_read_from_4(frame() + FIL_PAGE_OFFSET));
   }
 
-  /** Get the page id. */
+  /** Get the page id of the first page of compressed LOB.
+  @return page id of the first page of compressed LOB. */
   page_id_t get_page_id() const {
     ut_ad(m_block != nullptr);
 
@@ -224,7 +232,7 @@ struct z_first_page_t {
 
   fil_addr_t get_self_addr() const {
     page_no_t page_no = get_page_no();
-    ulint offset = begin_data();
+    uint32_t offset = static_cast<uint32_t>(begin_data());
     return (fil_addr_t(page_no, offset));
   }
 
@@ -393,16 +401,20 @@ struct z_first_page_t {
 
   void init_index_entries();
 
-  /** Find a fragment page, that has space to store len bytes of data.
-  If necessary, allocate a new fragment page.
+  /** Allocate a fragment of the given size.  This involves finding a
+  fragment page, that has space to store len bytes of data. If necessary,
+  allocate a new fragment page.
   @param[in]	bulk		true if it is bulk operation
                                   (OPCODE_INSERT_BULK), false otherwise.
   @param[in]	len		length of data to be stored in
                                   fragment page.
   @param[out]	frag_page	the fragment page with the needed
                                   free space.
-  @return	a reference to the fragment page. */
-  z_frag_entry_t find_frag_page(bool bulk, ulint len, z_frag_page_t &frag_page);
+  @param[out]   entry           fragment page entry representing frag_page.
+  @return fragment identifier within the fragment page.
+  @return FRAG_ID_NULL if fragment could not be allocated. */
+  frag_id_t alloc_fragment(bool bulk, ulint len, z_frag_page_t &frag_page,
+                           z_frag_entry_t &entry);
 
   /** Allocate one index entry.  If there is no free index entry,
   allocate an index page (a page full of z_index_entry_t objects)
@@ -465,6 +477,10 @@ struct z_first_page_t {
   bool validate();
 #endif /* UNIV_DEBUG */
 
+  /** Get the buffer block of the first page of LOB.
+  @return the buffer block of the first page of LOB. */
+  buf_block_t *get_block() const { return (m_block); }
+
  private:
   /** The buffer block of the first page. */
   buf_block_t *m_block;
@@ -486,6 +502,6 @@ inline std::ostream &operator<<(std::ostream &out, const z_first_page_t &obj) {
   return (obj.print(out));
 }
 
-}; /* namespace lob */
+} /* namespace lob */
 
 #endif /* zlob0first_h */

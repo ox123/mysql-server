@@ -23,38 +23,44 @@
  */
 
 #include "plugin/x/src/xpl_server.h"
-#include "plugin/x/generated/mysqlx_version.h"
 
+#include <openssl/err.h>
 #include "my_config.h"
-
 #include "my_inttypes.h"
 #include "my_thread_local.h"
 #include "mysql/plugin.h"
 #include "mysql/service_ssl_wrapper.h"
+
+#include "plugin/x/generated/mysqlx_version.h"
 #include "plugin/x/ngs/include/ngs/interface/authentication_interface.h"
 #include "plugin/x/ngs/include/ngs/interface/listener_interface.h"
 #include "plugin/x/ngs/include/ngs/protocol/protocol_config.h"
 #include "plugin/x/ngs/include/ngs/scheduler.h"
-#include "plugin/x/ngs/include/ngs/server_acceptors.h"
+#include "plugin/x/ngs/include/ngs/socket_acceptors_task.h"
+#include "plugin/x/ngs/include/ngs/socket_events.h"
+#include "plugin/x/ngs/include/ngs/timeout_callback.h"
 #include "plugin/x/ngs/include/ngs_common/config.h"
 #include "plugin/x/ngs/include/ngs_common/ssl_context.h"
 #include "plugin/x/src/auth_challenge_response.h"
 #include "plugin/x/src/auth_plain.h"
+#include "plugin/x/src/helper/multithread/rw_lock.h"
 #include "plugin/x/src/io/xpl_listener_factory.h"
 #include "plugin/x/src/mysql_show_variable_wrapper.h"
 #include "plugin/x/src/mysql_variables.h"
-#include "plugin/x/src/service_registrator.h"
+#include "plugin/x/src/services/mysqlx_group_member_status_listener.h"
+#include "plugin/x/src/services/mysqlx_group_membership_listener.h"
 #include "plugin/x/src/services/mysqlx_maintenance.h"
+#include "plugin/x/src/services/service_registrator.h"
 #include "plugin/x/src/sha256_password_cache.h"
 #include "plugin/x/src/sql_data_result.h"
 #include "plugin/x/src/udf/mysqlx_error.h"
-#include "plugin/x/src/udf/registrator.h"
+#include "plugin/x/src/udf/mysqlx_generate_document_id.h"
+#include "plugin/x/src/udf/mysqlx_get_prepared_statement_id.h"
 #include "plugin/x/src/xpl_client.h"
 #include "plugin/x/src/xpl_error.h"
+#include "plugin/x/src/xpl_log.h"
 #include "plugin/x/src/xpl_session.h"
 #include "plugin/x/src/xpl_system_variables.h"
-
-#include <openssl/err.h>
 
 std::atomic<bool> xpl::g_cache_plugin_started{false};
 
@@ -80,8 +86,9 @@ class Session_scheduler : public ngs::Scheduler_dynamic {
 
 #if defined(__APPLE__) || defined(HAVE_PTHREAD_SETNAME_NP)
     char thread_name[16];
-    static int worker = 0;
-    snprintf(thread_name, sizeof(thread_name), "xpl_worker%i", worker++);
+    static std::atomic<int> worker{0};
+    int worker_num = worker++;
+    snprintf(thread_name, sizeof(thread_name), "xpl_worker%i", worker_num);
 #ifdef __APPLE__
     pthread_setname_np(thread_name);
 #else
@@ -123,30 +130,31 @@ class Worker_scheduler_monitor
   }
 };
 
-namespace {
-
-const char *STATUS_VALUE_FOR_NOT_CONFIGURED_INTERFACE = "UNDEFINED";
-
-}  // namespace
-
 xpl::Server *xpl::Server::instance;
-ngs::RWLock xpl::Server::instance_rwl;
-bool xpl::Server::exiting = false;
+xpl::RWLock xpl::Server::instance_rwl;
+std::atomic<bool> xpl::Server::exiting{false};
 
-xpl::Server::Server(ngs::shared_ptr<ngs::Server_acceptors> acceptors,
-                    ngs::shared_ptr<ngs::Scheduler_dynamic> wscheduler,
-                    ngs::shared_ptr<ngs::Protocol_config> config)
+xpl::Server::Server(
+    ngs::shared_ptr<ngs::Socket_acceptors_task> acceptors,
+    ngs::shared_ptr<ngs::Scheduler_dynamic> wscheduler,
+    ngs::shared_ptr<ngs::Protocol_config> config,
+    ngs::shared_ptr<ngs::Timeout_callback_interface> timeout_callback)
     : m_client_id(0),
       m_num_of_connections(0),
       m_config(config),
-      m_acceptors(acceptors),
       m_wscheduler(wscheduler),
       m_nscheduler(ngs::allocate_shared<ngs::Scheduler_dynamic>(
           "network", KEY_thread_x_acceptor)),
-      m_server(acceptors, m_nscheduler, wscheduler, this, config) {}
+      m_notice_input_queue(new Notice_input_queue()),
+      m_server(m_nscheduler, wscheduler, this, config, &m_properties,
+               {acceptors, m_notice_input_queue->create_broker_task()},
+               timeout_callback) {}
 
 void xpl::Server::start_verify_server_state_timer() {
-  m_server.add_timer(1000, ngs::bind(&Server::on_verify_server_state, this));
+  m_server.add_callback(1000, [this]() -> bool {
+    on_verify_server_state();
+    return true;
+  });
 }
 
 void xpl::Server::initialize_xmessages() {
@@ -179,7 +187,7 @@ it is guaranteed that it'll run in the acceptor thread.
 */
 bool xpl::Server::on_verify_server_state() {
   if (is_exiting()) {
-    if (!exiting) log_info(ER_XPLUGIN_SHUTDOWN_TRIGGERED);
+    if (!exiting) log_debug("Shutdown triggered by mysqld abort flag");
 
     // closing clients has been moved to other thread
     // this thread have to gracefully shutdown io operations
@@ -215,7 +223,7 @@ ngs::shared_ptr<ngs::Session_interface> xpl::Server::create_session(
     ngs::Client_interface &client, ngs::Protocol_encoder_interface &proto,
     const Session::Session_id session_id) {
   return ngs::shared_ptr<ngs::Session>(
-      ngs::allocate_shared<xpl::Session>(ngs::ref(client), &proto, session_id));
+      ngs::allocate_shared<xpl::Session>(&client, &proto, session_id));
 }
 
 void xpl::Server::on_client_closed(const ngs::Client_interface &) {
@@ -305,18 +313,20 @@ int xpl::Server::main(MYSQL_PLUGIN p) {
         Plugin_system_variables::socket, "MYSQLX_UNIX_PORT", MYSQLX_UNIX_ADDR);
 
     Listener_factory listener_factory;
-    ngs::shared_ptr<ngs::Server_acceptors> acceptors(
-        ngs::allocate_shared<ngs::Server_acceptors>(
-            ngs::ref(listener_factory), Plugin_system_variables::bind_address,
-            Plugin_system_variables::port,
-            Plugin_system_variables::port_open_timeout,
-            Plugin_system_variables::socket, listen_backlog));
+    auto config(ngs::allocate_shared<ngs::Protocol_config>());
+    auto events(ngs::allocate_shared<ngs::Socket_events>());
+    auto timeout_callback(ngs::allocate_shared<ngs::Timeout_callback>(events));
+    auto acceptors(ngs::allocate_shared<ngs::Socket_acceptors_task>(
+        ngs::ref(listener_factory), Plugin_system_variables::bind_address,
+        Plugin_system_variables::port,
+        Plugin_system_variables::port_open_timeout,
+        Plugin_system_variables::socket, listen_backlog, events));
 
     instance_rwl.wlock();
 
     exiting = false;
-    instance = ngs::allocate_object<Server>(
-        acceptors, thd_scheduler, ngs::allocate_shared<ngs::Protocol_config>());
+    instance = ngs::allocate_object<Server>(acceptors, thd_scheduler, config,
+                                            timeout_callback);
 
     const bool use_only_through_secure_connection = true,
                use_only_in_non_secure_connection = false;
@@ -363,7 +373,7 @@ int xpl::Server::main(MYSQL_PLUGIN p) {
   } catch (const std::exception &e) {
     if (instance) instance->server().start_failed();
     instance_rwl.unlock();
-    LogPluginErr(ERROR_LEVEL, ER_XPLUGIN_STARTUP_FAILED, e.what());
+    log_error(ER_XPLUGIN_STARTUP_FAILED, e.what());
     return 1;
   }
 
@@ -375,8 +385,7 @@ int xpl::Server::exit(MYSQL_PLUGIN) {
   // acceptor thread exit
   exiting = true;
 
-  if (nullptr != xpl::plugin_handle)
-    LogPluginErr(INFORMATION_LEVEL, ER_XPLUGIN_SERVER_EXITING);
+  log_debug("Exiting");
   if (instance) {
     instance->unregister_udfs();
     instance->unregister_services();
@@ -399,13 +408,12 @@ int xpl::Server::exit(MYSQL_PLUGIN) {
   }
 
   {
-    ngs::RWLock_writelock slock(instance_rwl);
+    RWLock_writelock slock(instance_rwl);
     ngs::free_object(instance);
     instance = NULL;
   }
 
-  if (nullptr != xpl::plugin_handle)
-    LogPluginErr(INFORMATION_LEVEL, ER_XPLUGIN_SERVER_EXITED);
+  log_debug("Exit done");
 
   xpl::plugin_handle = nullptr;
 
@@ -464,7 +472,10 @@ void xpl::Server::verify_mysqlx_user_grants(Sql_data_context &context) {
   } while (sql_result.next_row());
 
   if (has_select_on_mysql_user && has_super) {
-    log_info(ER_XPLUGIN_USER_ACCOUNT_WITH_ALL_PERMISSIONS, MYSQLXSYS_ACCOUNT);
+    log_debug(
+        "Using %s account for authentication which has all required \
+permissions",
+        MYSQLXSYS_ACCOUNT);
     return;
   }
 
@@ -472,8 +483,8 @@ void xpl::Server::verify_mysqlx_user_grants(Sql_data_context &context) {
   // lets accept it, and apply the grants
   if (has_no_privileges && (num_of_grants == 1 ||
                             (num_of_grants == 2 && has_select_on_mysql_user))) {
-    log_info(ER_XPLUGIN_EXISTING_USER_ACCOUNT_WITH_INCOMPLETE_GRANTS,
-             MYSQLXSYS_ACCOUNT);
+    log_warning(ER_XPLUGIN_EXISTING_USER_ACCOUNT_WITH_INCOMPLETE_GRANTS,
+                MYSQLXSYS_ACCOUNT);
     throw ngs::Error(ER_X_MYSQLX_ACCOUNT_MISSING_PERMISSIONS,
                      "%s account without any grants", MYSQLXSYS_ACCOUNT);
   }
@@ -496,9 +507,9 @@ void xpl::Server::net_thread() {
 #endif
 
   if (on_net_startup()) {
-    log_info(ER_XPLUGIN_SERVER_STARTS_HANDLING_CONNECTIONS);
+    log_debug("Server starts handling incoming connections");
     m_server.start();
-    log_info(ER_XPLUGIN_SERVER_STOPPED_HANDLING_CONNECTIONS);
+    log_debug("Stopped handling incoming connections");
   }
 
   ssl_wrapper_thread_cleanup();
@@ -510,16 +521,16 @@ static xpl::Ssl_config choose_ssl_config(const bool mysqld_have_ssl,
                                          const xpl::Ssl_config &mysqld_ssl,
                                          const xpl::Ssl_config &mysqlx_ssl) {
   if (!mysqlx_ssl.is_configured() && mysqld_have_ssl) {
-    LogPluginErr(INFORMATION_LEVEL, ER_XPLUGIN_USING_SSL_CONF_FROM_SERVER);
+    log_info(ER_XPLUGIN_USING_SSL_CONF_FROM_SERVER);
     return mysqld_ssl;
   }
 
   if (mysqlx_ssl.is_configured()) {
-    LogPluginErr(INFORMATION_LEVEL, ER_XPLUGIN_USING_SSL_CONF_FROM_MYSQLX);
+    log_info(ER_XPLUGIN_USING_SSL_CONF_FROM_MYSQLX);
     return mysqlx_ssl;
   }
 
-  LogPluginErr(INFORMATION_LEVEL, ER_XPLUGIN_FAILED_TO_USE_SSL_CONF);
+  log_info(ER_XPLUGIN_FAILED_TO_USE_SSL_CONF);
 
   return xpl::Ssl_config();
 }
@@ -592,15 +603,13 @@ bool xpl::Server::on_net_startup() {
     if (ssl_setup_result) {
       const char *is_wolfssl_or_openssl =
           IS_WOLFSSL_OR_OPENSSL("WolfSSL", "OpenSSL");
-      LogPluginErr(INFORMATION_LEVEL, ER_XPLUGIN_USING_SSL_FOR_TLS_CONNECTION,
-                   is_wolfssl_or_openssl);
+      log_info(ER_XPLUGIN_USING_SSL_FOR_TLS_CONNECTION, is_wolfssl_or_openssl);
     } else {
-      LogPluginErr(INFORMATION_LEVEL,
-                   ER_XPLUGIN_REFERENCE_TO_SECURE_CONN_WITH_XPLUGIN);
+      log_info(ER_XPLUGIN_REFERENCE_TO_SECURE_CONN_WITH_XPLUGIN);
     }
 
     if (instance->server().prepare(ngs::move(ssl_ctx), skip_networking,
-                                   skip_name_resolve, true))
+                                   skip_name_resolve))
       return true;
   } catch (const ngs::Error_code &e) {
     // The plugin was unloaded while waiting for service
@@ -618,7 +627,7 @@ bool xpl::Server::on_net_startup() {
 }
 
 ngs::Error_code xpl::Server::kill_client(uint64_t client_id,
-                                         Session &requester) {
+                                         ngs::Session_interface &requester) {
   ngs::unique_ptr<Mutex_lock> lock(
       new Mutex_lock(server().get_client_exit_mutex(), __FILE__, __LINE__));
   ngs::Client_ptr found_client = server().get_client_list().find(client_id);
@@ -678,96 +687,53 @@ ngs::Error_code xpl::Server::kill_client(uint64_t client_id,
                     static_cast<unsigned long long>(client_id));
 }
 
+std::string xpl::Server::get_property(const ngs::Server_property_ids id) const {
+  if (m_properties.empty()) return "";
+
+  if (0 == m_properties.count(id)) return ngs::PROPERTY_NOT_CONFIGURED;
+
+  return m_properties.at(id);
+}
+
 std::string xpl::Server::get_socket_file() {
-  if (!m_server.is_terminating()) {
-    if (!m_acceptors->was_prepared()) return "";
-
-    if (m_acceptors->was_unix_socket_configured()) {
-      return Plugin_system_variables::socket;
-    }
-  }
-
-  return ::STATUS_VALUE_FOR_NOT_CONFIGURED_INTERFACE;
+  return get_property(ngs::Server_property_ids::k_unix_socket);
 }
 
 std::string xpl::Server::get_tcp_port() {
-  if (!m_server.is_terminating()) {
-    if (!m_acceptors->was_prepared()) return "";
-
-    std::string bind_address;
-
-    if (m_acceptors->was_tcp_server_configured(bind_address)) {
-      char buffer[100];
-
-      sprintf(buffer, "%u", Plugin_system_variables::port);
-
-      return buffer;
-    }
-  }
-
-  return ::STATUS_VALUE_FOR_NOT_CONFIGURED_INTERFACE;
+  return get_property(ngs::Server_property_ids::k_tcp_port);
 }
 
 std::string xpl::Server::get_tcp_bind_address() {
-  if (!m_server.is_terminating()) {
-    if (!m_acceptors->was_prepared()) return "";
-
-    std::string bind_address;
-
-    if (m_acceptors->was_tcp_server_configured(bind_address)) {
-      return bind_address;
-    }
-  }
-
-  return ::STATUS_VALUE_FOR_NOT_CONFIGURED_INTERFACE;
-}
-
-struct Client_check_handler_thd {
-  Client_check_handler_thd(THD *thd) : m_thd(thd) {}
-
-  bool operator()(ngs::Client_ptr &client) {
-    xpl::Client *xpl_client = (xpl::Client *)client.get();
-
-    return xpl_client->is_handler_thd(m_thd);
-  }
-
-  THD *m_thd;
-};
-
-xpl::Client_ptr xpl::Server::get_client_by_thd(Server_ptr &server, THD *thd) {
-  std::vector<ngs::Client_ptr> clients;
-  Client_check_handler_thd client_check_thd(thd);
-
-  (*server)->server().get_client_list().get_all_clients(clients);
-
-  std::vector<ngs::Client_ptr>::iterator i =
-      std::find_if(clients.begin(), clients.end(), client_check_thd);
-  if (clients.end() != i) return ngs::dynamic_pointer_cast<Client>(*i);
-
-  return Client_ptr();
+  return get_property(ngs::Server_property_ids::k_tcp_bind_address);
 }
 
 void xpl::Server::register_udfs() {
-  udf::Registrator r;
-  r.registration(udf::get_mysqlx_error_record(), &m_udf_names);
+  m_udf_registry.insert({
+      UDF(mysqlx_error),
+      UDF(mysqlx_generate_document_id),
+      UDF(mysqlx_get_prepared_statement_id),
+  });
 }
 
-void xpl::Server::unregister_udfs() {
-  udf::Registrator r;
-  r.unregistration(&m_udf_names);
-}
+void xpl::Server::unregister_udfs() { m_udf_registry.drop(); }
 
 void xpl::Server::register_services() const {
   Service_registrator r;
+
   r.register_service(SERVICE(mysql_server, mysqlx_maintenance));
+  r.register_service(SERVICE(mysqlx, group_membership_listener));
+  r.register_service(SERVICE(mysqlx, group_member_status_listener));
 }
 
 void xpl::Server::unregister_services() const {
   try {
     Service_registrator r;
+
     r.unregister_service(SERVICE_ID(mysql_server, mysqlx_maintenance));
+    r.unregister_service(SERVICE_ID(mysqlx, group_membership_listener));
+    r.unregister_service(SERVICE_ID(mysqlx, group_member_status_listener));
   } catch (const std::exception &e) {
-    LogPluginErr(ERROR_LEVEL, ER_XPLUGIN_FAILED_TO_STOP_SERVICES, e.what());
+    log_error(ER_XPLUGIN_FAILED_TO_STOP_SERVICES, e.what());
   }
 }
 
@@ -786,4 +752,43 @@ bool xpl::Server::reset() {
   if (r) instance->reset_globals();
   instance_rwl.unlock();
   return r;
+}
+
+void xpl::Server::stop() {
+  exiting = true;
+  if (instance) instance->server().stop();
+}
+
+namespace {
+inline ngs::Session_interface *get_client_session(const THD *thd) {
+  auto server(xpl::Server::get_instance());
+  if (!server) return nullptr;
+
+  auto client((*server)->server().get_client(thd));
+  if (!client) return nullptr;
+
+  auto session(client->session());
+  return session ? session : nullptr;
+}
+
+}  // namespace
+
+std::string xpl::Server::get_document_id(const THD *thd, const uint16_t offset,
+                                         const uint16_t increment) {
+  using Variables = ngs::Document_id_generator_interface::Variables;
+  Variables vars{static_cast<uint16_t>(
+                     xpl::Plugin_system_variables::m_document_id_unique_prefix),
+                 offset, increment};
+  auto session = get_client_session(thd);
+  if (session) return session->get_document_id_aggregator().generate_id(vars);
+  auto server = xpl::Server::get_instance();
+  return (*server)->server().get_document_id_generator().generate(vars);
+}
+
+bool xpl::Server::get_prepared_statement_id(const THD *thd,
+                                            const uint32_t client_stmt_id,
+                                            uint32_t *stmt_id) {
+  auto session = get_client_session(thd);
+  return session ? session->get_prepared_statement_id(client_stmt_id, stmt_id)
+                 : false;
 }

@@ -1,5 +1,5 @@
 /* Copyright (C) 2007 Google Inc.
-   Copyright (c) 2008, 2017, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2008, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -96,6 +96,8 @@ static int repl_semi_report_commit(Trans_param *param) {
 static int repl_semi_report_rollback(Trans_param *param) {
   return repl_semi_report_commit(param);
 }
+
+static int repl_semi_report_begin(Trans_param *, int &) { return 0; }
 
 static int repl_semi_binlog_dump_start(Binlog_transmit_param *param,
                                        const char *log_file, my_off_t log_pos) {
@@ -346,6 +348,7 @@ Trans_observer trans_observer = {
     repl_semi_report_before_rollback,  // before_rollback
     repl_semi_report_commit,           // after_commit
     repl_semi_report_rollback,         // after_rollback
+    repl_semi_report_begin,            // begin
 };
 
 Binlog_storage_observer storage_observer = {
@@ -537,7 +540,9 @@ static int semi_sync_master_plugin_init(void *p) {
 }
 
 static int semi_sync_master_plugin_deinit(void *p) {
-  ack_receiver->stop();
+  // the plugin was not initialized, there is nothing to do here
+  if (ack_receiver == nullptr || repl_semisync == nullptr) return 0;
+
   THR_RPL_SEMI_SYNC_DUMP = false;
 
   if (unregister_trans_observer(&trans_observer, p)) {

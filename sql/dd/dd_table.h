@@ -29,11 +29,11 @@
 
 #include "binary_log_types.h"  // enum_field_types
 #include "my_inttypes.h"
+#include "sql/dd/result_type.h"  // dd::ResultType
 #include "sql/dd/string_type.h"
 #include "sql/dd/types/column.h"  // dd::enum_column_types
 #include "sql/handler.h"          // legacy_db_type
 #include "sql/sql_alter.h"        // Alter_info::enum_enable_or_disable
-#include "sql/system_variables.h"
 
 class Create_field;
 class FOREIGN_KEY;
@@ -363,7 +363,7 @@ dd::String_type get_sql_type_by_create_field(TABLE *table, Create_field *field);
   @retval true   If numeric scale is not calculated;
 */
 
-bool get_field_numeric_scale(Create_field *field, uint *scale);
+bool get_field_numeric_scale(const Create_field *field, uint *scale);
 
 /**
   Helper method to get numeric precision for types using Create_field type
@@ -376,7 +376,8 @@ bool get_field_numeric_scale(Create_field *field, uint *scale);
   @retval true   If numeric precision is not calculated;
 */
 
-bool get_field_numeric_precision(Create_field *field, uint *numeric_precision);
+bool get_field_numeric_precision(const Create_field *field,
+                                 uint *numeric_precision);
 
 /**
   Helper method to get datetime precision for types using Create_field type
@@ -389,7 +390,19 @@ bool get_field_numeric_precision(Create_field *field, uint *numeric_precision);
   @retval true   If datetime precision is not calculated;
 */
 
-bool get_field_datetime_precision(Create_field *field,
+bool get_field_datetime_precision(const Create_field *field,
                                   uint *datetime_precision);
+
+using Encrypt_result = ResultType<bool>;
+Encrypt_result is_tablespace_encrypted(THD *thd, const dd::Table &t);
+
+/**
+  Predicate which indicates if the table has real (non-hidden) primary key.
+
+  @param t table to check
+  @return true if a non-hidden index has type dd::Index::IT_PRIMARY
+ */
+bool has_primary_key(const Table &t);
+
 }  // namespace dd
 #endif  // DD_TABLE_INCLUDED

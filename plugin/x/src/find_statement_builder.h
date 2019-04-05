@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0,
@@ -22,8 +22,8 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
-#ifndef FIND_STATEMENT_BUILDER_H_
-#define FIND_STATEMENT_BUILDER_H_
+#ifndef PLUGIN_X_SRC_FIND_STATEMENT_BUILDER_H_
+#define PLUGIN_X_SRC_FIND_STATEMENT_BUILDER_H_
 
 #include "plugin/x/src/statement_builder.h"
 
@@ -31,7 +31,7 @@ namespace xpl {
 
 class Find_statement_builder : public Crud_statement_builder {
  public:
-  typedef ::Mysqlx::Crud::Find Find;
+  using Find = ::Mysqlx::Crud::Find;
 
   explicit Find_statement_builder(const Expression_generator &gen)
       : Crud_statement_builder(gen) {}
@@ -39,13 +39,12 @@ class Find_statement_builder : public Crud_statement_builder {
   void build(const Find &msg) const;
 
  protected:
-  typedef ::Mysqlx::Crud::Projection Projection;
-  typedef ::google::protobuf::RepeatedPtrField<Projection> Projection_list;
-  typedef ::google::protobuf::RepeatedPtrField<::Mysqlx::Expr::Expr>
-      Grouping_list;
-  typedef ::Mysqlx::Expr::Expr Grouping_criteria;
-  typedef void (Find_statement_builder::*Object_item_adder)(
-      const Projection &item) const;
+  using Projection = ::Mysqlx::Crud::Projection;
+  using Projection_list = Repeated_field_list<Projection>;
+  using Grouping_list = Repeated_field_list<::Mysqlx::Expr::Expr>;
+  using Grouping_criteria = ::Mysqlx::Expr::Expr;
+  using Object_item_adder =
+      void (Find_statement_builder::*)(const Projection &item) const;
 
   void add_statement_common(const Find &msg) const;
   void add_document_statement_with_grouping(const Find &msg) const;
@@ -66,4 +65,4 @@ class Find_statement_builder : public Crud_statement_builder {
 
 }  // namespace xpl
 
-#endif  // FIND_STATEMENT_BUILDER_H_
+#endif  // PLUGIN_X_SRC_FIND_STATEMENT_BUILDER_H_

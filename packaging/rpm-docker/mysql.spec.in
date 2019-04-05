@@ -23,8 +23,6 @@
 %global mysql_vendor Oracle and/or its affiliates
 %global mysqldatadir /var/lib/mysql
 
-%global milestone    dmr
-
 # Pass path to mecab lib
 %{?with_mecab: %global mecab_option -DWITH_MECAB=%{with_mecab}}
 %{?with_mecab: %global mecab 1}
@@ -34,11 +32,13 @@
 
 %{!?product_suffix:              %global product_suffix community}
 %{!?feature_set:                 %global feature_set community}
-%{!?compilation_comment_release: %global compilation_comment_release MySQL Community Server - GPL}
-%{!?compilation_comment_debug:   %global compilation_comment_debug MySQL Community Server - GPL - Debug}
+%{!?compilation_comment_release: %global compilation_comment_release MySQL Community - GPL}
+%{!?compilation_comment_debug:   %global compilation_comment_debug MySQL Community - GPL - Debug}
+%{!?compilation_comment_server_release: %global compilation_comment_release MySQL Community Server - GPL}
+%{!?compilation_comment_server_debug:   %global compilation_comment_debug MySQL Community Server - GPL - Debug}
 %{!?src_base:                    %global src_base mysql%{?cluster:-cluster-gpl}}
 
-%global src_dir               %{src_base}-%{version}
+%global src_dir               %{src_base}-@VERSION_SRC@
 
 %global license_files_server  %{src_dir}/LICENSE %{src_dir}/README
 
@@ -52,7 +52,7 @@ Name:           mysql%{?cluster:-cluster}-%{product_suffix}-minimal
 Summary:        A very fast and reliable SQL database server
 Group:          Applications/Databases
 Version:        @MYSQL_NO_DASH_VERSION@
-Release:        1%{?commercial:.1}%{?dist}
+Release:        %{?cluster:0.}1@MYSQL_VERSION_EXTRA_DOT@%{?commercial:.1}%{?dist}
 License:        Copyright (c) 2000, @MYSQL_COPYRIGHT_YEAR@, %{mysql_vendor}. All rights reserved. Under %{?license_type} license as shown in the Description field.
 URL:            http://www.mysql.com/
 Packager:       MySQL Release Engineering <mysql-build@oss.oracle.com>
@@ -60,13 +60,8 @@ Vendor:         %{mysql_vendor}
 Source0:        https://cdn.mysql.com/Downloads/MySQL-@MYSQL_BASE_VERSION@/%{src_dir}.tar.gz
 Source1:        https://downloads.sourceforge.net/boost/@BOOST_PACKAGE_NAME@.tar.bz2
 BuildRequires:  cmake >= 2.8.2
-%ifarch aarch64
-BuildRequires:  gcc7
-BuildRequires:  gcc7-c++
-%else
 BuildRequires:  devtoolset-7-gcc
 BuildRequires:  devtoolset-7-gcc-c++
-%endif
 BuildRequires:  perl
 BuildRequires:  perl(Time::HiRes)
 BuildRequires:  perl(Env)
@@ -150,10 +145,7 @@ mkdir release
   cd release
   cmake ../%{src_dir} \
            -DBUILD_CONFIG=mysql_release \
-%ifarch aarch64
-           -DCMAKE_C_COMPILER=/usr/bin/gcc7  \
-           -DCMAKE_CXX_COMPILER=/usr/bin/g++7 \
-%endif
+           -DREPRODUCIBLE_BUILD=OFF \
            -DINSTALL_LAYOUT=RPM \
            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
 	   -DWITH_BOOST=.. \
@@ -162,17 +154,23 @@ mkdir release
            -DWITH_INNODB_MEMCACHED=1 \
            -DINSTALL_LIBDIR="%{_lib}/mysql" \
            -DINSTALL_PLUGINDIR="%{_lib}/mysql/plugin" \
+           -DROUTER_INSTALL_LIBDIR="%{_lib}" \
+           -DROUTER_INSTALL_PLUGINDIR="%{_lib}/mysqlrouter" \
            -DINSTALL_MYSQLTESTDIR="" \
            -DMYSQL_UNIX_ADDR="%{mysqldatadir}/mysql.sock" \
            -DMYSQLX_UNIX_ADDR="/var/run/mysqld/mysqlx.sock" \
            -DFEATURE_SET="%{feature_set}" \
-           -DWITH_NUMA=ON \
+           -DWITH_NUMA=OFF \
            %{?mecab_option} \
            -DWITH_SSL=system \
+%if 0%{?cluster}
+           -DWITH_NDBCLUSTER=1 \
+%endif
 %if 0%{?with_meb:1}
            -DWITH_MEB=1 \
 %endif
            -DCOMPILATION_COMMENT="%{compilation_comment_release}" \
+           -DCOMPILATION_COMMENT_SERVER="%{compilation_comment_server_release}" \
            -DMYSQL_SERVER_SUFFIX="%{?server_suffix}"
   echo BEGIN_NORMAL_CONFIG ; egrep '^#define' include/config.h ; echo END_NORMAL_CONFIG
   make %{?_smp_mflags} VERBOSE=1
@@ -206,8 +204,8 @@ for f in innochecksum ibd2sdi myisamchk myisam_ftdump myisamlog myisampack \
          my_safe_process mysqlbinlog mysqlcheck mysql_client_test \
          mysql_config_editor mysqld_multi mysqld_safe mysqldumpslow mysqlimport \
          mysql_secure_installation mysqlshow mysqlslap mysqltest mysqlxtest \
-         perror resolveip  resolve_stack_dump lz4_decompress \
-         zlib_decompress; do
+         perror lz4_decompress \
+         zlib_decompress mysqlrouter mysqlrouter_plugin_info ; do
     rm -f %{buildroot}%{_bindir}/$f
 done
 
@@ -226,13 +224,14 @@ for p in auth.so auth_test_plugin.so authentication_ldap_sasl.so \
          authentication_ldap_simple.so component_example_component1.so \
          component_example_component2.so component_example_component3.so \
          component_log_sink_test.so component_pfs_example.so \
-         component_pfs_example_component_population.so \
+         component_pfs_example_component_population.so component_test_host_application_signal.so \
          component_test_pfs_notification.so component_test_pfs_resource_group.so \
          component_test_string_service_charset.so component_test_string_service.so \
          component_test_string_service_long.so component_udf_reg_3_func.so \
          component_udf_reg_int_same_func.so component_udf_reg_avg_func.so \
          component_udf_reg_only_3_func.so component_udf_reg_int_func.so \
          component_udf_reg_real_func.so component_test_udf_registration.so \
+         component_test_host_application_signal \
          component_udf_unreg_3_func.so component_udf_unreg_int_func.so \
          component_udf_unreg_real_func.so component_test_component_sys_var_service.so \
          component_test_sys_var_service_int.so component_test_sys_var_service.so \
@@ -243,10 +242,12 @@ for p in auth.so auth_test_plugin.so authentication_ldap_sasl.so \
          component_test_status_var_service_str.so\
          component_test_status_var_service_unreg_only.so\
          component_test_system_variable_source.so\
-         daemon_example.ini ha_example.so libdaemon_example.so \
+         component_test_audit_api_message.so\
+         daemon_example.ini ha_example.so ha_mock.so libdaemon_example.so \
          pfs_example_plugin_employee.so qa_auth_client.so qa_auth_interface.so \
          qa_auth_server.so replication_observers_example_plugin.so \
          test_security_context.so test_services_plugin_registry.so \
+         test_services_host_application_signal.so \
          udf_example.so  component_mysqlx_global_reset.so \
          test_udf_services.so component_test_backup_lock_service.so ; do
     rm -f %{buildroot}%{_libdir}/mysql/plugin/$p
@@ -254,6 +255,10 @@ done
 
 rm -f %{buildroot}%{_libdir}/mysql/plugin/libtest_*.so
 rm -f %{buildroot}%{_libdir}/pkgconfig/mysqlclient.pc
+
+rm -rf %{buildroot}%{_libdir}/mysqlrouter
+rm -rf %{buildroot}%{_libdir}/libmysqlharness*
+rm -rf %{buildroot}%{_libdir}/libmysqlrouter*
 
 # No need for these scripts
 rm -f %{buildroot}%{_datadir}/mysql-*/{mysql.server,mysqld_multi.server,mysql-log-rotate}
@@ -339,6 +344,7 @@ rm -r $(readlink var) var
 %attr(755, root, root) %{_libdir}/mysql/plugin/component_log_sink_json.so
 %attr(755, root, root) %{_libdir}/mysql/plugin/component_log_filter_dragnet.so
 %attr(755, root, root) %{_libdir}/mysql/plugin/component_validate_password.so
+%attr(755, root, root) %{_libdir}/mysql/plugin/component_audit_api_message_emit.so
 %attr(755, root, root) %{_libdir}/mysql/plugin/connection_control.so
 %attr(755, root, root) %{_libdir}/mysql/plugin/innodb_engine.so
 %attr(755, root, root) %{_libdir}/mysql/plugin/keyring_file.so
@@ -384,11 +390,6 @@ rm -r $(readlink var) var
 %{_datadir}/mysql-*/swedish/
 %{_datadir}/mysql-*/ukrainian/
 %attr(644, root, root) %{_datadir}/mysql-*/errmsg-utf8.txt
-%attr(644, root, root) %{_datadir}/mysql-*/fill_help_tables.sql
-%attr(644, root, root) %{_datadir}/mysql-*/mysql_system_tables.sql
-%attr(644, root, root) %{_datadir}/mysql-*/mysql_system_tables_data.sql
-%attr(644, root, root) %{_datadir}/mysql-*/mysql_sys_schema.sql
-%attr(644, root, root) %{_datadir}/mysql-*/mysql_test_data_timezone.sql
 %attr(644, root, root) %{_datadir}/mysql-*/dictionary.txt
 %attr(644, root, root) %{_datadir}/mysql-*/innodb_memcached_config.sql
 %attr(644, root, root) %{_datadir}/mysql-*/install_rewriter.sql
@@ -400,6 +401,7 @@ rm -r $(readlink var) var
 %attr(755, root, root) %{_libdir}/mysql/plugin/audit_log.so
 %attr(644, root, root) %{_datadir}/mysql-*/audit_log_filter_linux_install.sql
 %attr(755, root, root) %{_libdir}/mysql/plugin/authentication_pam.so
+%attr(755, root, root) %{_libdir}/mysql/plugin/data_masking.so
 %attr(755, root, root) %{_libdir}/mysql/plugin/keyring_okv.so
 %attr(755, root, root) %{_libdir}/mysql/plugin/keyring_encrypted_file.so
 %attr(755, root, root) %{_libdir}/mysql/plugin/mysql_clone.so
@@ -415,12 +417,17 @@ rm -r $(readlink var) var
 %dir %attr(750, mysql, mysql) /var/lib/mysql-keyring
 
 %changelog
-* Mon Mar 12 2018 Erlend Dahl <erlend.dahl@oracle.com> - 8.0.11-1
-- Removed milestone marker
-- Move mysqlx to default plugin
-- Fixed the package names for GA release
+* Wed Nov 21 2018 Erlend Dahl <erlend.dahl@oracle.com> - 8.0.14-1
+- Add specific compilation comment for the server
+- Remove resolveip
+- Remove resolve_stack_dump
 
-* Thu Dec 07 2017 Balasubramanian Kandasamy <balasubramanian.kandasamy@oracle.com> - 8.0.4-0.1
+* Tue Aug 21 2018 Georgi Kodinov <georgi.kodinov@oracle.com> - 8.0.13-1
+- No need to ship test plugins and components in docker image
+
+* Mon Mar 12 2018 Erlend Dahl <erlend.dahl@oracle.com> - 8.0.12-0.1
+- Change the global milestone to 'dmr'
+- Move mysqlx to default plugin
 - Add mysqlbackup
 - Add keyring_encrypted_file.so plugin
 - Do not package udf_example.so

@@ -38,6 +38,7 @@ Created Nov 22, 2013 Mattias Jonsson */
 #include <my_check_opt.h>
 #include <mysqld.h>
 #include <sql_acl.h>
+#include <sql_backup_lock.h>
 #include <sql_class.h>
 #include <sql_show.h>
 #include <sql_table.h>
@@ -62,9 +63,11 @@ Created Nov 22, 2013 Mattias Jonsson */
 #include "key.h"
 #include "lex_string.h"
 #include "lock0lock.h"
+#include "my_byteorder.h"
 #include "my_dbug.h"
 #include "my_io.h"
 #include "my_macros.h"
+#include "mysql/plugin.h"
 #include "partition_info.h"
 #include "row0import.h"
 #include "row0ins.h"
@@ -104,6 +107,10 @@ Ha_innopart_share::~Ha_innopart_share() {
 void Ha_innopart_share::partition_name_casedn_str(char *s) {
 #ifdef _WIN32
   innobase_casedn_str(s);
+#else
+  if (innobase_get_lower_case_table_names() == 1) {
+    innobase_casedn_str(s);
+  }
 #endif
 }
 
@@ -177,12 +184,13 @@ inline void ha_innopart::copy_cached_row(uchar *buf, const uchar *cached_row) {
 @param[in]	table		MySQL table definition
 @param[in]	dd_part		dd::Partition
 @param[in]	part_name	Table name of this partition
-@param[in]	part_id		Partition id
+@param[out]	part_dict_table	InnoDB table for partition
 @retval	false on success
 @retval	true on failure */
 bool Ha_innopart_share::open_one_table_part(
     dd::cache::Dictionary_client *client, THD *thd, const TABLE *table,
-    const dd::Partition *dd_part, const char *part_name, uint part_id) {
+    const dd::Partition *dd_part, const char *part_name,
+    dict_table_t **part_dict_table) {
   dict_table_t *part_table = nullptr;
   bool cached = false;
 
@@ -204,7 +212,7 @@ bool Ha_innopart_share::open_one_table_part(
         dict_table_remove_from_cache(part_table);
         part_table = NULL;
       } else {
-        part_table->acquire();
+        part_table->acquire_with_lock();
       }
     }
 
@@ -245,7 +253,7 @@ bool Ha_innopart_share::open_one_table_part(
     }
   }
 
-  m_table_parts[part_id] = part_table;
+  *part_dict_table = part_table;
   return (part_table == nullptr);
 }
 
@@ -277,52 +285,61 @@ void Ha_innopart_share::set_v_templ(TABLE *table, dict_table_t *ib_table,
   }
 }
 
-/** Initialize the share with table and indexes per partition.
-@param[in,out]	thd		Thread context
-@param[in]	table		MySQL table definition
-@param[in]	dd_table	Global DD table object
-@param[in]	part_info	Partition info (partition names to use).
-@param[in]	table_name	Table name (db/table_name).
-@return	false on success else true. */
-bool Ha_innopart_share::open_table_parts(THD *thd, const TABLE *table,
-                                         const dd::Table *dd_table,
-                                         partition_info *part_info,
-                                         const char *table_name) {
-  size_t table_name_len;
-  uint ib_num_index;
-  uint mysql_num_index;
-  char partition_name[FN_REFLEN];
-  bool index_loaded = true;
-
+/** Increment share and InnoDB tables reference counters. */
+void Ha_innopart_share::increment_ref_counts() {
 #ifdef UNIV_DEBUG
   if (m_table_share->tmp_table == NO_TMP_TABLE) {
     mysql_mutex_assert_owner(&m_table_share->LOCK_ha_data);
   }
 #endif /* UNIV_DEBUG */
+
+  ut_ad(m_table_parts != nullptr);
+  ut_ad(m_ref_count >= 1);
+  ut_ad(m_tot_parts > 0);
+
   m_ref_count++;
-  if (m_table_parts != NULL) {
-    ut_ad(m_ref_count > 1);
-    ut_ad(m_tot_parts > 0);
 
-    /* Increment dict_table_t reference count for all partitions */
-    mutex_enter(&dict_sys->mutex);
-    for (uint i = 0; i < m_tot_parts; i++) {
-      dict_table_t *table = m_table_parts[i];
-      table->acquire();
-      ut_ad(table->get_ref_count() >= m_ref_count);
-    }
-    mutex_exit(&dict_sys->mutex);
-
-    return (false);
+  /* Increment dict_table_t reference count for all partitions */
+  mutex_enter(&dict_sys->mutex);
+  for (uint i = 0; i < m_tot_parts; i++) {
+    dict_table_t *table = m_table_parts[i];
+    table->acquire();
+    ut_ad(table->get_ref_count() >= m_ref_count);
   }
-  ut_ad(m_ref_count == 1);
-  m_tot_parts = part_info->get_tot_partitions();
-  size_t table_parts_size = sizeof(dict_table_t *) * m_tot_parts;
-  m_table_parts = static_cast<dict_table_t **>(
+  mutex_exit(&dict_sys->mutex);
+}
+
+/** Open InnoDB tables for partitions and return them as array.
+@param[in,out]	thd		Thread context
+@param[in]	table		MySQL table definition
+@param[in]	dd_table	Global DD table object
+@param[in]	part_info	Partition info (partition names to use)
+@param[in]	table_name	Table name (db/table_name)
+@return	Array on InnoDB tables on success else nullptr. */
+dict_table_t **Ha_innopart_share::open_table_parts(THD *thd, const TABLE *table,
+                                                   const dd::Table *dd_table,
+                                                   partition_info *part_info,
+                                                   const char *table_name) {
+  size_t table_name_len;
+  char partition_name[FN_REFLEN];
+
+  /* Code below might read from data-dictionary. In the process
+  it will access SQL-layer's Table Cache and acquire lock associated
+  with it. OTOH when closing tables we lock LOCK_ha_data while holding
+  lock for Table Cache. So to avoid deadlocks we should not be holding
+  LOCK_ha_data while trying to access data-dictionary. */
+#ifdef UNIV_DEBUG
+  if (table->s->tmp_table == NO_TMP_TABLE) {
+    mysql_mutex_assert_not_owner(&table->s->LOCK_ha_data);
+  }
+#endif /* UNIV_DEBUG */
+
+  uint tot_parts = part_info->get_tot_partitions();
+  size_t table_parts_size = sizeof(dict_table_t *) * tot_parts;
+  dict_table_t **table_parts = static_cast<dict_table_t **>(
       ut_zalloc(table_parts_size, mem_key_partitioning));
-  if (m_table_parts == NULL) {
-    m_ref_count--;
-    return (true);
+  if (table_parts == nullptr) {
+    return (nullptr);
   }
 
   /* Set up the array over all table partitions. */
@@ -339,13 +356,61 @@ bool Ha_innopart_share::open_table_parts(THD *thd, const TABLE *table,
                                           FN_REFLEN - table_name_len, dd_part);
     ut_a(len + table_name_len < FN_REFLEN);
 
-    if (open_one_table_part(client, thd, table, dd_part, partition_name, i)) {
-      ut_ad(m_table_parts[i] == nullptr);
-      goto err;
+    if (open_one_table_part(client, thd, table, dd_part, partition_name,
+                            &table_parts[i])) {
+      ut_ad(table_parts[i] == nullptr);
+      close_table_parts(table_parts, i);
+      ut_free(table_parts);
+      return (nullptr);
     }
     i++;
   }
-  ut_ad(i == m_tot_parts);
+  ut_ad(i == tot_parts);
+
+  return (table_parts);
+}
+
+/** Initialize the share with table and indexes per partition.
+@param[in]	table		MySQL table definition
+@param[in]	part_info	Partition info (partition names to use).
+@param[in]	table_parts	Array of InnoDB tables for partitions.
+@return	false on success else true. */
+bool Ha_innopart_share::set_table_parts_and_indexes(
+    const TABLE *table, partition_info *part_info, dict_table_t **table_parts) {
+  uint ib_num_index;
+  uint mysql_num_index;
+  bool index_loaded = true;
+
+#ifdef UNIV_DEBUG
+  if (m_table_share->tmp_table == NO_TMP_TABLE) {
+    mysql_mutex_assert_owner(&m_table_share->LOCK_ha_data);
+  }
+#endif /* UNIV_DEBUG */
+
+  m_ref_count++;
+
+  /* Check if some other thread has managed to initialize share/open InnoDB
+  tables for partitions concurrently, while LOCK_ha_data was free.
+  In such a case table_parts array should point to same dict_table_t entries
+  as one in share, so the array can be simply discarded. There is no need to
+  increment reference counters for dict_table_t entries as this was already
+  done during dd_open_table() call. */
+  if (m_table_parts != nullptr) {
+    ut_ad(m_ref_count > 1);
+    ut_ad(m_tot_parts == part_info->get_tot_partitions());
+#ifdef UNIV_DEBUG
+    for (uint i = 0; i < m_tot_parts; i++) {
+      ut_ad(m_table_parts[i] == table_parts[i]);
+    }
+#endif /* UNIV_DEBUG */
+    ut_free(table_parts);
+    return (false);
+  }
+
+  ut_ad(m_ref_count == 1);
+
+  m_tot_parts = part_info->get_tot_partitions();
+  m_table_parts = table_parts;
 
   /* Create the mapping of mysql index number to innodb indexes. */
 
@@ -432,6 +497,18 @@ err:
   return (true);
 }
 
+/** Close InnoDB tables for partitions.
+@param[in]	table_parts	Array of InnoDB tables for partitions.
+@param[in]	tot_parts       Number of partitions. */
+void Ha_innopart_share::close_table_parts(dict_table_t **table_parts,
+                                          uint tot_parts) {
+  for (uint i = 0; i < tot_parts; i++) {
+    if (table_parts[i] != NULL) {
+      dd_table_close(table_parts[i], NULL, NULL, false);
+    }
+  }
+}
+
 /** Close the table partitions.
 If all instances are closed, also release the resources.
 @param[in]	only_free	true if the tables have already been
@@ -463,11 +540,7 @@ void Ha_innopart_share::close_table_parts(bool only_free) {
 
   if (m_table_parts != NULL) {
     if (!only_free) {
-      for (uint i = 0; i < m_tot_parts; i++) {
-        if (m_table_parts[i] != NULL) {
-          dd_table_close(m_table_parts[i], NULL, NULL, false);
-        }
-      }
+      close_table_parts(m_table_parts, m_tot_parts);
     }
     ut_free(m_table_parts);
     m_table_parts = NULL;
@@ -820,9 +893,34 @@ int ha_innopart::open(const char *name, int, uint, const dd::Table *table_def) {
     set_ha_share_ptr(static_cast<Handler_share *>(m_part_share));
   }
 
-  if (m_part_share->open_table_parts(thd, table, table_def, m_part_info,
-                                     norm_name) ||
-      m_part_share->populate_partition_name_hash(m_part_info)) {
+  if (m_part_share->has_table_parts()) {
+    /* If share already has InnoDB tables open we just need to increment
+    reference counters. */
+    m_part_share->increment_ref_counts();
+  } else {
+    /* We need to open InnoDB tables and prepare index information.
+    Since the former involves access to the data-dictionary we need
+    to release TABLE_SHARE::LOCK_ha_data temporarily. */
+    unlock_shared_ha_data();
+
+    dict_table_t **table_parts = Ha_innopart_share::open_table_parts(
+        thd, table, table_def, m_part_info, norm_name);
+
+    if (table_parts == nullptr) DBUG_RETURN(HA_ERR_INTERNAL_ERROR);
+
+    /* Now acquire TABLE_SHARE::LOCK_ha_data again and assign table
+    and index information. set_table_parts_and_indexes() will check
+    if some other thread already has managed to do this concurrently,
+    while lock was released. */
+    lock_shared_ha_data();
+
+    if (m_part_share->set_table_parts_and_indexes(table, m_part_info,
+                                                  table_parts)) {
+      goto share_error;
+    }
+  }
+
+  if (m_part_share->populate_partition_name_hash(m_part_info)) {
     goto share_error;
   }
 
@@ -2321,10 +2419,17 @@ int ha_innopart::create(const char *name, TABLE *form,
 
   trx = check_trx_exists(thd);
 
+  DBUG_ENTER("ha_innopart::create");
+
+  if (is_shared_tablespace(create_info->tablespace)) {
+    my_printf_error(ER_ILLEGAL_HA_CREATE_OPTION, PARTITION_IN_SHARED_TABLESPACE,
+                    MYF(0));
+    DBUG_RETURN(HA_ERR_INTERNAL_ERROR);
+  }
+
   create_table_info_t info(thd, form, create_info, table_name, remote_path,
                            tablespace_name, srv_file_per_table, false, 0, 0);
 
-  DBUG_ENTER("ha_innopart::create");
   ut_ad(create_info != NULL);
   ut_ad(m_part_info == form->part_info);
   ut_ad(table_share != NULL);
@@ -2395,13 +2500,29 @@ int ha_innopart::create(const char *name, TABLE *form,
       while ((sub_elem = sub_it++)) {
         tablespace = partition_get_tablespace(table_level_tablespace_name,
                                               part_elem, sub_elem);
+        if (is_shared_tablespace(tablespace)) {
+          tablespace_names.clear();
+          error = HA_ERR_INTERNAL_ERROR;
+          break;
+        }
         tablespace_names.push_back(tablespace);
       }
     } else {
       tablespace = partition_get_tablespace(table_level_tablespace_name,
                                             part_elem, NULL);
+      if (is_shared_tablespace(tablespace)) {
+        tablespace_names.clear();
+        error = HA_ERR_INTERNAL_ERROR;
+        break;
+      }
       tablespace_names.push_back(tablespace);
     }
+  }
+
+  if (error) {
+    my_printf_error(ER_ILLEGAL_HA_CREATE_OPTION, PARTITION_IN_SHARED_TABLESPACE,
+                    MYF(0));
+    DBUG_RETURN(error);
   }
 
   for (const auto dd_part : *table_def->leaf_partitions()) {
@@ -2419,8 +2540,10 @@ int ha_innopart::create(const char *name, TABLE *form,
     dd::String_type data_file_name;
     const char *tablespace_name;
 
-    options.get(index_file_name_key, index_file_name);
-    options.get(data_file_name_key, data_file_name);
+    if (options.exists(index_file_name_key))
+      (void)options.get(index_file_name_key, &index_file_name);
+    if (options.exists(data_file_name_key))
+      (void)options.get(data_file_name_key, &data_file_name);
     ut_ad(created < tablespace_names.size());
     tablespace_name = tablespace_names[created];
 
@@ -2515,8 +2638,8 @@ int ha_innopart::delete_table(const char *name, const dd::Table *dd_table) {
       DBUG_RETURN(error);
     }
 
-    error = innobase_basic_ddl::delete_impl<dd::Partition>(
-        thd, partition_name, dd_part, SQLCOM_DROP_TABLE);
+    error = innobase_basic_ddl::delete_impl<dd::Partition>(thd, partition_name,
+                                                           dd_part);
 
     if (error != 0) {
       break;
@@ -2624,7 +2747,7 @@ int ha_innopart::set_dd_discard_attribute(dd::Table *table_def, bool discard) {
 
     /* Set discard flag. */
     dd::Properties &p = dd_part->table().se_private_data();
-    p.set_bool(dd_table_key_strings[DD_TABLE_DISCARD], discard);
+    p.set(dd_table_key_strings[DD_TABLE_DISCARD], discard);
 
     /* Get Tablespace object */
     dd::Tablespace *dd_space = nullptr;
@@ -2637,7 +2760,7 @@ int ha_innopart::set_dd_discard_attribute(dd::Table *table_def, bool discard) {
 
     dd_filename_to_spacename(table->name.m_name, &space_name);
 
-    if (dd::acquire_exclusive_tablespace_mdl(thd, space_name.c_str(), false)) {
+    if (dd_tablespace_get_mdl(space_name.c_str())) {
       ut_a(false);
     }
 
@@ -2647,35 +2770,33 @@ int ha_innopart::set_dd_discard_attribute(dd::Table *table_def, bool discard) {
 
     ut_a(dd_space != NULL);
 
-    dd_tablespace_set_discard(dd_space, discard);
+    dd_tablespace_set_state(
+        dd_space, (discard ? DD_SPACE_STATE_DISCARDED : DD_SPACE_STATE_NORMAL));
 
     if (client->update(dd_space)) {
       ut_a(false);
     }
 
-    const dict_index_t *index = table->first_index();
     for (auto dd_index : *dd_part->indexes()) {
-      ut_ad(index != NULL);
+      const dict_index_t *index = dd_find_index(table, dd_index);
+      ut_ad(index != nullptr);
 
       dd::Properties &p = dd_index->se_private_data();
-      p.set_uint32(dd_index_key_strings[DD_INDEX_ROOT], index->page);
-      index = index->next();
+      p.set(dd_index_key_strings[DD_INDEX_ROOT], index->page);
     }
   }
 
-  /* Set discard flag. */
+  /* Set discard flag for the table. */
   dd::Properties &p = table_def->table().se_private_data();
-  p.set_bool(dd_table_key_strings[DD_TABLE_DISCARD], discard);
+  p.set(dd_table_key_strings[DD_TABLE_DISCARD], discard);
 
-  /* Set new table id of latest partition for dd columns when
-  it's importing tablespace. */
+  /* Set new table id of the first partition to dd::Column::se_private_data */
   if (!discard) {
-    table = m_part_share->get_table_part(m_tot_parts - 1);
-    dd::Partition *dd_part = table_def->leaf_partitions()->back();
+    table = m_part_share->get_table_part(0);
 
-    for (auto dd_column : *dd_part->table().columns()) {
-      dd_column->se_private_data().set_uint64(dd_index_key_strings[DD_TABLE_ID],
-                                              table->id);
+    for (auto dd_column : *table_def->columns()) {
+      dd_column->se_private_data().set(dd_index_key_strings[DD_TABLE_ID],
+                                       table->id);
     }
   }
 
@@ -2704,6 +2825,14 @@ int ha_innopart::discard_or_import_tablespace(bool discard,
       break;
     }
   }
+
+#ifdef UNIV_DEBUG
+  if (!discard && table_def->se_private_data().exists(
+                      dd_table_key_strings[DD_TABLE_INSTANT_COLS])) {
+    ut_ad(dd_table_has_instant_cols(*table_def));
+  }
+#endif /* UNIV_DEBUG */
+
   m_prebuilt->table = m_part_share->get_table_part(0);
 
   /* IMPORT/DISCARD also means resetting auto_increment. Make sure
@@ -2807,13 +2936,14 @@ int ha_innopart::truncate_impl(const char *name, TABLE *form,
   THD *thd = ha_thd();
   trx_t *trx = check_trx_exists(thd);
   char partition_name[FN_REFLEN];
-  uint16_t table_name_len;
+  size_t table_name_len;
   bool has_autoinc = false;
   int error = 0;
 
   innobase_register_trx(ht, thd, trx);
 
   table_name_len = strlen(name);
+  ut_ad(table_name_len < FN_REFLEN);
   memcpy(partition_name, name, table_name_len);
 
   for (const auto dd_part : *table_def->leaf_partitions()) {
@@ -2827,7 +2957,8 @@ int ha_innopart::truncate_impl(const char *name, TABLE *form,
 
     normalize_table_name(norm_name, partition_name);
 
-    innobase_truncate<dd::Partition> truncator(thd, norm_name, form, dd_part);
+    innobase_truncate<dd::Partition> truncator(thd, norm_name, form, dd_part,
+                                               false);
 
     error = truncator.open_table(part_table);
     if (error != 0) {
@@ -2850,8 +2981,20 @@ int ha_innopart::truncate_impl(const char *name, TABLE *form,
     }
   }
 
-  if (error == 0 && has_autoinc) {
+  ut_ad(error == 0);
+
+  if (has_autoinc) {
     dd_set_autoinc(table_def->se_private_data(), 0);
+  }
+
+  if (dd_table_has_instant_cols(*table_def)) {
+    for (dd::Partition *dd_part : *table_def->leaf_partitions()) {
+      if (dd_part_has_instant_cols(*dd_part)) {
+        dd_clear_instant_part(*dd_part);
+      }
+    }
+
+    dd_clear_instant_table(*table_def);
   }
 
   DBUG_RETURN(error);
@@ -2867,175 +3010,83 @@ at statement commit time.
 int ha_innopart::truncate_partition_low(dd::Table *dd_table) {
   int error = 0;
   const char *table_name = table->s->normalized_path.str;
-  HA_CREATE_INFO *create_infos;
-  ulint num_used_parts = m_part_info->num_partitions_used();
-  ulint processed = 0;
-  uint i = 0;
-  uint n_saved = 0;
+  char partition_name[FN_REFLEN];
+  size_t table_name_len;
   THD *thd = ha_thd();
+  trx_t *trx = check_trx_exists(thd);
+  uint part_num = 0;
+  uint64_t autoinc = 0;
+  bool truncate_all = (m_part_info->num_partitions_used() == m_tot_parts);
+
   DBUG_ENTER("ha_innopart::truncate_partition_low");
 
   if (high_level_read_only) {
     DBUG_RETURN(HA_ERR_TABLE_READONLY);
   }
 
-  /* First we copy the info for the partitions that will be truncated,
-  since after we close the table the information is not accessible. */
+  innobase_register_trx(ht, thd, trx);
 
-  /* Use a heap to ease the memory alloc/free. Initialize with one
-  create_info + 5 bytes for short names (t#P#p) per partition. */
-  mem_heap_t *heap = mem_heap_create(
-      num_used_parts * (sizeof(HA_CREATE_INFO) + 5 + sizeof(ulint) * 2));
-  if (heap == NULL) {
-    DBUG_RETURN(HA_ERR_OUT_OF_MEM);
-  }
+  table_name_len = strlen(table_name);
+  ut_ad(table_name_len < FN_REFLEN);
+  memcpy(partition_name, table_name, table_name_len);
 
-  innobase_register_trx(ht, thd, m_prebuilt->trx);
+  for (const auto dd_part : *dd_table->leaf_partitions()) {
+    size_t len;
+    char norm_name[FN_REFLEN];
+    dict_table_t *part_table = nullptr;
 
-  size_t alloc_size = sizeof(HA_CREATE_INFO) * num_used_parts;
-  create_infos =
-      static_cast<HA_CREATE_INFO *>(mem_heap_zalloc(heap, alloc_size));
+    len = Ha_innopart_share::create_partition_postfix(
+        partition_name + table_name_len, FN_REFLEN - table_name_len, dd_part);
+    ut_a(len + table_name_len < FN_REFLEN);
 
-  ulint *old_flags = static_cast<ulint *>(
-      mem_heap_zalloc(heap, sizeof(*old_flags) * num_used_parts));
-  ulint *old_flags2 = static_cast<ulint *>(
-      mem_heap_zalloc(heap, sizeof(*old_flags2) * num_used_parts));
+    normalize_table_name(norm_name, partition_name);
 
-  ut_a(create_infos != NULL);
+    innobase_truncate<dd::Partition> truncator(thd, norm_name, table, dd_part,
+                                               !truncate_all);
 
-  /* TRUNCATE TABLE and ALTER TABLE...TRUNCATE PARTITION ALL
-  must reset the AUTO_INCREMENT sequence, but
-  TRUNCATE PARTITION of some partitions should not affect it. */
-  const ib_uint64_t autoinc =
-      table->found_next_number_field &&
-              m_part_info->num_partitions_used() < m_tot_parts
-          ? m_part_share->next_auto_inc_val
-          : 1;
-
-  for (i = m_part_info->get_first_used_partition(); i < m_tot_parts;
-       i = m_part_info->get_next_used_partition(i)) {
-    dict_table_t *table_part = m_part_share->get_table_part(i);
-
-    /* The table should have been opened in ha_innobase::open().
-    Purge might be holding a reference to the table. */
-    ut_ad(table_part->n_ref_count >= 1);
-    /* Temporary partitioned tables are not supported! */
-    ut_ad(!table_part->is_temporary());
-    ut_ad(!table_part->is_intrinsic());
-
-    HA_CREATE_INFO *info = &create_infos[processed++];
-    update_create_info_from_table(info, table);
-
-    if (dict_table_is_discarded(table_part)) {
-      ib_senderrf(thd, IB_LOG_LEVEL_ERROR, ER_TABLESPACE_DISCARDED,
-                  table->s->table_name.str);
-      error = HA_ERR_NO_SUCH_TABLE;
-      break;
+    error = truncator.open_table(part_table);
+    if (error != 0) {
+      DBUG_RETURN(error);
     }
 
-    old_flags[n_saved] = table_part->flags;
-    old_flags2[n_saved] = table_part->flags2;
-
-    info->data_file_name =
-        table_part->data_dir_path == NULL
-            ? NULL
-            : mem_heap_strdup(heap, table_part->data_dir_path);
-    /* Use 'alias' variable as partition name. */
-    info->alias = mem_heap_strdup(heap, table_part->name.m_name);
-    /* InnoDB does not support MIN_ROWS, so use that variable
-    for file_per_table. */
-    info->min_rows = dict_table_is_file_per_table(table_part) ? 1 : 0;
-    info->key_block_size = table_share->key_block_size;
-    info->tablespace = table_part->tablespace == NULL
-                           ? NULL
-                           : mem_heap_strdup(heap, table_part->tablespace);
-
-    if (table_part->can_be_evicted) {
-      mutex_enter(&dict_sys->mutex);
-      dict_table_ddl_acquire(table_part);
-      mutex_exit(&dict_sys->mutex);
+    if (part_table->autoinc_persisted > autoinc) {
+      autoinc = part_table->autoinc_persisted;
     }
-    n_saved++;
-  }
 
-  if (error != 0) {
-    mem_heap_free(heap);
-    DBUG_RETURN(error);
-  }
-
-  ut_ad(processed == num_used_parts);
-
-  /* TRUNCATE also means resetting auto_increment. Hence, reset
-  it so that it will be initialized again at the next use. */
-  if (table->found_next_number_field != NULL) {
-    lock_auto_increment();
-    m_part_share->next_auto_inc_val = 0;
-    m_part_share->auto_inc_initialized = false;
-    DBUG_EXECUTE_IF("partition_truncate_no_reset",
-                    m_part_share->auto_inc_initialized = true;);
-    unlock_auto_increment();
-  }
-
-  if ((error = close()) != 0) {
-    mem_heap_free(heap);
-    DBUG_RETURN(error);
-  }
-
-  /* From now on m_prebuilt is reset and m_part_info is still usable! */
-  processed = 0;
-  i = 0;
-  for (dd::Partition *dd_part : *dd_table->leaf_partitions()) {
-    if (!m_part_info->is_partition_used(i++)) {
+    if (!m_part_info->is_partition_used(part_num++)) {
       continue;
     }
 
-    HA_CREATE_INFO *info = &create_infos[processed++];
-    bool file_per_table = (info->min_rows != 0);
-    const char *name = info->alias;
-
-    info->alias = NULL;
-    info->min_rows = 0;
-
-    if (file_per_table) {
-      error = ha_innobase::truncate_rename_tablespace(name);
-      if (error != 0) {
-        break;
-      }
+    if (dict_table_is_discarded(part_table)) {
+      ib_senderrf(thd, IB_LOG_LEVEL_ERROR, ER_TABLESPACE_DISCARDED, table_name);
+      DBUG_RETURN(HA_ERR_NO_SUCH_TABLE);
+    } else if (part_table->ibd_file_missing) {
+      DBUG_RETURN(HA_ERR_TABLESPACE_MISSING);
     }
 
-    error = innobase_basic_ddl::delete_impl<dd::Partition>(thd, name, dd_part,
-                                                           SQLCOM_TRUNCATE);
-    if (error == 0) {
-      bool reset = false;
-      /* Don't change the tablespace in this case, so
-      temporarily set the tablespace_id as an explicit one
-      to make it consistent with info->tablespace */
-      if (info->tablespace != NULL &&
-          dd_part->tablespace_id() == dd::INVALID_OBJECT_ID) {
-        dd::Object_id dd_space_id = dd_first_index(dd_part)->tablespace_id();
-        dd_part->set_tablespace_id(dd_space_id);
-        reset = true;
-      }
-
-      error = innobase_basic_ddl::create_impl(
-          thd, name, table, info, dd_part, file_per_table, true, true,
-          old_flags[processed - 1], old_flags2[processed - 1]);
-
-      if (reset) {
-        dd_part->set_tablespace_id(dd::INVALID_OBJECT_ID);
-      }
-    }
+    error = truncator.exec();
 
     if (error != 0) {
-      break;
+      DBUG_RETURN(error);
+    }
+
+    if (dd_table_has_instant_cols(*dd_table) &&
+        dd_part_has_instant_cols(*dd_part)) {
+      dd_clear_instant_part(*dd_part);
     }
   }
 
-  mem_heap_free(heap);
-  open(table_name, 0, 0, dd_table);
+  ut_ad(error == 0);
 
-  if (error == 0 && table->found_next_number_field) {
-    dd_set_autoinc(dd_table->se_private_data(), autoinc);
+  /* If it's TRUNCATE PARTITION ALL, reset the AUTOINC */
+  if (table->found_next_number_field) {
+    dd_set_autoinc(dd_table->se_private_data(),
+                   (truncate_all ? 0 : autoinc + 1));
+  }
+
+  if (dd_table_has_instant_cols(*dd_table) &&
+      !dd_table_part_has_instant_cols(*dd_table)) {
+    dd_clear_instant_table(*dd_table);
   }
 
   DBUG_RETURN(error);
@@ -3605,19 +3656,6 @@ int ha_innopart::info_low(uint flag, bool is_analyze) {
     if ((flag & HA_STATUS_NO_LOCK) == 0) {
       dict_table_stats_unlock(ib_table, RW_S_LATCH);
     }
-
-    char path[FN_REFLEN];
-    os_file_stat_t stat_info;
-    /* Use the first partition for create time until new DD. */
-    ib_table = m_part_share->get_table_part(0);
-    snprintf(path, sizeof(path), "%s/%s%s", mysql_data_home,
-             table->s->normalized_path.str, reg_ext);
-
-    unpack_filename(path, path);
-
-    if (os_file_get_status(path, &stat_info, false, true) == DB_SUCCESS) {
-      stats.create_time = (ulong)stat_info.ctime;
-    }
   }
 
   if (srv_force_recovery >= SRV_FORCE_NO_IBUF_MERGE) {
@@ -3773,21 +3811,6 @@ int ha_innopart::repair(THD *thd, HA_CHECK_OPT *repair_opt) {
   DBUG_RETURN(error);
 }
 
-/** Check if possible to switch engine (no foreign keys).
-Checks if ALTER TABLE may change the storage engine of the table.
-Changing storage engines is not allowed for tables for which there
-are foreign key constraints (parent or child tables).
-@return	true if can switch engines. */
-bool ha_innopart::can_switch_engines() {
-  bool can_switch;
-
-  DBUG_ENTER("ha_innopart::can_switch_engines");
-  can_switch = ha_innobase::can_switch_engines();
-  ut_ad(can_switch);
-
-  DBUG_RETURN(can_switch);
-}
-
 /** Checks if a table is referenced by a foreign key.
 The MySQL manual states that a REPLACE is either equivalent to an INSERT,
 or DELETE(s) + INSERT. Only a delete is then allowed internally to resolve
@@ -3905,6 +3928,13 @@ int ha_innopart::external_lock(THD *thd, int lock_type) {
         if (!srv_read_only_mode && thd_sql_command(thd) == SQLCOM_FLUSH &&
             lock_type == F_RDLCK) {
           ut_ad(table->quiesce == QUIESCE_START);
+
+          if (dict_table_is_discarded(table)) {
+            ib_senderrf(m_prebuilt->trx->mysql_thd, IB_LOG_LEVEL_ERROR,
+                        ER_TABLESPACE_DISCARDED, table->name.m_name);
+
+            return (HA_ERR_NO_SUCH_TABLE);
+          }
 
           row_quiesce_table_start(table, m_prebuilt->trx);
 

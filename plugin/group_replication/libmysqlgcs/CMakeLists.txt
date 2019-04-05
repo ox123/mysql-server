@@ -73,6 +73,7 @@ SET(XCOM_SOURCES
   src/bindings/xcom/xcom/task_net.c
   src/bindings/xcom/xcom/synode_no.c
   src/bindings/xcom/xcom/xcom_detector.c
+  src/bindings/xcom/xcom/xcom_input_request.c
   ${XCOM_SUNRPC_SOURCES}
   ${XCOM_RPCGEN_SOURCES})
 
@@ -107,22 +108,16 @@ SET(GCS_SOURCES
   src/bindings/xcom/gcs_xcom_interface.cc
   src/bindings/xcom/gcs_xcom_notification.cc
   src/bindings/xcom/gcs_message_stage_lz4.cc
-  src/bindings/xcom/gcs_xcom_statistics_interface.cc)
+  src/bindings/xcom/gcs_xcom_statistics_interface.cc
+  src/bindings/xcom/gcs_xcom_proxy.cc)
 
-ADD_DEFINITIONS(${SSL_DEFINES})
-
-IF(WITH_SSL MATCHES "bundled")
-    # add YASSL_MYSQL_COMPATIBLE when building XCom and GCS with SSL.
-    # This needs to exist because XCom is implemented in pure C.
-    # Setting these flags will make yaSSL code to build with C compatible
-    # interface.
-    ADD_COMPILE_FLAGS(${XCOM_SOURCES} COMPILE_FLAGS
-                      "-DYASSL_MYSQL_COMPATIBLE")
-    ADD_COMPILE_FLAGS(${GCS_SOURCES} COMPILE_FLAGS
-                      "-DYASSL_MYSQL_COMPATIBLE")
+MY_CHECK_C_COMPILER_FLAG("-Wcast-function-type" HAVE_CAST_FUNCTION_TYPE)
+IF(HAVE_CAST_FUNCTION_TYPE)
+  ADD_COMPILE_FLAGS(src/bindings/xcom/xcom/xcom_transport.c
+                    COMPILE_FLAGS "-Wno-cast-function-type")
 ENDIF()
 
-# add the definition to build XCom with SSL support
+# Add the definition to build XCom with SSL support.
 ADD_DEFINITIONS(-DXCOM_HAVE_OPENSSL)
 
 ### Configuration ###
@@ -160,6 +155,10 @@ ADD_CONVENIENCE_LIBRARY(${GCS_LIBRARY} ${XCOM_SOURCES} ${GCS_SOURCES})
 
 IF(TIRPC_LIBRARY)
   TARGET_LINK_LIBRARIES(${GCS_LIBRARY} ${TIRPC_LIBRARY})
+ENDIF()
+
+IF(MSVC)
+	TARGET_LINK_LIBRARIES(${GCS_LIBRARY} iphlpapi)
 ENDIF()
 
 # convenience target

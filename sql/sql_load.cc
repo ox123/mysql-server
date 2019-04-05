@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2000, 2017, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2000, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -21,8 +21,7 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
-/* Copy data from a textfile to table */
-/* 2006-12 Erik Wetterberg : LOAD XML added */
+/* Copy data from a text file to table */
 
 #include "sql/sql_load.h"
 
@@ -432,7 +431,7 @@ bool Sql_cmd_load_table::execute_inner(THD *thd,
           MY_RELATIVE_PATH | MY_UNPACK_FILENAME | MY_RETURN_REAL_PATH);
     }
 
-    if ((thd->slave_thread &
+    if ((thd->system_thread &
          (SYSTEM_THREAD_SLAVE_SQL | SYSTEM_THREAD_SLAVE_WORKER)) != 0) {
       Relay_log_info *rli = thd->rli_slave->get_c_rli();
 
@@ -561,7 +560,7 @@ bool Sql_cmd_load_table::execute_inner(THD *thd,
           the destructor of read_info will call end_io_cache() which will flush
           read_info, so we will finally have this in the binlog:
 
-          Append_block # The last successfull block
+          Append_block # The last successful block
           Delete_file
           Append_block # The failing block
           which is nonsense.
@@ -624,13 +623,6 @@ bool Sql_cmd_load_table::execute_inner(THD *thd,
             thd, table_list->db, table_list->table_name, is_concurrent,
             handle_duplicates, transactional_table, errcode);
       }
-
-      /*
-        Flushing the IO CACHE while writing the execute load query log event
-        may result in error (for instance, because the max_binlog_size has been
-        reached, and rotation of the binary log failed).
-      */
-      error = error || mysql_bin_log.get_log_file()->error;
     }
     if (error) goto err;
   }

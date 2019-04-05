@@ -167,6 +167,12 @@ static int	is_noop(synode_no synode)
 }
 #endif
 
+static int was_machine_executed(pax_machine *p) {
+  int const not_yet_functional = synode_eq(null_synode, get_delivered_msg());
+  int const already_executed = synode_lt(p->synode, get_delivered_msg());
+  return not_yet_functional || already_executed;
+}
+
 /*
 Get a machine for (re)use.
 The machines are statically allocated, and organized in two lists.
@@ -175,22 +181,29 @@ protected_lru tracks the machines that are currently in the cache in
 lest recently used order.
 */
 
-static lru_machine *lru_get() {
+static lru_machine *lru_get(bool_t force) {
   lru_machine *retval = NULL;
+  lru_machine *force_retval = NULL;
   if (!link_empty(&probation_lru)) {
     retval = (lru_machine *)link_first(&probation_lru);
   } else {
     /* Find the first non-busy instance in the LRU */
     FWD_ITER(&protected_lru, lru_machine,
              if (!is_busy_machine(&link_iter->pax)) {
-               retval = link_iter;
-               /* Since this machine is in in the cache, we need to update
-               last_removed_cache */
-               last_removed_cache = retval->pax.synode;
-               break;
+               if (was_machine_executed(&link_iter->pax)) {
+                 retval = link_iter;
+                 break;
+               } else if (force && !force_retval) {
+                 force_retval = link_iter;
+               }
              })
+
+    if (!retval && force) retval = force_retval;
+
+    /* Since this machine is in the cache, we need to update
+       last_removed_cache */
+    if (retval) last_removed_cache = retval->pax.synode;
   }
-  assert(retval && !is_busy_machine(&retval->pax));
   return retval;
 }
 
@@ -230,6 +243,7 @@ void deinit_cache() {
     for the deactivation routine simple and straightforward.
   */
   init_cache();
+  psi_report_cache_shutdown();
   for (i = 0; i < CACHED; i++) {
     lru_machine *l = &cache[i];
     pax_machine *p = &l->pax;
@@ -246,12 +260,14 @@ void deinit_cache() {
 
 /* static synode_no log_tail; */
 
-pax_machine *get_cache_no_touch(synode_no synode) {
+pax_machine *get_cache_no_touch(synode_no synode, bool_t force) {
   pax_machine *retval = hash_get(synode);
   /* DBGOUT(FN; SYCEXP(synode); STREXP(task_name())); */
   MAY_DBG(FN; SYCEXP(synode); PTREXP(retval));
   if (!retval) {
-    lru_machine *l = lru_get(); /* Need to know when it is safe to re-use... */
+    lru_machine *l =
+        lru_get(force); /* Need to know when it is safe to re-use... */
+    if (!l) return NULL;
     MAY_DBG(FN; PTREXP(l); COPY_AND_FREE_GOUT(dbg_pax_machine(&l->pax)););
     /*     assert(l->pax.synode > log_tail); */
 
@@ -263,9 +279,16 @@ pax_machine *get_cache_no_touch(synode_no synode) {
   return retval;
 }
 
-pax_machine *get_cache(synode_no synode) {
-  pax_machine *retval = get_cache_no_touch(synode);
+pax_machine *force_get_cache(synode_no synode) {
+  pax_machine *retval = get_cache_no_touch(synode, TRUE);
   lru_touch_hit(retval); /* Insert in protected_lru */
+  MAY_DBG(FN; SYCEXP(synode); PTREXP(retval));
+  return retval;
+}
+
+pax_machine *get_cache(synode_no synode) {
+  pax_machine *retval = get_cache_no_touch(synode, FALSE);
+  if (retval) lru_touch_hit(retval); /* Insert in protected_lru */
   MAY_DBG(FN; SYCEXP(synode); PTREXP(retval));
   return retval;
 }
@@ -330,7 +353,7 @@ void xcom_cache_var_init() {}
 /* Initialize a Paxos instance */
 static pax_machine *init_pax_machine(pax_machine *p, lru_machine *lru,
                                      synode_no synode) {
-  sub_cache_size(pax_machine_size(p));
+  sub_cache_size(p);
   link_init(&p->hash_link, type_hash("pax_machine"));
   p->lru = lru;
   p->synode = synode;
@@ -438,22 +461,32 @@ static size_t cache_size = 0;
 void init_cache_size() { cache_size = 0; }
 
 /* Add to cache size */
-size_t add_cache_size(size_t x) {
+
+size_t add_cache_size(pax_machine *p) {
+  size_t x = pax_machine_size(p);
   cache_size += x;
   if (DBG_CACHE_SIZE && x) {
     G_DEBUG("%f %s:%d cache_size %lu x %lu", seconds(), __FILE__, __LINE__,
             (long unsigned int)cache_size, (long unsigned int)x);
   }
+#ifndef XCOM_STANDALONE
+  p->is_instrumented = psi_report_mem_alloc(x);
+#endif
   return cache_size;
 }
 
 /* Subtract from cache size */
-size_t sub_cache_size(size_t x) {
+size_t sub_cache_size(pax_machine *p) {
+  size_t x = pax_machine_size(p);
   cache_size -= x;
   if (DBG_CACHE_SIZE && x) {
     G_DEBUG("%f %s:%d cache_size %lu x %lu", seconds(), __FILE__, __LINE__,
             (long unsigned int)cache_size, (long unsigned int)x);
   }
+#ifndef XCOM_STANDALONE
+  psi_report_mem_free(x, p->is_instrumented);
+  p->is_instrumented = 0;
+#endif
   return cache_size;
 }
 

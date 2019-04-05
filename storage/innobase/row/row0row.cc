@@ -41,7 +41,6 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "ha_prototypes.h"
 #include "lob0lob.h"
 #include "mach0data.h"
-#include "my_inttypes.h"
 #include "que0que.h"
 #include "read0read.h"
 #include "rem0cmp.h"
@@ -224,7 +223,8 @@ dtuple_t *row_build_index_entry_low(
               (ext == nullptr ? index->table->first_index() : ext->index);
 
           dptr = lob::btr_copy_externally_stored_field(
-              clust_index, &dlen, dptr, page_size, flen, false, temp_heap);
+              nullptr, clust_index, &dlen, nullptr, dptr, page_size, flen,
+              false, temp_heap);
         } else {
           dptr = static_cast<uchar *>(dfield_get_data(dfield2));
           dlen = dfield_get_len(dfield2);
@@ -274,7 +274,7 @@ dtuple_t *row_build_index_entry_low(
     indexed long columns may be stored off-page. */
     ut_ad(col->ord_part);
 
-    if (ext) {
+    if (ext && !col->is_virtual()) {
       /* See if the column is stored externally. */
       const byte *buf = row_ext_lookup(ext, col_no, &len);
       if (UNIV_LIKELY_NULL(buf)) {
@@ -467,7 +467,9 @@ static inline dtuple_t *row_build_low(ulint type, const dict_index_t *index,
 
     dfield_t *dfield = dtuple_get_nth_field(row, col_no);
 
-    const byte *field = rec_get_nth_field(copy, offsets, i, &len);
+    const byte *field;
+
+    field = rec_get_nth_field_instant(copy, offsets, i, index, &len);
 
     dfield_set_data(dfield, field, len);
 
@@ -636,7 +638,8 @@ dtuple_t *row_rec_to_index_entry_low(
 
   for (i = 0; i < rec_len; i++) {
     dfield = dtuple_get_nth_field(entry, i);
-    field = rec_get_nth_field(rec, offsets, i, &len);
+
+    field = rec_get_nth_field_instant(rec, offsets, i, index, &len);
 
     dfield_set_data(dfield, field, len);
 
@@ -1149,6 +1152,8 @@ ulint row_raw_format(const char *data,               /*!< in: raw data */
   if (buf_size == 0) {
     return (0);
   }
+
+  ut_ad(data_len != UNIV_SQL_ADD_COL_DEFAULT);
 
   if (data_len == UNIV_SQL_NULL) {
     ret = snprintf((char *)buf, buf_size, "NULL") + 1;

@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2017, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -22,9 +22,9 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-
 #define DBTUP_C
 #define DBTUP_GEN_CPP
+#include <dblqh/Dblqh.hpp>
 #include "Dbtup.hpp"
 #include <RefConvert.hpp>
 #include <ndb_limits.h>
@@ -50,8 +50,6 @@
 
 extern EventLogger * g_eventLogger;
 
-#define DEBUG(x) { ndbout << "TUP::" << x << endl; }
-
 void Dbtup::initData() 
 {
   TablerecPtr tablePtr;
@@ -66,6 +64,8 @@ void Dbtup::initData()
   cCopyLastSeg = RNIL;
   cCopyOverwrite = 0;
   cCopyOverwriteLen = 0;
+
+  c_debug_count = 0;
 
   // Records with constant sizes
   init_list_sizes();
@@ -274,6 +274,7 @@ void Dbtup::execCONTINUEB(Signal* signal)
     {
       ScanOpPtr scanPtr;
       c_scanOpPool.getPtr(scanPtr, dataPtr);
+      c_lqh->setup_scan_pointers(scanPtr.p->m_userPtr);
       scanCont(signal, scanPtr);
     }
     return;
@@ -346,8 +347,7 @@ void Dbtup::execCONTINUEB(Signal* signal)
   }
 
   default:
-    ndbrequire(false);
-    break;
+    ndbabort();
   }//switch
 }//Dbtup::execTUP_CONTINUEB()
 
@@ -529,7 +529,7 @@ void Dbtup::execREAD_CONFIG_REQ(Signal* signal)
    */
   NewVARIABLE *bat = allocateBat(1);
   bat[0].WA = &m_read_ctl_file_data[0];
-  bat[0].nrr = BackupFormat::NDB_LCP_CTL_FILE_SIZE;
+  bat[0].nrr = BackupFormat::NDB_LCP_CTL_FILE_SIZE_BIG;
 }
 
 void Dbtup::initRecords() 
@@ -541,6 +541,35 @@ void Dbtup::initRecords()
     m_ctx.m_config.getOwnConfigIterator();
   ndbrequire(p != 0);
 
+#if defined(USE_INIT_GLOBAL_VARIABLES)
+  {
+    void* tmp[] =
+    {
+      &prepare_fragptr,
+      &prepare_tabptr,
+      &prepare_oper_ptr,
+      &prepare_pageptr,
+      &m_curr_tabptr,
+      &m_curr_fragptr,
+    };
+    init_global_ptrs(tmp, sizeof(tmp)/sizeof(tmp[0]));
+  }
+  {
+    void * tmp[] =
+    {
+      &prepare_page_idx,
+      &prepare_page_no,
+    };
+    init_global_uint32(tmp, sizeof(tmp)/sizeof(tmp[0]));
+  }
+  {
+    void * tmp[] =
+    {
+      &prepare_tuple_ptr,
+    };
+    init_global_uint32_ptrs(tmp, sizeof(tmp)/sizeof(tmp[0]));
+  }
+#endif
   // Records with dynamic sizes
   void* ptr = m_ctx.m_mm.get_memroot();
   c_page_pool.set((Page*)ptr, (Uint32)~0);
@@ -647,8 +676,7 @@ void Dbtup::initialiseRecordsLab(Signal* signal, Uint32 switchData,
     }
     return;
   default:
-    ndbrequire(false);
-    break;
+    ndbabort();
   }//switch
   signal->theData[0] = ZINITIALISE_RECORDS;
   signal->theData[1] = switchData + 1;

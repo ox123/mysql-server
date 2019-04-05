@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0,
@@ -22,8 +22,8 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
-#ifndef X_TESTS_DRIVER_PROCESSOR_DUMP_MESSAGE_BLOCK_PROCESSOR_H_
-#define X_TESTS_DRIVER_PROCESSOR_DUMP_MESSAGE_BLOCK_PROCESSOR_H_
+#ifndef PLUGIN_X_TESTS_DRIVER_PROCESSOR_DUMP_MESSAGE_BLOCK_PROCESSOR_H_
+#define PLUGIN_X_TESTS_DRIVER_PROCESSOR_DUMP_MESSAGE_BLOCK_PROCESSOR_H_
 
 #include <map>
 #include <string>
@@ -35,12 +35,13 @@ class Dump_message_block_processor : public Send_message_block_processor {
   explicit Dump_message_block_processor(Execution_context *context)
       : Send_message_block_processor(context) {}
 
+  Result feed(std::istream &input, const char *linebuf) override;
+
  private:
-  std::string get_message_name(const char *linebuf) override;
   int process(const xcl::XProtocol::Client_message_type_id msg_id,
               const xcl::XProtocol::Message &message) override;
 
   std::string m_variable_name;
 };
 
-#endif  // X_TESTS_DRIVER_PROCESSOR_DUMP_MESSAGE_BLOCK_PROCESSOR_H_
+#endif  // PLUGIN_X_TESTS_DRIVER_PROCESSOR_DUMP_MESSAGE_BLOCK_PROCESSOR_H_

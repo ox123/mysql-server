@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2017, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -70,6 +70,18 @@ void Dbtc::initData()
 void Dbtc::initRecords() 
 {
   void *p;
+#if defined(USE_INIT_GLOBAL_VARIABLES)
+  {
+    void* tmp[] = { &apiConnectptr, 
+		    &tcConnectptr,
+		    &cachePtr,
+		    &hostptr,
+		    &timeOutptr,
+		    &scanFragptr, 
+                    &tcNodeFailptr }; 
+    init_global_ptrs(tmp, sizeof(tmp)/sizeof(tmp[0]));
+  }
+#endif
   // Records with dynamic sizes
   cacheRecord = (CacheRecord*)allocRecord("CacheRecord",
 					  sizeof(CacheRecord), 
@@ -253,7 +265,6 @@ Dbtc::Dbtc(Block_context& ctx, Uint32 instanceNo):
   addRecSignal(GSN_CONTINUEB, &Dbtc::execCONTINUEB);
   addRecSignal(GSN_KEYINFO, &Dbtc::execKEYINFO);
   addRecSignal(GSN_SCAN_NEXTREQ, &Dbtc::execSCAN_NEXTREQ);
-  addRecSignal(GSN_TAKE_OVERTCREQ, &Dbtc::execTAKE_OVERTCREQ);
   addRecSignal(GSN_TAKE_OVERTCCONF, &Dbtc::execTAKE_OVERTCCONF);
   addRecSignal(GSN_LQHKEYREF, &Dbtc::execLQHKEYREF);
 
@@ -351,18 +362,6 @@ Dbtc::Dbtc(Block_context& ctx, Uint32 instanceNo):
   cpackedListIndex = 0;
   c_ongoing_take_over_cnt = 0;
 
-#ifdef VM_TRACE
-  {
-    void* tmp[] = { &apiConnectptr, 
-		    &tcConnectptr,
-		    &cachePtr,
-		    &hostptr,
-		    &timeOutptr,
-		    &scanFragptr, 
-                    &tcNodeFailptr }; 
-    init_globals_list(tmp, sizeof(tmp)/sizeof(tmp[0]));
-  }
-#endif
   cacheRecord = 0;
   apiConnectRecord = 0;
   tcConnectRecord = 0;

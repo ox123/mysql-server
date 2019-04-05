@@ -78,6 +78,7 @@
 #include "sql/sql_list.h"
 #include "sql/sql_prepare.h"  // Ed_connection
 #include "sql/stateless_allocator.h"
+#include "sql/strfunc.h"
 #include "sql/system_variables.h"
 #include "sql/table.h"
 #include "sql/thd_raii.h"
@@ -87,8 +88,17 @@
 bool execute_query(THD *thd, const dd::String_type &q_buf) {
   Ed_connection con(thd);
   LEX_STRING str;
-  thd->make_lex_string(&str, q_buf.c_str(), q_buf.length(), false);
-  return con.execute_direct(str);
+  lex_string_strmake(thd->mem_root, &str, q_buf.c_str(), q_buf.length());
+  if (con.execute_direct(str)) {
+    // Report error to log file during bootstrap.
+    if (dd::bootstrap::DD_bootstrap_ctx::instance().get_stage() <
+        dd::bootstrap::Stage::FINISHED) {
+      LogErr(ERROR_LEVEL, ER_DD_INITIALIZE_SQL_ERROR, q_buf.c_str(),
+             con.get_last_errno(), con.get_last_error());
+    }
+    return true;
+  }
+  return false;
 }
 
 using namespace dd;
@@ -152,8 +162,8 @@ void store_predefined_tablespace_metadata(THD *thd) {
     // Create the dd::Tablespace object.
     std::unique_ptr<Tablespace> tablespace(dd::create_object<Tablespace>());
     tablespace->set_name(tablespace_def->get_name());
-    tablespace->set_options_raw(tablespace_def->get_options());
-    tablespace->set_se_private_data_raw(tablespace_def->get_se_private_data());
+    tablespace->set_options(tablespace_def->get_options());
+    tablespace->set_se_private_data(tablespace_def->get_se_private_data());
     tablespace->set_engine(tablespace_def->get_engine());
 
     // Loop over the tablespace files, create dd::Tablespace_file objects.
@@ -165,7 +175,7 @@ void store_predefined_tablespace_metadata(THD *thd) {
     while ((file = file_it++)) {
       Tablespace_file *space_file = tablespace->add_file();
       space_file->set_filename(file->get_name());
-      space_file->set_se_private_data_raw(file->get_se_private_data());
+      space_file->set_se_private_data(file->get_se_private_data());
     }
 
     /*
@@ -210,8 +220,12 @@ bool update_system_tables(THD *thd) {
     my_error(ER_DD_INIT_FAILED, MYF(0));
     return true;
   }
-
-  for (dd::Properties::Iterator it = system_tables_props->begin();
+  /*
+    We would normally use a range based loop here, but the developerstudio
+    compiler on Solaris does not handle this when the base collection has
+    pure virtual begin() and end() functions.
+  */
+  for (Properties::const_iterator it = system_tables_props->begin();
        it != system_tables_props->end(); ++it) {
     // Check if this is a CORE, INERT, SECOND or DDSE table.
     if (!dd::get_dictionary()->is_dd_table_name(MYSQL_SCHEMA_NAME.str,
@@ -236,7 +250,7 @@ bool update_system_tables(THD *thd) {
       */
       String_type tbl_prop_str;
       if (!system_tables_props->exists(it->first) ||
-          system_tables_props->get(it->first, tbl_prop_str))
+          system_tables_props->get(it->first, &tbl_prop_str))
         continue;
 
       const Object_table *table_def = System_tables::instance()->find_table(
@@ -249,7 +263,7 @@ bool update_system_tables(THD *thd) {
       String_type def;
       if (tbl_props->get(dd::tables::DD_properties::dd_key(
                              dd::tables::DD_properties::DD_property::DEF),
-                         def)) {
+                         &def)) {
         my_error(ER_DD_METADATA_NOT_FOUND, MYF(0), it->first.c_str());
         return true;
       }
@@ -277,11 +291,16 @@ bool initialize_dd_properties(THD *thd) {
     initialize the DD_bootstrap_ctx with the relevant version number.
   */
   uint actual_version = dd::DD_VERSION;
+  uint actual_server_version = MYSQL_VERSION_ID;
 
   bootstrap::DD_bootstrap_ctx::instance().set_actual_dd_version(actual_version);
+  bootstrap::DD_bootstrap_ctx::instance().set_actual_server_version(
+      actual_server_version);
 
   if (!opt_initialize) {
     bool exists = false;
+    bool exists_server = false;
+
     // Check 'DD_version' too in order to catch an upgrade from 8.0.3.
     if (dd::tables::DD_properties::instance().get(thd, "DD_VERSION",
                                                   &actual_version, &exists) ||
@@ -323,6 +342,29 @@ bool initialize_dd_properties(THD *thd) {
     }
     /* purecov: end */
 
+    if (dd::tables::DD_properties::instance().get(
+            thd, "MYSQLD_VERSION", &actual_server_version, &exists_server) ||
+        !exists_server)
+      return true;
+
+    if (actual_server_version != MYSQL_VERSION_ID) {
+      bootstrap::DD_bootstrap_ctx::instance().set_actual_server_version(
+          actual_server_version);
+      /*
+        This check is also done in DDSE_dict_init() based on the version
+        number from the DD tablespace header. Here, we repeat the check,
+        this time based on the server version number stored in the DD
+        table 'dd_properties'. The two checks should give the same result,
+        so this check should never fail; hence, the debug assert.
+      */
+      if (!bootstrap::DD_bootstrap_ctx::instance().supported_server_version()) {
+        LogErr(ERROR_LEVEL, ER_SERVER_UPGRADE_VERSION_NOT_SUPPORTED,
+               actual_server_version);
+        DBUG_ASSERT(false);
+        return true;
+      }
+    }
+
     /*
       Reject restarting with a changed LCTN setting, since the collation
       for LCTN-dependent columns is decided during server initialization.
@@ -343,13 +385,22 @@ bool initialize_dd_properties(THD *thd) {
     LogErr(INFORMATION_LEVEL, ER_DD_INITIALIZE, dd::DD_VERSION);
   else if (bootstrap::DD_bootstrap_ctx::instance().is_restart())
     LogErr(INFORMATION_LEVEL, ER_DD_RESTART, dd::DD_VERSION);
-  else if (bootstrap::DD_bootstrap_ctx::instance().is_upgrade())
-    LogErr(INFORMATION_LEVEL, ER_DD_UPGRADE, actual_version, dd::DD_VERSION);
   else if (bootstrap::DD_bootstrap_ctx::instance().is_minor_downgrade())
     LogErr(INFORMATION_LEVEL, ER_DD_MINOR_DOWNGRADE, actual_version,
            dd::DD_VERSION);
-  else
-    DBUG_ASSERT(false);
+  else {
+    /*
+      If none of the above, then this must be DD upgrade or server
+      upgrade, or both.
+    */
+    if (bootstrap::DD_bootstrap_ctx::instance().is_dd_upgrade())
+      LogErr(INFORMATION_LEVEL, ER_DD_UPGRADE, actual_version, dd::DD_VERSION);
+    if (bootstrap::DD_bootstrap_ctx::instance().is_server_upgrade())
+      LogErr(INFORMATION_LEVEL, ER_SERVER_UPGRADE_FROM_VERSION,
+             actual_server_version, MYSQL_VERSION_ID);
+    DBUG_ASSERT(bootstrap::DD_bootstrap_ctx::instance().is_dd_upgrade() ||
+                bootstrap::DD_bootstrap_ctx::instance().is_server_upgrade());
+  }
 
   /*
     Unless this is initialization or restart, we must update the
@@ -498,7 +549,7 @@ bool create_tables(THD *thd, const std::set<String_type> *create_set) {
   bool create_target_tables = true;
   if (bootstrap::DD_bootstrap_ctx::instance().get_stage() ==
           bootstrap::Stage::FETCHED_PROPERTIES &&
-      (bootstrap::DD_bootstrap_ctx::instance().is_upgrade() ||
+      (bootstrap::DD_bootstrap_ctx::instance().is_dd_upgrade() ||
        bootstrap::DD_bootstrap_ctx::instance().is_minor_downgrade()))
     create_target_tables = false;
 
@@ -1071,50 +1122,74 @@ bool sync_meta_data(THD *thd) {
   if (dd::end_transaction(thd, false) || execute_query(thd, "FLUSH TABLES"))
     return true;
 
+  // Get hold of the temporary actual and target schema names.
+  String_type target_schema_name;
+  bool target_schema_exists = false;
+  if (dd::tables::DD_properties::instance().get(thd, "UPGRADE_TARGET_SCHEMA",
+                                                &target_schema_name,
+                                                &target_schema_exists))
+    return true;
+
+  String_type actual_schema_name;
+  bool actual_schema_exists = false;
+  if (dd::tables::DD_properties::instance().get(thd, "UPGRADE_ACTUAL_SCHEMA",
+                                                &actual_schema_name,
+                                                &actual_schema_exists))
+    return true;
+
   // Reset the DDSE local dictionary cache.
   handlerton *ddse = ha_resolve_by_legacy_type(thd, DB_TYPE_INNODB);
   if (ddse->dict_cache_reset == nullptr) return true;
 
-  for (System_tables::Const_iterator it =
-           System_tables::instance()->begin(System_tables::Types::CORE);
-       it != System_tables::instance()->end();
-       it = System_tables::instance()->next(it, System_tables::Types::CORE)) {
+  for (System_tables::Const_iterator it = System_tables::instance()->begin();
+       it != System_tables::instance()->end(); ++it) {
     // Skip extraneous tables during minor downgrade.
     if ((*it)->entity() == nullptr) continue;
 
-    ddse->dict_cache_reset(MYSQL_SCHEMA_NAME.str,
-                           (*it)->entity()->name().c_str());
+    if ((*it)->property() == System_tables::Types::CORE ||
+        (*it)->property() == System_tables::Types::SECOND) {
+      ddse->dict_cache_reset(MYSQL_SCHEMA_NAME.str,
+                             (*it)->entity()->name().c_str());
+      if (target_schema_exists && !target_schema_name.empty())
+        ddse->dict_cache_reset(target_schema_name.c_str(),
+                               (*it)->entity()->name().c_str());
+      if (actual_schema_exists && !actual_schema_name.empty())
+        ddse->dict_cache_reset(actual_schema_name.c_str(),
+                               (*it)->entity()->name().c_str());
+    }
   }
 
   /*
     At this point, we're to a large extent open for business.
-    If there are leftover schema names from upgrade, delete them.
+    If there are leftover schema names from upgrade, delete them
+    and remove the names from the DD properties.
   */
-  String_type schema_name;
-  bool schema_exists = false;
-  if (dd::tables::DD_properties::instance().get(thd, "UPGRADE_ACTUAL_SCHEMA",
-                                                &schema_name, &schema_exists))
-    return true;
-
-  if (schema_exists && !schema_name.empty()) {
+  if (target_schema_exists && !target_schema_name.empty()) {
     std::stringstream ss;
-    ss << "DROP SCHEMA IF EXISTS " << schema_name;
+    ss << "DROP SCHEMA IF EXISTS " << target_schema_name;
     if (execute_query(thd, ss.str().c_str())) return true;
   }
 
-  if (dd::tables::DD_properties::instance().get(thd, "UPGRADE_TARGET_SCHEMA",
-                                                &schema_name, &schema_exists))
-    return true;
-
-  if (schema_exists && !schema_name.empty()) {
+  if (actual_schema_exists && !actual_schema_name.empty()) {
     std::stringstream ss;
-    ss << "DROP SCHEMA IF EXISTS " << schema_name;
+    ss << "DROP SCHEMA IF EXISTS " << actual_schema_name;
     if (execute_query(thd, ss.str().c_str())) return true;
   }
+
   /*
    The statements above are auto committed, so there is nothing uncommitted
-   at this stage.
+   at this stage. Go ahead and remove the schema keys.
   */
+  if (actual_schema_exists)
+    (void)dd::tables::DD_properties::instance().remove(thd,
+                                                       "UPGRADE_ACTUAL_SCHEMA");
+
+  if (target_schema_exists)
+    (void)dd::tables::DD_properties::instance().remove(thd,
+                                                       "UPGRADE_TARGET_SCHEMA");
+
+  if (actual_schema_exists || target_schema_exists)
+    return end_transaction(thd, false);
 
   return false;
 }
@@ -1356,6 +1431,33 @@ bool migrate_meta_data(THD *thd, const std::set<String_type> &create_set,
   /* Version dependent migration of meta data can be added here. */
 
   /*
+    8.0.11 allowed entries with 0 timestamps to be created. These must
+    be updated, otherwise, upgrade will fail since 0 timstamps are not
+    allowed with the default SQL mode.
+  */
+  if (bootstrap::DD_bootstrap_ctx::instance().is_dd_upgrade_from_before(
+          bootstrap::DD_VERSION_80012)) {
+    if (execute_query(thd,
+                      "UPDATE mysql.tables SET last_altered = "
+                      "CURRENT_TIMESTAMP WHERE last_altered = 0"))
+      return dd::end_transaction(thd, true);
+    if (execute_query(thd,
+                      "UPDATE mysql.tables SET created = CURRENT_TIMESTAMP "
+                      "WHERE created = 0"))
+      return dd::end_transaction(thd, true);
+  }
+
+  /* Upgrade from 80012. */
+  if (bootstrap::DD_bootstrap_ctx::instance().is_dd_upgrade_from_before(
+          bootstrap::DD_VERSION_80013)) {
+    migrated_set.insert("tables");
+    if (execute_query(thd,
+                      "INSERT INTO tables SELECT *, 0 FROM mysql.tables")) {
+      return dd::end_transaction(thd, true);
+    }
+  }
+
+  /*
     Default handling: Copy all meta data for the tables that have been
     modified (i.e., all tables which are both in the remove- and create set),
     unless they were migrated explicitly above.
@@ -1450,12 +1552,11 @@ bool update_properties(THD *thd, const std::set<String_type> *create_set,
           dd::Properties::parse_properties(""));
 
       using dd::tables::DD_properties;
-      tbl_props->set_uint64(
-          DD_properties::dd_key(DD_properties::DD_property::ID),
-          dd_table->se_private_id());
+      tbl_props->set(DD_properties::dd_key(DD_properties::DD_property::ID),
+                     dd_table->se_private_id());
       tbl_props->set(DD_properties::dd_key(DD_properties::DD_property::DATA),
                      dd_table->se_private_data().raw_string());
-      tbl_props->set_uint64(
+      tbl_props->set(
           DD_properties::dd_key(DD_properties::DD_property::SPACE_ID),
           dd_table->tablespace_id());
 
@@ -1785,6 +1886,37 @@ bool update_versions(THD *thd) {
       return dd::end_transaction(thd, true);
   }
 
+  /*
+    Update the server version number in the bootstrap ctx and the
+    DD tablespace header if we have been doing a server upgrade.
+    Note that the update of the tablespace header is not rolled
+    back in case of an abort, so this better be the last step we
+    do before committing.
+  */
+  handlerton *ddse = ha_resolve_by_legacy_type(thd, DB_TYPE_INNODB);
+  if (bootstrap::DD_bootstrap_ctx::instance().is_server_upgrade()) {
+    if (ddse->dict_set_server_version == nullptr ||
+        ddse->dict_set_server_version()) {
+      LogErr(ERROR_LEVEL, ER_CANNOT_SET_SERVER_VERSION_IN_TABLESPACE_HEADER);
+      return dd::end_transaction(thd, true);
+    }
+    bootstrap::DD_bootstrap_ctx::instance().set_actual_server_version(
+        MYSQL_VERSION_ID);
+  }
+
+#ifndef DBUG_OFF
+  /*
+    Debug code to make sure that after updating version numbers, regardless
+    of the type of initialization, restart or upgrade, the server version
+    number in the DD tablespace header is indeed the same as this server's
+    version number.
+  */
+  uint version = 0;
+  DBUG_ASSERT(ddse->dict_get_server_version != nullptr);
+  DBUG_ASSERT(!ddse->dict_get_server_version(&version));
+  DBUG_ASSERT(version == MYSQL_VERSION_ID);
+#endif
+
   bootstrap::DD_bootstrap_ctx::instance().set_stage(
       bootstrap::Stage::VERSION_UPDATED);
 
@@ -1797,7 +1929,7 @@ bool update_versions(THD *thd) {
 // Create the target tables for upgrade and migrate the meta data.
 /* purecov: begin inspected */
 bool upgrade_tables(THD *thd) {
-  if (!bootstrap::DD_bootstrap_ctx::instance().is_upgrade()) return false;
+  if (!bootstrap::DD_bootstrap_ctx::instance().is_dd_upgrade()) return false;
 
   /*
     Create the temporary schemas used for target and actual tables,
@@ -2081,6 +2213,27 @@ bool DDSE_dict_init(THD *thd, dict_init_mode_t dict_init_mode, uint version) {
     return true;
 
   /*
+    Get the server version number from the DD tablespace header and verify
+    that we are allowed to upgrade from that version.
+  */
+  if (!opt_initialize) {
+    uint server_version = 0;
+    if (ddse->dict_get_server_version == nullptr ||
+        ddse->dict_get_server_version(&server_version)) {
+      LogErr(ERROR_LEVEL, ER_CANNOT_GET_SERVER_VERSION_FROM_TABLESPACE_HEADER);
+      return true;
+    }
+
+    if (server_version != MYSQL_VERSION_ID &&
+        !DD_bootstrap_ctx::instance().supported_server_version(
+            server_version)) {
+      LogErr(ERROR_LEVEL, ER_SERVER_UPGRADE_VERSION_NOT_SUPPORTED,
+             server_version);
+      return true;
+    }
+  }
+
+  /*
     Iterate over the table definitions and add them to the System_tables
     registry. The Object_table instances will later be used to execute
     CREATE TABLE statements to actually create the tables.
@@ -2239,8 +2392,9 @@ bool restart(THD *thd) {
       create_tables(thd, nullptr) || sync_meta_data(thd) ||
       DDSE_dict_recover(thd, DICT_RECOVERY_RESTART_SERVER,
                         d->get_actual_dd_version(thd)) ||
-      upgrade_tables(thd) || repopulate_charsets_and_collations(thd) ||
-      verify_contents(thd) || update_versions(thd)) {
+      bootstrap::do_server_upgrade_checks(thd) || upgrade_tables(thd) ||
+      repopulate_charsets_and_collations(thd) || verify_contents(thd) ||
+      update_versions(thd)) {
     return true;
   }
 

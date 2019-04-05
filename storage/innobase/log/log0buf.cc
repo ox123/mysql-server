@@ -2,17 +2,25 @@
 
 Copyright (c) 1995, 2018, Oracle and/or its affiliates. All Rights Reserved.
 
-This program is free software; you can redistribute it and/or modify it under
-the terms of the GNU General Public License as published by the Free Software
-Foundation; version 2 of the License.
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License, version 2.0,
+as published by the Free Software Foundation.
 
-This program is distributed in the hope that it will be useful, but WITHOUT
-ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
-FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+This program is also distributed with certain software (including
+but not limited to OpenSSL) that is licensed under separate terms,
+as designated in a particular file or component or in included license
+documentation.  The authors of MySQL hereby grant you an additional
+permission to link the program and your derivative works with the
+separately licensed software that they have included with MySQL.
 
-You should have received a copy of the GNU General Public License along with
-this program; if not, write to the Free Software Foundation, Inc.,
-51 Franklin Street, Suite 500, Boston, MA 02110-1335 USA
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License, version 2.0, for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 
 *****************************************************************************/
 
@@ -614,13 +622,32 @@ static void log_wait_for_space_after_reserving(log_t &log,
   log_wait_for_space_in_log_buf(log, end_sn);
 }
 
-void log_wait_for_space_in_log_file(log_t &log, sn_t end_sn) {
-  auto stop_condition = [&log, end_sn](bool) {
+sn_t log_free_check_margin(const log_t &log) {
+  sn_t margins = log.concurrency_margin.load();
 
-    const sn_t chkp_sn =
-        log_translate_lsn_to_sn(log.last_checkpoint_lsn.load());
+  margins += log.dict_persist_margin.load();
 
-    return (end_sn <= chkp_sn + log.sn_capacity);
+  return (margins);
+}
+
+void log_free_check_wait(log_t &log, sn_t sn) {
+  auto stop_condition = [&log, sn](bool) {
+
+    const sn_t margins = log_free_check_margin(log);
+
+    const lsn_t start_lsn = log_translate_sn_to_lsn(sn + margins);
+
+    const lsn_t checkpoint_lsn = log.last_checkpoint_lsn.load();
+
+    if (start_lsn <= checkpoint_lsn + log.lsn_capacity_for_free_check) {
+      /* No reason to wait anymore. */
+      return (true);
+    }
+
+    log_request_checkpoint(log, true,
+                           start_lsn - log.lsn_capacity_for_free_check);
+
+    return (false);
   };
 
   const auto wait_stats = ut_wait_for(0, 100, stop_condition);
@@ -903,19 +930,14 @@ void log_buffer_write_completed(log_t &log, const Log_handle &handle,
   log.recent_written.add_link(start_lsn, end_lsn);
 }
 
-void log_buffer_write_completed_before_dirty_pages_added(
-    log_t &log, const Log_handle &handle) {
-  const lsn_t start_lsn = handle.start_lsn;
+void log_wait_for_space_in_log_recent_closed(log_t &log, lsn_t lsn) {
+  ut_a(log_lsn_validate(lsn));
 
-  ut_a(log_lsn_validate(start_lsn));
-
-  ut_ad(start_lsn >= log_buffer_dirty_pages_added_up_to_lsn(log));
-
-  ut_ad(log.sn_lock.s_own(handle.lock_no));
+  ut_ad(lsn >= log_buffer_dirty_pages_added_up_to_lsn(log));
 
   uint64_t wait_loops = 0;
 
-  while (!log.recent_closed.has_space(start_lsn)) {
+  while (!log.recent_closed.has_space(lsn)) {
     ++wait_loops;
     os_thread_sleep(20);
   }
@@ -925,8 +947,7 @@ void log_buffer_write_completed_before_dirty_pages_added(
   }
 }
 
-void log_buffer_write_completed_and_dirty_pages_added(
-    log_t &log, const Log_handle &handle) {
+void log_buffer_close(log_t &log, const Log_handle &handle) {
   const lsn_t start_lsn = handle.start_lsn;
   const lsn_t end_lsn = handle.end_lsn;
 
@@ -991,6 +1012,8 @@ void log_buffer_flush_to_disk(log_t &log, bool sync) {
 
 void log_buffer_get_last_block(log_t &log, lsn_t &last_lsn, byte *last_block,
                                uint32_t &block_len) {
+  ut_ad(last_block != nullptr);
+
   /* We acquire x-lock for the log buffer to prevent:
           a) resize of the log buffer
           b) overwrite of the fragment which we are copying */
@@ -1002,12 +1025,6 @@ void log_buffer_get_last_block(log_t &log, lsn_t &last_lsn, byte *last_block,
   have finished writing to the log buffer. */
 
   last_lsn = log_get_lsn(log);
-
-  if (last_block == nullptr) {
-    block_len = 0;
-    log_buffer_x_lock_exit(log);
-    return;
-  }
 
   byte *buf = log.buf;
 
@@ -1023,12 +1040,6 @@ void log_buffer_get_last_block(log_t &log, lsn_t &last_lsn, byte *last_block,
   const auto data_len = last_lsn % OS_FILE_LOG_BLOCK_SIZE;
 
   ut_ad(data_len >= LOG_BLOCK_HDR_SIZE);
-
-  if (data_len <= LOG_BLOCK_HDR_SIZE) {
-    block_len = 0;
-    log_buffer_x_lock_exit(log);
-    return;
-  }
 
   /* The next_checkpoint_no is protected by the x-lock too. */
 
@@ -1090,7 +1101,7 @@ bool log_advance_ready_for_write_lsn(log_t &log) {
 
     LOG_SYNC_POINT("log_advance_ready_for_write_before_reclaim");
 
-    return (next_lsn - write_lsn >= write_max_size);
+    return (prev_lsn - write_lsn >= write_max_size);
   };
 
   const lsn_t previous_lsn = log_buffer_ready_for_write_lsn(log);

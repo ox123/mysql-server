@@ -1,4 +1,4 @@
-/* Copyright (c) 2014, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2014, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "my_dbug.h"
+#include "my_inttypes.h"
 
 namespace dd {
 
@@ -66,7 +67,10 @@ class Collection {
       : public std::iterator<std::forward_iterator_tag, T> {
    public:
     Collection_iterator(Array *array)
-        : m_array(array), m_current(array->begin()) {}
+        : m_array(array), m_current(array->begin()), m_current_obj(nullptr) {}
+
+    Collection_iterator(Array *array, typename Array::iterator it)
+        : m_array(array), m_current(it), m_current_obj(nullptr) {}
 
     bool operator==(const Collection_iterator &iter) const {
       return (m_array == iter.m_array && m_current == iter.m_current);
@@ -88,6 +92,8 @@ class Collection {
       return *this;
     }
 
+    typename Array::iterator current() { return m_current; }
+
    private:
     Array *m_array;
     typename Array::iterator m_current;
@@ -98,7 +104,11 @@ class Collection {
       : public std::iterator<std::forward_iterator_tag, const abstract_type *> {
    public:
     Collection_const_iterator(const Array *array)
-        : m_array(array), m_current(array->begin()) {}
+        : m_array(array), m_current(array->begin()), m_current_obj(nullptr) {}
+
+    Collection_const_iterator(const Array *array,
+                              typename Array::const_iterator it)
+        : m_array(array), m_current(it), m_current_obj(nullptr) {}
 
     bool operator==(const Collection_const_iterator &iter) const {
       return (m_array == iter.m_array && m_current == iter.m_current);
@@ -120,6 +130,8 @@ class Collection {
       return *this;
     }
 
+    typename Array::const_iterator current() const { return m_current; }
+
    private:
     const Array *m_array;
     typename Array::const_iterator m_current;
@@ -135,10 +147,7 @@ class Collection {
     Remove elements from m_removed_items.  This is used only in case of
     dropping triggers for now.  See comments in
     Table_impl::store_children() for more details.
-
-    @returns void
   */
-
   void clear_removed_items();
 
   Collection(const Collection &) = delete;
@@ -157,33 +166,26 @@ class Collection {
     renumerate_items();
   }
 
+  void insert(iterator it, impl_type *item) {
+    m_items.insert(it.current(), item);
+    renumerate_items();
+  }
+
   void remove(impl_type *item);
 
   /**
     Remove all items and move it to m_removed_items items.
-
-    @returns void.
   */
 
   void remove_all() { m_removed_items = std::move(m_items); }
 
   /**
-    Move item at position old_index to the new_index.
+    Find item and return the position.
 
-    @returns void.
+    @returns iterator pointing to found element.
   */
 
-  void move(int old_index, int new_index) {
-    DBUG_ASSERT(0 <= old_index && old_index < static_cast<int>(size()));
-    DBUG_ASSERT(0 <= new_index && new_index < static_cast<int>(size()));
-
-    impl_type *item = m_items[old_index];
-
-    m_items.erase(m_items.begin() + old_index);
-    m_items.insert(m_items.begin() + new_index, item);
-
-    renumerate_items();
-  }
+  iterator find(const impl_type *item);
 
   iterator begin() { return iterator(&m_items); }
 
@@ -200,6 +202,10 @@ class Collection {
     iterator.end();
     return iterator;
   }
+
+  const_iterator cbegin() const { return begin(); }
+
+  const_iterator cend() const { return end(); }
 
   bool empty() const { return m_items.empty() && m_removed_items.empty(); }
 

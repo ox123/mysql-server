@@ -1,4 +1,4 @@
-/* Copyright (c) 2014, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2014, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -47,6 +47,12 @@ const Tables &Tables::instance() {
 
 ///////////////////////////////////////////////////////////////////////////
 
+const CHARSET_INFO *Tables::name_collation() {
+  return Object_table_definition_impl::fs_name_collation();
+}
+
+///////////////////////////////////////////////////////////////////////////
+
 Tables::Tables() {
   m_target_def.set_table_name("tables");
 
@@ -54,10 +60,9 @@ Tables::Tables() {
                          "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT");
   m_target_def.add_field(FIELD_SCHEMA_ID, "FIELD_SCHEMA_ID",
                          "schema_id BIGINT UNSIGNED NOT NULL");
-  m_target_def.add_field(
-      FIELD_NAME, "FIELD_NAME",
-      "name VARCHAR(64) NOT NULL COLLATE " +
-          String_type(Object_table_definition_impl::fs_name_collation()->name));
+  m_target_def.add_field(FIELD_NAME, "FIELD_NAME",
+                         "name VARCHAR(64) NOT NULL COLLATE " +
+                             String_type(name_collation()->name));
   m_target_def.add_field(FIELD_TYPE, "FIELD_TYPE",
                          "type ENUM('BASE TABLE', 'VIEW', 'SYSTEM VIEW')"
                          "NOT NULL");
@@ -76,7 +81,7 @@ Tables::Tables() {
   m_target_def.add_field(
       FIELD_HIDDEN, "FIELD_HIDDEN",
       "hidden ENUM('Visible', 'System', 'SE', 'DDL') NOT NULL");
-  m_target_def.add_field(FIELD_OPTIONS, "FIELD_OPTIONS", "options MEDIUMBLOB");
+  m_target_def.add_field(FIELD_OPTIONS, "FIELD_OPTIONS", "options MEDIUMTEXT");
   m_target_def.add_field(FIELD_SE_PRIVATE_DATA, "FIELD_SE_PRIVATE_DATA",
                          "se_private_data MEDIUMTEXT");
   m_target_def.add_field(FIELD_SE_PRIVATE_ID, "FIELD_SE_PRIVATE_ID",
@@ -89,7 +94,7 @@ Tables::Tables() {
                          "  'LINEAR_HASH','LINEAR_KEY_51',\n"
                          "  'LINEAR_KEY_55','RANGE','LIST',\n"
                          "  'RANGE_COLUMNS','LIST_COLUMNS',\n"
-                         "  'AUTO'"
+                         "  'AUTO', 'AUTO_LINEAR'"
                          ")");
   m_target_def.add_field(FIELD_PARTITION_EXPRESSION,
                          "FIELD_PARTITION_EXPRESSION",
@@ -118,11 +123,9 @@ Tables::Tables() {
                          "default_subpartitioning ENUM('NO', 'YES', "
                          "'NUMBER')");
   m_target_def.add_field(FIELD_CREATED, "FIELD_CREATED",
-                         "created TIMESTAMP NOT NULL\n"
-                         " DEFAULT CURRENT_TIMESTAMP\n"
-                         " ON UPDATE CURRENT_TIMESTAMP");
+                         "created TIMESTAMP NOT NULL");
   m_target_def.add_field(FIELD_LAST_ALTERED, "FIELD_LAST_ALTERED",
-                         "last_altered TIMESTAMP NOT NULL DEFAULT NOW()");
+                         "last_altered TIMESTAMP NOT NULL");
   m_target_def.add_field(FIELD_VIEW_DEFINITION, "FIELD_VIEW_DEFINITION",
                          "view_definition LONGBLOB");
   m_target_def.add_field(FIELD_VIEW_DEFINITION_UTF8,
@@ -149,6 +152,10 @@ Tables::Tables() {
                          "view_connection_collation_id BIGINT UNSIGNED");
   m_target_def.add_field(FIELD_VIEW_COLUMN_NAMES, "FIELD_VIEW_COLUMN_NAMES",
                          "view_column_names LONGTEXT");
+  m_target_def.add_field(
+      FIELD_LAST_CHECKED_FOR_UPGRADE_VERSION_ID,
+      "FIELD_LAST_CHECKED_FOR_UPGRADE_VERSION_ID",
+      "last_checked_for_upgrade_version_id INT UNSIGNED NOT NULL");
 
   m_target_def.add_index(INDEX_PK_ID, "INDEX_PK_ID", "PRIMARY KEY (id)");
   m_target_def.add_index(INDEX_UK_SCHEMA_ID_NAME, "INDEX_UK_SCHEMA_ID_NAME",
@@ -161,6 +168,13 @@ Tables::Tables() {
                          "KEY(collation_id)");
   m_target_def.add_index(INDEX_K_TABLESPACE_ID, "INDEX_K_TABLESPACE_ID",
                          "KEY(tablespace_id)");
+  m_target_def.add_index(INDEX_K_TYPE, "INDEX_K_TYPE", "KEY(type)");
+  m_target_def.add_index(INDEX_K_VIEW_CLIENT_COLLATION_ID,
+                         "INDEX_K_VIEW_CLIENT_COLLATION_ID",
+                         "KEY(view_client_collation_id)");
+  m_target_def.add_index(INDEX_K_VIEW_CONNECTION_COLLATION_ID,
+                         "INDEX_K_VIEW_CONNECTION_COLLATION_ID",
+                         "KEY(view_connection_collation_id)");
 
   m_target_def.add_foreign_key(FK_SCHEMA_ID, "FK_SCHEMA_ID",
                                "FOREIGN KEY (schema_id) "
@@ -171,6 +185,13 @@ Tables::Tables() {
   m_target_def.add_foreign_key(FK_TABLESPACE_ID, "FK_TABLESPACE_ID",
                                "FOREIGN KEY (tablespace_id) "
                                "REFERENCES tablespaces(id)");
+
+  m_target_def.add_foreign_key(
+      FK_VIEW_CLIENT_COLLATION_ID, "FK_VIEW_CLIENT_COLLATION_ID",
+      "FOREIGN KEY (view_client_collation_id) REFERENCES collations(id)");
+  m_target_def.add_foreign_key(
+      FK_VIEW_CONNECTION_COLLATION_ID, "FK_VIEW_CONNECTION_COLLATION_ID",
+      "FOREIGN KEY (view_connection_collation_id) REFERENCES collations(id)");
 }
 
 ///////////////////////////////////////////////////////////////////////////
@@ -189,9 +210,8 @@ Abstract_table *Tables::create_entity_object(const Raw_record &r) const {
 
 bool Tables::update_object_key(Item_name_key *key, Object_id schema_id,
                                const String_type &table_name) {
-  char buf[NAME_LEN + 1];
-  key->update(FIELD_SCHEMA_ID, schema_id, FIELD_NAME,
-              Object_table_definition_impl::fs_name_case(table_name, buf));
+  key->update(FIELD_SCHEMA_ID, schema_id, FIELD_NAME, table_name,
+              name_collation());
   return false;
 }
 

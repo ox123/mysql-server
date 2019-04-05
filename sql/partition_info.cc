@@ -1,4 +1,4 @@
-/* Copyright (c) 2006, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2006, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -19,8 +19,6 @@
    You should have received a copy of the GNU General Public License
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
-
-/* Some general useful functions */
 
 #include "sql/partition_info.h"  // LIST_PART_ENTRY
 
@@ -46,7 +44,8 @@
 #include "mysqld_error.h"
 #include "sql/auth/auth_acls.h"
 #include "sql/auth/auth_common.h"  // *_ACL
-#include "sql/derror.h"            // ER_THD
+#include "sql/create_field.h"
+#include "sql/derror.h"  // ER_THD
 #include "sql/error_handler.h"
 #include "sql/field.h"
 #include "sql/handler.h"
@@ -314,9 +313,6 @@ bool partition_info::can_prune_insert(THD *thd, enum_duplicates duplic,
                                       enum_can_prune *can_prune_partitions,
                                       bool *prune_needs_default_values,
                                       MY_BITMAP *used_partitions) {
-  uint32 *bitmap_buf;
-  uint bitmap_bytes;
-  uint num_partitions = 0;
   *can_prune_partitions = PRUNE_NO;
   DBUG_ASSERT(bitmaps_are_initialized);
   DBUG_ENTER("partition_info::can_prune_insert");
@@ -348,6 +344,18 @@ bool partition_info::can_prune_insert(THD *thd, enum_duplicates duplic,
   if (table->vfield) {
     Field **fld;
     for (fld = table->vfield; *fld; fld++) {
+      if (bitmap_is_set(&full_part_field_set, (*fld)->field_index))
+        DBUG_RETURN(false);
+    }
+  }
+
+  /*
+    Can't prune partitions over generated default expresssions, as their values
+    are calculated much later.
+  */
+  if (table->gen_def_fields_ptr) {
+    Field **fld;
+    for (fld = table->gen_def_fields_ptr; *fld; fld++) {
       if (bitmap_is_set(&full_part_field_set, (*fld)->field_index))
         DBUG_RETURN(false);
     }
@@ -424,21 +432,12 @@ bool partition_info::can_prune_insert(THD *thd, enum_duplicates duplic,
     */
   }
 
-  /* Pruning possible, have to initialize the used_partitions bitmap. */
-  num_partitions = lock_partitions.n_bits;
-  bitmap_bytes = bitmap_buffer_size(num_partitions);
-  if (!(bitmap_buf = (uint32 *)thd->alloc(bitmap_bytes))) {
-    mem_alloc_error(bitmap_bytes);
-    DBUG_RETURN(true);
-  }
-  /* Also clears all bits. */
-  if (bitmap_init(used_partitions, bitmap_buf, num_partitions, false)) {
-    /* purecov: begin deadcode */
-    /* Cannot happen, due to pre-alloc. */
-    mem_alloc_error(bitmap_bytes);
-    DBUG_RETURN(true);
-    /* purecov: end */
-  }
+  /*
+    Pruning possible, have to initialize the used_partitions bitmap.
+    This also clears all bits.
+  */
+  if (init_partition_bitmap(used_partitions, thd->mem_root)) DBUG_RETURN(true);
+
   /*
     If no partitioning field in set (e.g. defaults) check pruning only once.
   */
@@ -2341,7 +2340,6 @@ bool partition_info::fix_column_value_functions(THD *thd, part_elem_value *val,
         uchar *val_ptr;
         uint len = field->pack_length();
         sql_mode_t save_sql_mode;
-        bool save_got_warning;
 
         if (!(column_item = get_column_item(column_item, field))) {
           result = true;
@@ -2349,10 +2347,9 @@ bool partition_info::fix_column_value_functions(THD *thd, part_elem_value *val,
         }
         save_sql_mode = thd->variables.sql_mode;
         thd->variables.sql_mode = 0;
-        save_got_warning = thd->got_warning;
-        thd->got_warning = 0;
-        result = (column_item->save_in_field(field, true) || thd->got_warning);
-        thd->got_warning = save_got_warning;
+        uint cond_count = thd->get_stmt_da()->cond_count();
+        result = (column_item->save_in_field(field, true) ||
+                  (cond_count != thd->get_stmt_da()->cond_count()));
         thd->variables.sql_mode = save_sql_mode;
         if (result) {
           my_error(ER_WRONG_TYPE_COLUMN_VALUE_ERROR, MYF(0));
@@ -2856,7 +2853,7 @@ bool validate_partition_tablespace_names(partition_info *part_info,
 
     // Check tablespace names from partition elements, if used.
     if (part_elem->tablespace_name &&
-        validate_tablespace_name(false, part_elem->tablespace_name,
+        validate_tablespace_name(TS_CMD_NOT_DEFINED, part_elem->tablespace_name,
                                  part_elem_engine))
       return true;
 
@@ -2870,11 +2867,25 @@ bool validate_partition_tablespace_names(partition_info *part_info,
 
       // Check tablespace name from sub-partition elements, if used.
       if (sub_elem->tablespace_name &&
-          validate_tablespace_name(false, sub_elem->tablespace_name,
-                                   sub_elem_engine))
+          validate_tablespace_name(TS_CMD_NOT_DEFINED,
+                                   sub_elem->tablespace_name, sub_elem_engine))
         return true;
     }
   }
 
+  return false;
+}
+
+bool partition_info::init_partition_bitmap(MY_BITMAP *bitmap,
+                                           MEM_ROOT *mem_root) {
+  uint32 *bitmap_buf;
+  uint bitmap_bits = num_subparts ? (num_subparts * num_parts) : num_parts;
+  uint bitmap_bytes = bitmap_buffer_size(bitmap_bits);
+
+  if (!(bitmap_buf = (uint32 *)alloc_root(mem_root, bitmap_bytes))) {
+    mem_alloc_error(bitmap_bytes);
+    return true;
+  }
+  bitmap_init(bitmap, bitmap_buf, bitmap_bits, false);
   return false;
 }

@@ -112,11 +112,18 @@ IF(UNIX)
   IF(NOT LIBM)
     MY_SEARCH_LIBS(__infinity m LIBM)
   ENDIF()
+  IF(NOT LIBM)
+    MY_SEARCH_LIBS(log m LIBM)
+  ENDIF()
   MY_SEARCH_LIBS(gethostbyname_r  "nsl_r;nsl" LIBNSL)
   MY_SEARCH_LIBS(bind "bind;socket" LIBBIND)
   MY_SEARCH_LIBS(crypt crypt LIBCRYPT)
   MY_SEARCH_LIBS(setsockopt socket LIBSOCKET)
   MY_SEARCH_LIBS(dlopen dl LIBDL)
+  # HAVE_dlopen_IN_LIBC
+  IF(NOT LIBDL)
+    MY_SEARCH_LIBS(dlsym dl LIBDL)
+  ENDIF()
   MY_SEARCH_LIBS(sched_yield rt LIBRT)
   IF(NOT LIBRT)
     MY_SEARCH_LIBS(clock_gettime rt LIBRT)
@@ -125,7 +132,7 @@ IF(UNIX)
   MY_SEARCH_LIBS(atomic_thread_fence atomic LIBATOMIC)
   MY_SEARCH_LIBS(backtrace execinfo LIBEXECINFO)
 
-  SET(CMAKE_REQUIRED_LIBRARIES 
+  LIST(APPEND CMAKE_REQUIRED_LIBRARIES
     ${LIBM} ${LIBNSL} ${LIBBIND} ${LIBCRYPT} ${LIBSOCKET} ${LIBDL}
     ${CMAKE_THREAD_LIBS_INIT} ${LIBRT} ${LIBATOMIC} ${LIBEXECINFO}
   )
@@ -134,8 +141,23 @@ IF(UNIX)
     SET(CMAKE_REQUIRED_LIBRARIES ${CMAKE_REQUIRED_LIBRARIES} pthread)
   ENDIF()
 
+  # https://bugs.llvm.org/show_bug.cgi?id=16404
+  IF(LINUX AND HAVE_UBSAN AND CMAKE_C_COMPILER_ID MATCHES "Clang")
+    SET(CMAKE_EXE_LINKER_FLAGS_DEBUG
+      "${CMAKE_EXE_LINKER_FLAGS_DEBUG} -rtlib=compiler-rt -lgcc_s")
+    SET(CMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO
+      "${CMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO} -rtlib=compiler-rt -lgcc_s")
+  ENDIF()
+
   IF(WITH_ASAN)
     SET(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} -fsanitize=address")
+  ENDIF()
+
+  IF(WITH_ASAN OR WITH_TSAN)
+    IF(CMAKE_USE_PTHREADS_INIT AND NOT CMAKE_THREAD_LIBS_INIT)
+      MESSAGE(STATUS "No CMAKE_THREAD_LIBS_INIT ??")
+      SET(CMAKE_THREAD_LIBS_INIT "-lpthread")
+    ENDIF()
   ENDIF()
 
   LIST(LENGTH CMAKE_REQUIRED_LIBRARIES required_libs_length)
@@ -209,6 +231,7 @@ CHECK_INCLUDE_FILES (strings.h HAVE_STRINGS_H) # Used by NDB
 CHECK_INCLUDE_FILES (sys/cdefs.h HAVE_SYS_CDEFS_H) # Used by libedit
 CHECK_INCLUDE_FILES (sys/ioctl.h HAVE_SYS_IOCTL_H)
 CHECK_INCLUDE_FILES (sys/mman.h HAVE_SYS_MMAN_H)
+CHECK_INCLUDE_FILES (sys/prctl.h HAVE_SYS_PRCTL_H)
 CHECK_INCLUDE_FILES (sys/resource.h HAVE_SYS_RESOURCE_H)
 CHECK_INCLUDE_FILES (sys/select.h HAVE_SYS_SELECT_H)
 CHECK_INCLUDE_FILES (sys/socket.h HAVE_SYS_SOCKET_H)
@@ -327,6 +350,7 @@ CHECK_SYMBOL_EXISTS(lrand48 "stdlib.h" HAVE_LRAND48)
 CHECK_SYMBOL_EXISTS(TIOCGWINSZ "sys/ioctl.h" GWINSZ_IN_SYS_IOCTL)
 CHECK_SYMBOL_EXISTS(FIONREAD "sys/ioctl.h" FIONREAD_IN_SYS_IOCTL)
 CHECK_SYMBOL_EXISTS(FIONREAD "sys/filio.h" FIONREAD_IN_SYS_FILIO)
+CHECK_SYMBOL_EXISTS(MADV_DONTDUMP "sys/mman.h" HAVE_MADV_DONTDUMP)
 
 # On Solaris, it is only visible in C99 mode
 CHECK_SYMBOL_EXISTS(isinf "math.h" HAVE_C_ISINF)
@@ -392,6 +416,9 @@ CHECK_TYPE_SIZE("long long" SIZEOF_LONG_LONG)
 CHECK_TYPE_SIZE("off_t"     SIZEOF_OFF_T)
 CHECK_TYPE_SIZE("time_t"    SIZEOF_TIME_T)
 
+CHECK_STRUCT_HAS_MEMBER("struct tm"
+ tm_gmtoff "time.h" HAVE_TM_GMTOFF)
+
 # If finds the size of a type, set SIZEOF_<type> and HAVE_<type>
 FUNCTION(MY_CHECK_TYPE_SIZE type defbase)
   CHECK_TYPE_SIZE("${type}" SIZEOF_${defbase})
@@ -435,9 +462,6 @@ int main()
   struct timespec ts;
   return clock_gettime(CLOCK_REALTIME, &ts);
 }" HAVE_CLOCK_REALTIME)
-
-# For libevent
-SET(DNS_USE_CPU_CLOCK_FOR_ID CACHE ${HAVE_CLOCK_GETTIME} INTERNAL "")
 
 IF(NOT STACK_DIRECTION)
   IF(CMAKE_CROSSCOMPILING)
@@ -663,32 +687,6 @@ int main(int ac, char **av)
 HAVE_INTEGER_PTHREAD_SELF
 FAIL_REGEX "warning: incompatible pointer to integer conversion"
 )
-
-CHECK_CXX_SOURCE_COMPILES(
-  "
-  #include <vector>
-  template<typename T>
-  class ct2
-  {
-  public:
-    typedef T type;
-    void func();
-  };
-
-  template<typename T>
-  void ct2<T>::func()
-  {
-    std::vector<T> vec;
-    std::vector<T>::iterator itr = vec.begin();
-  }
-
-  int main(int argc, char **argv)
-  {
-    ct2<double> o2;
-    o2.func();
-    return 0;
-  }
-  " HAVE_IMPLICIT_DEPENDENT_NAME_TYPING)
 
 #--------------------------------------------------------------------
 # Check for IPv6 support

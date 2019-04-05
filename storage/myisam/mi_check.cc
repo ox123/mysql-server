@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2000, 2017, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2000, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -59,6 +59,7 @@
 #include <time.h>
 
 #include "m_ctype.h"
+#include "my_byteorder.h"
 #include "my_compiler.h"
 #include "my_dbug.h"
 #include "my_double2ulonglong.h"
@@ -88,7 +89,7 @@ static int sort_one_index(MI_CHECK *param, MI_INFO *info, MI_KEYDEF *keyinfo,
 static int sort_key_read(MI_SORT_PARAM *sort_param, void *key);
 static int sort_ft_key_read(MI_SORT_PARAM *sort_param, void *key);
 static int sort_get_next_record(MI_SORT_PARAM *sort_param);
-static int sort_key_cmp(const void *cmp_arg, const void *a, const void *b);
+static int sort_key_cmp(void *cmp_arg, unsigned char *a, unsigned char *b);
 static int sort_ft_key_write(MI_SORT_PARAM *sort_param, const void *a);
 static int sort_key_write(MI_SORT_PARAM *sort_param, const void *a);
 static my_off_t get_record_for_key(MI_INFO *info, MI_KEYDEF *keyinfo,
@@ -3395,8 +3396,10 @@ int sort_write_record(MI_SORT_PARAM *sort_param) {
 
 /* Compare two keys from _create_index_by_sort */
 
-static int sort_key_cmp(const void *cmp_arg, const void *a, const void *b) {
+static int sort_key_cmp(void *cmp_arg, uchar *u_a, uchar *u_b) {
   MI_SORT_PARAM *sort_param = (MI_SORT_PARAM *)cmp_arg;
+  void *a = u_a;
+  void *b = u_b;
   uint not_used[2];
   return (ha_key_cmp(sort_param->seg, *((uchar **)a), *((uchar **)b),
                      USE_WHOLE_KEY, SEARCH_SAME, not_used));
@@ -3996,6 +3999,10 @@ int update_state_info(MI_CHECK *param, MI_INFO *info, uint update) {
     int error;
     uint r_locks = share->r_locks, w_locks = share->w_locks;
     share->r_locks = share->w_locks = share->tot_locks = 0;
+
+    DBUG_EXECUTE_IF("simulate_incorrect_share_wlock_value",
+                    DEBUG_SYNC_C("after_share_wlock_set_to_0"););
+
     error = _mi_writeinfo(info, WRITEINFO_NO_UNLOCK);
     share->r_locks = r_locks;
     share->w_locks = w_locks;

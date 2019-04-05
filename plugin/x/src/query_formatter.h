@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0,
@@ -22,11 +22,12 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
-#ifndef _QUERY_FORMATTER_H_
-#define _QUERY_FORMATTER_H_
+#ifndef PLUGIN_X_SRC_QUERY_FORMATTER_H_
+#define PLUGIN_X_SRC_QUERY_FORMATTER_H_
 
 #include <stdint.h>
 #include <string.h>
+#include <iostream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -60,11 +61,21 @@ class Query_formatter {
     return put(value);
   }
 
+  std::size_t count_tags() const;
+
  private:
   template <typename Value_type>
   Query_formatter &put(const Value_type &value) {
     validate_next_tag();
     std::string string_value = ngs::to_string(value);
+    put_value(string_value.c_str(), string_value.length());
+
+    return *this;
+  }
+
+  Query_formatter &put(const bool value) {
+    validate_next_tag();
+    std::string string_value = value ? "true" : "false";
     put_value(string_value.c_str(), string_value.length());
 
     return *this;
@@ -101,6 +112,14 @@ inline Query_formatter &Query_formatter::operator%<float>(const float &value) {
   return put_fp(value);
 }
 
+template <>
+inline Query_formatter &Query_formatter::put<bool>(const bool &value) {
+  validate_next_tag();
+  const std::string string_value = value ? "true" : "false";
+  put_value(string_value.c_str(), string_value.length());
+  return *this;
+}
+
 }  // namespace xpl
 
-#endif  // _QUERY_FORMATTER_H_
+#endif  // PLUGIN_X_SRC_QUERY_FORMATTER_H_

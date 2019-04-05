@@ -1,4 +1,4 @@
-/* Copyright (c) 2005, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2005, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -253,7 +253,6 @@ class ErrConvString {
   ErrConvString(const my_decimal *nr);
   ErrConvString(const MYSQL_TIME *ltime, uint dec);
 
-  ~ErrConvString(){};
   char *ptr() { return err_buffer; }
   size_t length() const { return buf_length; }
 };
@@ -478,6 +477,8 @@ class Diagnostics_area {
   uint cond_count() const { return m_conditions_list.elements(); }
 
   Sql_condition_iterator sql_conditions() const { return m_conditions_list; }
+
+  const char *get_first_condition_message();
 
   /** Make sure there is room for the given number of conditions. */
   void reserve_number_of_conditions(THD *thd, uint count);
@@ -817,5 +818,11 @@ inline bool is_sqlstate_not_found(const char *s) {
 inline bool is_sqlstate_exception(const char *s) {
   return s[0] != '0' || s[1] > '2';
 }
+
+void warn_on_deprecated_charset(THD *thd, const CHARSET_INFO *cs,
+                                const char *alias,
+                                const char *option = nullptr);
+void warn_on_deprecated_collation(THD *thd, const CHARSET_INFO *collation,
+                                  const char *option = nullptr);
 
 #endif  // SQL_ERROR_H

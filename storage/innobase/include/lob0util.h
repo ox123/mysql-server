@@ -82,7 +82,7 @@ struct basic_page_t {
     return (mach_read_from_4(frame() + FIL_PAGE_NEXT));
   }
 
-  ulint get_page_type() const {
+  page_type_t get_page_type() const {
     return (mach_read_from_2(frame() + FIL_PAGE_TYPE));
   }
 
@@ -130,6 +130,6 @@ buf_block_t *alloc_lob_page(dict_index_t *index, mtr_t *lob_mtr, page_no_t hint,
 @param[in]	entry_trx_id	the trx id in the index entry. */
 bool entry_visible_to(dict_index_t *index, trx_t *trx, trx_id_t entry_trx_id);
 
-}; /* namespace lob */
+} /* namespace lob */
 
 #endif /* lob0util_h */

@@ -1,4 +1,4 @@
-/* Copyright (c) 2008, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2008, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -45,6 +45,7 @@ struct Binlog_storage_observer;
 struct Binlog_transmit_observer;
 struct Server_state_observer;
 struct Trans_observer;
+struct TABLE_LIST;
 
 class Observer_info {
  public:
@@ -141,6 +142,8 @@ class Delegate {
 extern PSI_rwlock_key key_rwlock_Trans_delegate_lock;
 #endif
 
+class Binlog_cache_storage;
+
 class Trans_delegate : public Delegate {
  public:
   Trans_delegate()
@@ -154,12 +157,13 @@ class Trans_delegate : public Delegate {
   typedef Trans_observer Observer;
 
   int before_dml(THD *thd, int &result);
-  int before_commit(THD *thd, bool all, IO_CACHE *trx_cache_log,
-                    IO_CACHE *stmt_cache_log, ulonglong cache_log_max_size,
-                    bool is_atomic_ddl);
+  int before_commit(THD *thd, bool all, Binlog_cache_storage *trx_cache_log,
+                    Binlog_cache_storage *stmt_cache_log,
+                    ulonglong cache_log_max_size, bool is_atomic_ddl);
   int before_rollback(THD *thd, bool all);
   int after_commit(THD *thd, bool all);
   int after_rollback(THD *thd, bool all);
+  int trans_begin(THD *thd, int &result);
 };
 
 #ifdef HAVE_PSI_RWLOCK_INTERFACE
@@ -278,5 +282,7 @@ extern Binlog_relay_IO_delegate *binlog_relay_io_delegate;
   (group##_delegate->is_empty() ? 0 : group##_delegate->hook args)
 
 #define NO_HOOK(group) (group##_delegate->is_empty())
+
+int launch_hook_trans_begin(THD *thd, TABLE_LIST *table);
 
 #endif /* RPL_HANDLER_H */

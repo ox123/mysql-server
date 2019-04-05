@@ -2,6 +2,9 @@
 # Stored PROCEDURE error tests
 #
 
+# ER_STACK_OVERRUN_NEED_MORE does not currenly work well with TSan
+--source include/not_tsan.inc
+
 --disable_warnings ONCE
 drop table if exists t1, t2;
 
@@ -1160,7 +1163,7 @@ create trigger bug12712
 #
 # BUG#9367: Stored procedures: client hang after "show warnings"
 #
---disable_parsing
+--disable_testcase BUG#0000
 --disable_warnings ONCE
 drop procedure if exists bug9367;
 create table t1 (s1 int);
@@ -1179,7 +1182,7 @@ delimiter ;|
 call bug9367();
 drop procedure bug9367;
 drop table t1;
---enable_parsing
+--enable_testcase
 
 #
 # BUG#13510: Setting password local variable changes current password
@@ -3870,3 +3873,26 @@ SET character_set_client = @orig_character_set_client;
 
 --enable_query_log
 
+--echo #
+--echo # Bug #24357244: CANNOT CREATE A STORED FUNCTION IF A DATABASE IS NOT
+--echo #                SELECTED
+--echo #
+
+CREATE DATABASE mysqltest;
+USE mysqltest;
+DROP DATABASE mysqltest;
+
+# Should return NULL
+SELECT DATABASE();
+
+CREATE DATABASE mysqltest;
+CREATE FUNCTION mysqltest.f1() RETURNS INT RETURN 0;
+CREATE FUNCTION mysqltest.f2() RETURNS INT RETURN f1();
+
+USE mysqltest;
+SELECT f1();
+SELECT f2();
+
+DROP FUNCTION IF EXISTS f2;
+DROP FUNCTION IF EXISTS f1;
+DROP DATABASE mysqltest;

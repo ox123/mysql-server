@@ -237,6 +237,7 @@ enum latch_level_t {
   SYNC_BUF_BLOCK,
   SYNC_BUF_PAGE_HASH,
   SYNC_BUF_LRU_LIST,
+  SYNC_BUF_CHUNKS,
 
   SYNC_POOL,
   SYNC_POOL_MANAGER,
@@ -283,6 +284,7 @@ enum latch_level_t {
 
   SYNC_FSP_PAGE,
   SYNC_FSP,
+  SYNC_TEMP_POOL_MANAGER,
   SYNC_EXTERN_STORAGE,
   SYNC_RSEG_ARRAY_HEADER,
   SYNC_TRX_UNDO_PAGE,
@@ -312,6 +314,7 @@ enum latch_level_t {
   SYNC_DICT,
   SYNC_PARSER,
   SYNC_FTS_CACHE,
+  SYNC_UNDO_DDL,
 
   SYNC_DICT_OPERATION,
 
@@ -340,6 +343,7 @@ enum latch_id_t {
   LATCH_ID_NONE = 0,
   LATCH_ID_AUTOINC,
   LATCH_ID_BUF_BLOCK_MUTEX,
+  LATCH_ID_BUF_POOL_CHUNKS,
   LATCH_ID_BUF_POOL_ZIP,
   LATCH_ID_BUF_POOL_LRU_LIST,
   LATCH_ID_BUF_POOL_FREE_LIST,
@@ -401,6 +405,7 @@ enum latch_id_t {
   LATCH_ID_TRX_UNDO,
   LATCH_ID_TRX_POOL,
   LATCH_ID_TRX_POOL_MANAGER,
+  LATCH_ID_TEMP_POOL_MANAGER,
   LATCH_ID_TRX,
   LATCH_ID_LOCK_SYS,
   LATCH_ID_LOCK_SYS_WAIT,
@@ -411,7 +416,6 @@ enum latch_id_t {
   LATCH_ID_EVENT_MANAGER,
   LATCH_ID_EVENT_MUTEX,
   LATCH_ID_SYNC_ARRAY_MUTEX,
-  LATCH_ID_THREAD_MUTEX,
   LATCH_ID_ZIP_PAD_MUTEX,
   LATCH_ID_OS_AIO_READ_MUTEX,
   LATCH_ID_OS_AIO_WRITE_MUTEX,
@@ -428,6 +432,7 @@ enum latch_id_t {
   LATCH_ID_CHECKPOINT,
   LATCH_ID_RSEGS,
   LATCH_ID_UNDO_SPACES,
+  LATCH_ID_UNDO_DDL,
   LATCH_ID_FIL_SPACE,
   LATCH_ID_FTS_CACHE,
   LATCH_ID_FTS_CACHE_INIT,
@@ -486,8 +491,8 @@ struct OSMutex {
     ret = pthread_mutex_destroy(&m_mutex);
 
     if (ret != 0) {
-      ib::error() << "Return value " << ret << " when calling "
-                  << "pthread_mutex_destroy().";
+      ib::error() << "Return value " << ret
+                  << " when calling pthread_mutex_destroy().";
     }
 #endif /* _WIN32 */
     ut_d(m_freed = true);
@@ -952,6 +957,8 @@ struct latch_t {
                                                                  m_rw_lock(),
                                                                  m_temp_fsp() {}
 
+  latch_t &operator=(const latch_t &) = default;
+
   /** Destructor */
   virtual ~latch_t() UNIV_NOTHROW {}
 
@@ -1061,10 +1068,14 @@ struct btrsea_sync_check : public sync_check_functor_t {
     Added check that will allow thread to hold I_S latches */
 
     if (!m_has_search_latch &&
-        (level != SYNC_SEARCH_SYS && level != SYNC_FTS_CACHE &&
-         level != SYNC_DICT && level != SYNC_DICT_OPERATION &&
-         level != SYNC_TRX_I_S_RWLOCK && level != SYNC_TRX_I_S_LAST_READ)) {
+        (level != SYNC_SEARCH_SYS && level != SYNC_DICT &&
+         level != SYNC_FTS_CACHE && level != SYNC_UNDO_DDL &&
+         level != SYNC_DICT_OPERATION && level != SYNC_TRX_I_S_LAST_READ &&
+         level != SYNC_TRX_I_S_RWLOCK)) {
       m_result = true;
+      ib::error() << "Debug: Calling thread does not hold search "
+                     "latch but does hold latch level "
+                  << level << ".";
 
       return (m_result);
     }
@@ -1098,11 +1109,13 @@ struct dict_sync_check : public sync_check_functor_t {
   @param[in]	level		The level held by the thread */
   virtual bool operator()(const latch_level_t level) {
     if (!m_dict_mutex_allowed ||
-        (level != SYNC_DICT && level != SYNC_DICT_OPERATION &&
-         level != SYNC_FTS_CACHE
+        (level != SYNC_DICT && level != SYNC_UNDO_SPACES &&
+         level != SYNC_FTS_CACHE && level != SYNC_DICT_OPERATION &&
          /* This only happens in recv_apply_hashed_log_recs. */
-         && level != SYNC_RECV_WRITER && level != SYNC_NO_ORDER_CHECK)) {
+         level != SYNC_RECV_WRITER && level != SYNC_NO_ORDER_CHECK)) {
       m_result = true;
+      ib::error() << "Debug: Dictionary latch order violation for level "
+                  << level << ".";
 
       return (true);
     }
@@ -1129,7 +1142,7 @@ struct sync_allowed_latches : public sync_check_functor_t {
   sync_allowed_latches(const latch_level_t *from, const latch_level_t *to)
       : m_result(), m_latches(from, to) {}
 
-  /** Checks whether the given latch_t violates the latch constraint.
+  /** Check whether the given latch_t violates the latch constraint.
   This object maintains a list of allowed latch levels, and if the given
   latch belongs to a latch level that is not there in the allowed list,
   then it is a violation.
@@ -1143,11 +1156,13 @@ struct sync_allowed_latches : public sync_check_functor_t {
         m_result = false;
 
         /* No violation */
-        return (false);
+        return (m_result);
       }
     }
 
-    return (true);
+    ib::error() << "Debug: sync_allowed_latches violation for level=" << level;
+    m_result = true;
+    return (m_result);
   }
 
   /** @return the result of the check */

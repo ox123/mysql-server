@@ -58,7 +58,7 @@
 
 
   1: Published in 8.0.3-RC.
-  -------------------------
+  ----------------------------------------------------------------------------
   Introduced in MySQL 8.0.0 by WL#6378. Never published in a GA version.
   Last changes were:
 
@@ -69,7 +69,7 @@
 
 
   80004: Published in 8.0.4-RC.
-  -----------------------------
+  ----------------------------------------------------------------------------
   Changes from version 1:
 
   - WL#9059: Added collation clause for spatial_reference_systems.organization
@@ -97,8 +97,8 @@
     triggers.connection_collation_id, triggers.schema_collation_id,
 
 
-  80011: Current. Published in 8.0 GA.
-  ------------------------------------
+  80011: Published in 8.0 GA.
+  ----------------------------------------------------------------------------
   Changes from version 80004:
 
   - WL#8383 and WL#9465: Removed obsolete SQL modes from enums in 'events',
@@ -117,9 +117,39 @@
   - BUG#27309116: Add a new column `external_language` to `mysql`.`routines`
     and update `information_schema`.`routines` to reflect this column.
 
-  80012: Next DD version number to use when there is change.
-  ----------------------------------------------------------
-  No changes yet, hence this number is not used yet.
+  - Bug#27690593: CHANGE TYPE OF MYSQL.DD_PROPERTIES.PROPERTIES.
+    Changed type of 'dd_properties.properties' from MEDIUMTEXT to
+    MEDIUMBLOB.
+
+
+  80012: Published in 8.0.12
+  ----------------------------------------------------------------------------
+  Changes from version 80011:
+
+  - Bug#27745526: Various adjustments to make the DD table definitions
+    in sync with WL#6379.
+
+
+  80013: Published in 8.0.13
+  ----------------------------------------------------------------------------
+  Changes from version 80012:
+
+  - Bug#24741307: add last_checked_for_upgrade column to msyql.tables table
+
+
+  80014: Current
+  ----------------------------------------------------------------------------
+  Changes from version 80013:
+
+  - Bug#28492272: Synchronize sql_mode in server with that in DD.
+
+
+  80015: Next DD version number after the previous is public.
+  ----------------------------------------------------------------------------
+  Changes from version 80014:
+
+  - No changes, this version number is not active yet.
+
 
   If a new DD version is published in a MRU, that version may or may not
   be possible to downgrade to previous MRUs within the same GA. If
@@ -130,9 +160,9 @@
 */
 namespace dd {
 
-static const uint DD_VERSION = 80011;
+static const uint DD_VERSION = 80014;
 
-static const uint DD_VERSION_MINOR_DOWNGRADE_THRESHOLD = 80011;
+static const uint DD_VERSION_MINOR_DOWNGRADE_THRESHOLD = 80014;
 
 }  // namespace dd
 

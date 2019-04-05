@@ -1,4 +1,4 @@
-# Copyright (c) 2010, 2017, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2010, 2018, Oracle and/or its affiliates. All rights reserved.
 # 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -43,8 +43,8 @@ ENDIF()
 INCLUDE(${CMAKE_BINARY_DIR}/win/configure.data OPTIONAL)
 
 # avoid running system checks by using pre-cached check results
-# system checks are expensive on VS since every tiny program is to be compiled in 
-# a VC solution.
+# system checks are expensive on VS since every tiny program is to be compiled
+# in a VC solution.
 GET_FILENAME_COMPONENT(_SCRIPT_DIR ${CMAKE_CURRENT_LIST_FILE} PATH)
 INCLUDE(${_SCRIPT_DIR}/WindowsCache.cmake)
 
@@ -59,8 +59,12 @@ IF(CMAKE_SIZEOF_VOID_P MATCHES 8)
   SET(SYSTEM_TYPE "Win64")
   SET(MYSQL_MACHINE_TYPE "x86_64")
 ELSE()
-  MESSAGE(FATAL_ERROR "32 bit Windows builds are not supported. "
-       "Clean the build dir and rebuild using -G \"${CMAKE_GENERATOR} Win64\"")
+  IF(WITHOUT_SERVER)
+    MESSAGE(WARNING "32bit is experimental!!")
+  ELSE()
+    MESSAGE(FATAL_ERROR "32 bit Windows builds are not supported. "
+      "Clean the build dir and rebuild using -G \"${CMAKE_GENERATOR} Win64\"")
+  ENDIF()
 ENDIF()
 
 # Target Windows 7 / Windows Server 2008 R2 or later, i.e _WIN32_WINNT_WIN7
@@ -76,6 +80,13 @@ ADD_DEFINITIONS(-DNOMINMAX)
 IF(WITH_MSCRT_DEBUG)
   ADD_DEFINITIONS(-DMY_MSCRT_DEBUG)
   ADD_DEFINITIONS(-D_CRTDBG_MAP_ALLOC)
+ENDIF()
+
+IF(WIN32_CLANG)
+  # RapidJSON doesn't understand the Win32/Clang combination.
+  ADD_DEFINITIONS(-DRAPIDJSON_HAS_CXX11_RVALUE_REFS=1)
+  ADD_DEFINITIONS(-DRAPIDJSON_HAS_CXX11_NOEXCEPT=1)
+  ADD_DEFINITIONS(-DRAPIDJSON_HAS_CXX11_RANGE_FOR=1)
 ENDIF()
   
 OPTION(WIN_DEBUG_NO_INLINE "Disable inlining for debug builds on Windows" OFF)
@@ -117,26 +128,27 @@ IF(MSVC)
     SET(CMAKE_${lang}_FLAGS_RELEASE "${CMAKE_${lang}_FLAGS_RELEASE} /Z7")
   ENDFOREACH()
 
-    FOREACH(flag 
-     CMAKE_C_FLAGS_RELEASE    CMAKE_C_FLAGS_RELWITHDEBINFO 
-     CMAKE_C_FLAGS_DEBUG      CMAKE_C_FLAGS_DEBUG_INIT 
-     CMAKE_CXX_FLAGS_RELEASE  CMAKE_CXX_FLAGS_RELWITHDEBINFO
-     CMAKE_CXX_FLAGS_DEBUG    CMAKE_CXX_FLAGS_DEBUG_INIT)
-     IF(LINK_STATIC_RUNTIME_LIBRARIES)
-       STRING(REPLACE "/MD"  "/MT" "${flag}" "${${flag}}")
-     ENDIF()
-     STRING(REPLACE "/Zi"  "/Z7" "${flag}" "${${flag}}")
-     IF (NOT WIN_DEBUG_NO_INLINE)
-       STRING(REPLACE "/Ob0"  "/Ob1" "${flag}" "${${flag}}")
-     ENDIF()
-     SET("${flag}" "${${flag}} /EHsc")
-    ENDFOREACH()
-  
+  FOREACH(flag
+      CMAKE_C_FLAGS_MINSIZEREL
+      CMAKE_C_FLAGS_RELEASE    CMAKE_C_FLAGS_RELWITHDEBINFO
+      CMAKE_C_FLAGS_DEBUG      CMAKE_C_FLAGS_DEBUG_INIT
+      CMAKE_CXX_FLAGS_MINSIZEREL
+      CMAKE_CXX_FLAGS_RELEASE  CMAKE_CXX_FLAGS_RELWITHDEBINFO
+      CMAKE_CXX_FLAGS_DEBUG    CMAKE_CXX_FLAGS_DEBUG_INIT)
+    IF(LINK_STATIC_RUNTIME_LIBRARIES)
+      STRING(REPLACE "/MD"  "/MT" "${flag}" "${${flag}}")
+    ENDIF()
+    STRING(REPLACE "/Zi"  "/Z7" "${flag}" "${${flag}}")
+    IF (NOT WIN_DEBUG_NO_INLINE)
+      STRING(REPLACE "/Ob0"  "/Ob1" "${flag}" "${${flag}}")
+    ENDIF()
+    SET("${flag}" "${${flag}} /EHsc")
+  ENDFOREACH()
   FOREACH(type EXE SHARED MODULE)
-    SET(CMAKE_${type}_LINKER_FLAGS_DEBUG
-	    "${CMAKE_${type}_LINKER_FLAGS_DEBUG} /INCREMENTAL:NO")
-    SET(CMAKE_${type}_LINKER_FLAGS_RELWITHDEBINFO
-	    "${CMAKE_${type}_LINKER_FLAGS_RELWITHDEBINFO} /INCREMENTAL:NO")
+    FOREACH(config DEBUG RELWITHDEBINFO RELEASE MINSIZEREL)
+      SET(flag "CMAKE_${type}_LINKER_FLAGS_${config}")
+      SET("${flag}" "${${flag}} /INCREMENTAL:NO")
+    ENDFOREACH()
   ENDFOREACH()
 
   IF(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
@@ -144,15 +156,30 @@ IF(MSVC)
     SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /MP")
     SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MP")
   ENDIF()
-  
+
   #TODO: update the code and remove the disabled warnings
-  SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /wd4800 /wd4805 /wd4996")
-  SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /wd4800 /wd4805 /wd4996 /we4099")
+
+  # The compiler encountered a deprecated declaration.
+  STRING_APPEND(CMAKE_C_FLAGS " /wd4996")
+  STRING_APPEND(CMAKE_CXX_FLAGS " /wd4996")
+
+  # 'var' : conversion from 'size_t' to 'type', possible loss of data
+  STRING_APPEND(CMAKE_C_FLAGS " /wd4267")
+  STRING_APPEND(CMAKE_CXX_FLAGS " /wd4267")
+
+  # 'conversion' conversion from 'type1' to 'type2', possible loss of data
+  STRING_APPEND(CMAKE_C_FLAGS " /wd4244")
+  STRING_APPEND(CMAKE_CXX_FLAGS " /wd4244")
+
+  # Enable stricter standards conformance when using Visual Studio
+  IF(MSVC_VERSION GREATER 1900 AND NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
+    SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /permissive-")
+  ENDIF()
 ENDIF()
 
 # Always link with socket library
 LINK_LIBRARIES(ws2_32)
 # ..also for tests
-SET(CMAKE_REQUIRED_LIBRARIES ws2_32)
+LIST(APPEND CMAKE_REQUIRED_LIBRARIES ws2_32)
 
 SET(FN_NO_CASE_SENSE 1)

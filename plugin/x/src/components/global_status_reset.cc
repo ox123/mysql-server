@@ -29,8 +29,8 @@ REQUIRES_SERVICE_PLACEHOLDER(mysqlx_maintenance);
 
 namespace {
 
-long long reset_global_status_variables(UDF_INIT *, UDF_ARGS *, char *,
-                                        char *) {
+long long reset_global_status_variables(  // NOLINT(runtime/int)
+    UDF_INIT *, UDF_ARGS *, unsigned char *, unsigned char *) {
   return mysql_service_mysqlx_maintenance->reset_global_status_variables() ? 1
                                                                            : 0;
 }
@@ -65,7 +65,7 @@ METADATA("mysql.author", "Oracle Corporation"),
 DECLARE_COMPONENT(mysqlx_global_status_reset, udf_name)
 udf_register, udf_unregister END_DECLARE_COMPONENT();
 
+}  // namespace
+
 DECLARE_LIBRARY_COMPONENTS &COMPONENT_REF(mysqlx_global_status_reset)
     END_DECLARE_LIBRARY_COMPONENTS
-
-}  // namespace

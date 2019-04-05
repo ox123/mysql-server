@@ -22,14 +22,13 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-#ifndef XPL_SYSTEM_VARIABLES_H
-#define XPL_SYSTEM_VARIABLES_H
+#ifndef PLUGIN_X_SRC_XPL_SYSTEM_VARIABLES_H_
+#define PLUGIN_X_SRC_XPL_SYSTEM_VARIABLES_H_
 
 #include <algorithm>
 #include <vector>
 
 #include "plugin/x/ngs/include/ngs_common/bind.h"
-#include "plugin/x/src/xpl_log.h"
 
 #ifdef max_allowed_packet
 #undef max_allowed_packet
@@ -107,4 +106,4 @@ void Plugin_system_variables::update_func(THD *thd, SYS_VAR *, void *tgt,
 
 }  // namespace xpl
 
-#endif /* XPL_SYSTEM_VARIABLES_H */
+#endif  // PLUGIN_X_SRC_XPL_SYSTEM_VARIABLES_H_

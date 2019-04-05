@@ -73,7 +73,7 @@ select 1 from t1 order by cast(a as char(1));
 drop table t1;
 set names utf8;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 create table t1 (
 name varchar(10),
 level smallint unsigned);
@@ -1157,7 +1157,7 @@ hex(soundex(_ucs2 0x00BF00C0))
 set names latin1;
 create table t1(a blob, b text charset utf8, c text charset ucs2);
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 select data_type, character_octet_length, character_maximum_length
 from information_schema.columns where table_name='t1';
 DATA_TYPE	CHARACTER_OCTET_LENGTH	CHARACTER_MAXIMUM_LENGTH
@@ -1225,6 +1225,8 @@ drop table t1;
 CREATE TABLE t1 (s1 CHAR(5) CHARACTER SET UCS2);
 INSERT INTO t1 VALUES ('a');
 SET @@sql_mode=pad_char_to_full_length;
+Warnings:
+Warning	3090	Changing sql mode 'PAD_CHAR_TO_FULL_LENGTH' is deprecated. It will be removed in a future release.
 SELECT HEX(s1) FROM t1;
 HEX(s1)
 00610020002000200020
@@ -1309,7 +1311,7 @@ HEX(DAYNAME(19700101))
 SET LC_TIME_NAMES=ru_RU;
 SET NAMES utf8;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 SET character_set_connection=ucs2;
 SELECT CHARSET(DAYNAME(19700101));
 CHARSET(DAYNAME(19700101))
@@ -2171,7 +2173,12 @@ drop table t1;
 select hex(concat(@a1:=1));
 hex(concat(@a1:=1))
 0031
+Warnings:
+Warning	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
 create table t1 as select concat(@a2:=2) as c1, @a3:=3 as c2;
+Warnings:
+Warning	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
+Warning	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
 select hex(c1) from t1;
 hex(c1)
 0032
@@ -2200,7 +2207,12 @@ drop table t1;
 select hex(concat(@a1:=sqrt(1)));
 hex(concat(@a1:=sqrt(1)))
 0031
+Warnings:
+Warning	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
 create table t1 as select concat(@a2:=sqrt(1)) as c1, @a3:=sqrt(1) as c2;
+Warnings:
+Warning	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
+Warning	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
 select hex(c1) from t1;
 hex(c1)
 0031
@@ -2229,7 +2241,12 @@ drop table t1;
 select hex(concat(@a1:=1.1));
 hex(concat(@a1:=1.1))
 0031002E0031
+Warnings:
+Warning	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
 create table t1 as select concat(@a2:=1.1) as c1, @a3:=1.1 as c2;
+Warnings:
+Warning	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
+Warning	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
 select hex(c1) from t1;
 hex(c1)
 0031002E0031
@@ -4212,7 +4229,7 @@ SET NAMES latin1;
 SET sql_mode='';
 CREATE TABLE t1(a char(215) CHARACTER SET utf8 NOT NULL DEFAULT '', KEY(a));
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 INSERT INTO t1 VALUES ();
 SELECT maketime(`a`,`a`,`a`) FROM t1 GROUP BY 1;
 maketime(`a`,`a`,`a`)

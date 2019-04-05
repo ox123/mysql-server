@@ -18,6 +18,8 @@ a char(8) not null, b char(8) not null, filler char(200),
 key(a)
 );
 insert into t3 select @a:=concat('c-', 1000+ A.a, '=w'), @a, 'filler' from t2 A;
+Warnings:
+Warning	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
 insert into t3 select concat('c-', 1000+A.a, '=w'), concat('c-', 2000+A.a, '=w'), 
 'filler-1' from t2 A;
 insert into t3 select concat('c-', 1000+A.a, '=w'), concat('c-', 3000+A.a, '=w'), 
@@ -315,7 +317,7 @@ KEY (key1),
 KEY (key2)
 ) AUTO_INCREMENT=6 DEFAULT CHARSET=utf8;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 INSERT INTO t1 VALUES
 (1,NULL,1130,NULL,'Hello',NULL,100,'bodyandsubject',0),
 (2,NULL,1130,NULL,'bye',NULL,100,'bodyandsubject',0),
@@ -559,7 +561,7 @@ PRIMARY KEY (pk),
 KEY k1 (i1)
 );
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 INSERT INTO t2 VALUES (3, 9, 1, NULL);
 EXPLAIN SELECT i1
 FROM t1 LEFT JOIN t2 ON t1.pk = t2.i2
@@ -675,7 +677,7 @@ PRIMARY KEY (pk),
 KEY k1 (c1_key)
 ) charset latin1;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 CREATE TABLE t5 (
 pk INTEGER NOT NULL,
 c1 VARCHAR(10) NOT NULL,

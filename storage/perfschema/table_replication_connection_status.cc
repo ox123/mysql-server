@@ -32,6 +32,7 @@
 #include "my_compiler.h"
 #include "my_dbug.h"
 #include "mysql/plugin_group_replication.h"
+#include "sql/field.h"
 #include "sql/log.h"
 #include "sql/plugin_table.h"
 #include "sql/rpl_group_replication.h"
@@ -195,24 +196,20 @@ ha_rows table_replication_connection_status::get_row_count() {
 
 int table_replication_connection_status::rnd_next(void) {
   Master_info *mi = NULL;
-
   channel_map.rdlock();
 
   for (m_pos.set_at(&m_next_pos);
        m_pos.m_index < channel_map.get_max_channels(); m_pos.next()) {
     mi = channel_map.get_mi_at_pos(m_pos.m_index);
-
     if (mi && mi->host[0]) {
-      if (!make_row(mi)) {
-        m_next_pos.set_after(&m_pos);
-        channel_map.unlock();
-        return 0;
-      }
+      make_row(mi);
+      m_next_pos.set_after(&m_pos);
+      channel_map.unlock();
+      return 0;
     }
   }
 
   channel_map.unlock();
-
   return HA_ERR_END_OF_FILE;
 }
 

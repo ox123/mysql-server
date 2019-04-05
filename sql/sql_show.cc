@@ -20,7 +20,7 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
-/* Function with list databases, tables or fields */
+// SHOW TABLE, SHOW DATABASES, etc.
 
 #include "sql/sql_show.h"
 
@@ -69,6 +69,7 @@
 #include "mysql_time.h"
 #include "mysqld_error.h"
 #include "nullable.h"
+#include "scope_guard.h"  // Scope_guard
 #include "sql/auth/auth_acls.h"
 #include "sql/auth/auth_common.h"  // check_grant_db
 #include "sql/auth/sql_security_ctx.h"
@@ -116,6 +117,7 @@
 #include "sql/sql_table.h"      // filename_to_tablename
 #include "sql/sql_tmp_table.h"  // create_tmp_table
 #include "sql/sql_trigger.h"    // acquire_shared_mdl_for_trigger
+#include "sql/strfunc.h"
 #include "sql/system_variables.h"
 #include "sql/table_trigger_dispatcher.h"  // Table_trigger_dispatcher
 #include "sql/temp_table_param.h"
@@ -383,20 +385,20 @@ bool mysqld_show_privileges(THD *thd) {
     protocol->store(privilege->comment, system_charset_info);
     if (protocol->end_row()) DBUG_RETURN(true);
   }
-  if (iterate_all_dynamic_privileges(
-          thd,
-          /*
-            For each registered dynamic privilege send a strz to
-            this lambda function.
-          */
-          [&](const char *c) -> bool {
-            protocol->start_row();
-            protocol->store(c, system_charset_info);
-            protocol->store("Server Admin", system_charset_info);
-            protocol->store("", system_charset_info);
-            if (protocol->end_row()) return true;
-            return false;
-          })) {
+  if (iterate_all_dynamic_privileges(thd,
+                                     /*
+                                       For each registered dynamic privilege
+                                       send a strz to this lambda function.
+                                     */
+                                     [&](const char *c) -> bool {
+                                       protocol->start_row();
+                                       protocol->store(c, system_charset_info);
+                                       protocol->store("Server Admin",
+                                                       system_charset_info);
+                                       protocol->store("", system_charset_info);
+                                       if (protocol->end_row()) return true;
+                                       return false;
+                                     })) {
     DBUG_RETURN(true);
   }
   my_eof(thd);
@@ -490,7 +492,7 @@ find_files_result find_files(THD *thd, List<LEX_STRING> *files, const char *db,
         if (my_wildcmp(files_charset_info, uname, uname + file_name_len, wild,
                        wild + wild_length, wild_prefix, wild_one, wild_many))
           continue;
-      } else if (wild_compare(uname, wild, 0))
+      } else if (wild_compare(uname, file_name_len, wild, wild_length, 0))
         continue;
     }
 
@@ -504,11 +506,10 @@ find_files_result find_files(THD *thd, List<LEX_STRING> *files, const char *db,
       if (check_grant(thd, TABLE_ACLS, &table_list, true, 1, true)) continue;
     }
 
-    if (!(file_name = tmp_mem_root
-                          ? make_lex_string_root(tmp_mem_root, file_name, uname,
-                                                 file_name_len, true)
-                          : thd->make_lex_string(file_name, uname,
-                                                 file_name_len, true)) ||
+    if (!(file_name = tmp_mem_root ? make_lex_string_root(tmp_mem_root, uname,
+                                                          file_name_len)
+                                   : make_lex_string_root(thd->mem_root, uname,
+                                                          file_name_len)) ||
         files->push_back(file_name)) {
       my_dirend(dirp);
       DBUG_RETURN(FIND_FILES_OOM);
@@ -1112,7 +1113,7 @@ static void append_directory(THD *thd, String *packet, const char *dir_type,
 static bool print_on_update_clause(Field *field, String *val, bool lcase) {
   DBUG_ASSERT(val->charset()->mbminlen == 1);
   val->length(0);
-  if (field->has_update_default_function()) {
+  if (field->has_update_default_datetime_value_expression()) {
     if (lcase)
       val->copy(STRING_WITH_LEN("on update "), val->charset());
     else
@@ -1124,28 +1125,33 @@ static bool print_on_update_clause(Field *field, String *val, bool lcase) {
   return false;
 }
 
-static bool print_default_clause(Field *field, String *def_value, bool quoted) {
+static bool print_default_clause(THD *thd, Field *field, String *def_value,
+                                 bool quoted) {
   enum enum_field_types field_type = field->type();
-
-  const bool has_now_default = field->has_insert_default_function();
-  const bool has_default = (field_type != FIELD_TYPE_BLOB &&
-                            !(field->flags & NO_DEFAULT_VALUE_FLAG) &&
+  const bool has_default = (!(field->flags & NO_DEFAULT_VALUE_FLAG) &&
                             !(field->auto_flags & Field::NEXT_NUMBER));
 
   if (field->gcol_info) return false;
 
   def_value->length(0);
   if (has_default) {
-    if (has_now_default)
-    /*
-      We are using CURRENT_TIMESTAMP instead of NOW because it is the SQL
-      standard.
-    */
-    {
+    if (field->has_insert_default_general_value_expression()) {
+      def_value->append("(");
+      char buffer[128];
+      String s(buffer, sizeof(buffer), system_charset_info);
+      field->m_default_val_expr->print_expr(thd, &s);
+      def_value->append(s);
+      def_value->append(")");
+    } else if (field->has_insert_default_datetime_value_expression()) {
+      /*
+        We are using CURRENT_TIMESTAMP instead of NOW because it is the SQL
+        standard.
+      */
       def_value->append(STRING_WITH_LEN("CURRENT_TIMESTAMP"));
       if (field->decimals() > 0)
         def_value->append_parenthesized(field->decimals());
-    } else if (!field->is_null()) {  // Not null by default
+      // Not null by default and not a BLOB
+    } else if (!field->is_null() && field_type != FIELD_TYPE_BLOB) {
       char tmp[MAX_FIELD_WIDTH];
       String type(tmp, sizeof(tmp), field->charset());
       if (field_type == MYSQL_TYPE_BIT) {
@@ -1171,10 +1177,10 @@ static bool print_default_clause(Field *field, String *def_value, bool quoted) {
           def_value->append(def_val.ptr(), def_val.length());
       } else if (quoted)
         def_value->append(STRING_WITH_LEN("''"));
-    } else if (field->maybe_null() && quoted)
+    } else if (field->maybe_null() && quoted && field_type != FIELD_TYPE_BLOB)
       def_value->append(STRING_WITH_LEN("NULL"));  // Null as default
     else
-      return 0;
+      return false;
   }
   return has_default;
 }
@@ -1263,7 +1269,8 @@ int store_create_info(THD *thd, TABLE_LIST *table_list, String *packet,
     of row based replication.
   */
   old_map = tmp_use_all_columns(table, table->read_set);
-
+  auto grd = create_scope_guard(
+      [&]() { tmp_restore_column_map(table->read_set, old_map); });
   dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
   const dd::Table *table_obj = nullptr;
   if (share->tmp_table)
@@ -1273,9 +1280,16 @@ int store_create_info(THD *thd, TABLE_LIST *table_list, String *packet,
                                   dd::String_type(share->table_name.str),
                                   &table_obj))
       DBUG_RETURN(true);
+    DBUG_EXECUTE_IF("sim_acq_fail_in_store_ci", {
+      my_error(ER_UNKNOWN_ERROR_NUMBER, MYF(0), 42);
+      DBUG_RETURN(true);
+    });
   }
 
   for (ptr = table->field; (field = *ptr); ptr++) {
+    // Skip fields that are hidden from the user.
+    if (field->is_hidden_from_user()) continue;
+
     uint flags = field->flags;
     enum_field_types field_type = field->real_type();
 
@@ -1392,7 +1406,7 @@ int store_create_info(THD *thd, TABLE_LIST *table_list, String *packet,
         break;
     }
 
-    if (print_default_clause(field, &def_value, true)) {
+    if (print_default_clause(thd, field, &def_value, true)) {
       packet->append(STRING_WITH_LEN(" DEFAULT "));
       packet->append(def_value.ptr(), def_value.length(), system_charset_info);
     }
@@ -1446,9 +1460,24 @@ int store_create_info(THD *thd, TABLE_LIST *table_list, String *packet,
     for (uint j = 0; j < key_info->user_defined_key_parts; j++, key_part++) {
       if (j) packet->append(',');
 
-      if (key_part->field)
-        append_identifier(thd, packet, key_part->field->field_name,
-                          strlen(key_part->field->field_name));
+      if (key_part->field) {
+        // If this fields represents a functional index, print the expression
+        // instead of the column name.
+        if (key_part->field->is_field_for_functional_index()) {
+          DBUG_ASSERT(key_part->field->gcol_info);
+
+          StringBuffer<STRING_BUFFER_USUAL_SIZE> s;
+          s.set_charset(system_charset_info);
+          key_part->field->gcol_info->print_expr(thd, &s);
+          packet->append("(");
+          packet->append(s);
+          packet->append(")");
+        } else {
+          append_identifier(thd, packet, key_part->field->field_name,
+                            strlen(key_part->field->field_name));
+        }
+      }
+
       if (key_part->field &&
           (key_part->length !=
                table->field[key_part->fieldnr - 1]->key_length() &&
@@ -1654,6 +1683,11 @@ int store_create_info(THD *thd, TABLE_LIST *table_list, String *packet,
       append_unescaped(packet, share->connect_string.str,
                        share->connect_string.length);
     }
+    if (share->has_secondary()) {
+      packet->append(" SECONDARY_ENGINE=");
+      packet->append(share->secondary_engine.str,
+                     share->secondary_engine.length);
+    }
     append_directory(thd, packet, "DATA", create_info.data_file_name);
     append_directory(thd, packet, "INDEX", create_info.index_file_name);
   }
@@ -1681,7 +1715,6 @@ int store_create_info(THD *thd, TABLE_LIST *table_list, String *packet,
       }
     }
   }
-  tmp_restore_column_map(table->read_set, old_map);
   DBUG_RETURN(error);
 }
 
@@ -2402,6 +2435,7 @@ void remove_status_vars(SHOW_VAR *list) {
   @param [out] charset  Character set of the value.
   @param [in,out] buff  Buffer to store the value.
   @param [out] length   Length of the value.
+  @param [out] is_null  Is variable value NULL or not.
 
   @returns              Pointer to the value buffer.
 */
@@ -2410,9 +2444,9 @@ const char *get_one_variable(THD *thd, const SHOW_VAR *variable,
                              enum_var_type value_type, SHOW_TYPE show_type,
                              System_status_var *status_var,
                              const CHARSET_INFO **charset, char *buff,
-                             size_t *length) {
+                             size_t *length, bool *is_null) {
   return get_one_variable_ext(thd, thd, variable, value_type, show_type,
-                              status_var, charset, buff, length);
+                              status_var, charset, buff, length, is_null);
 }
 
 /**
@@ -2427,6 +2461,8 @@ const char *get_one_variable(THD *thd, const SHOW_VAR *variable,
   @param [out] charset   Character set of the value.
   @param [in,out] buff   Buffer to store the value.
   @param [out] length    Length of the value.
+  @param [out] is_null   Is variable value NULL or not. This parameter is set
+                         only for variables of string type.
 
   @returns               Pointer to the value buffer.
 */
@@ -2436,7 +2472,7 @@ const char *get_one_variable_ext(THD *running_thd, THD *target_thd,
                                  enum_var_type value_type, SHOW_TYPE show_type,
                                  System_status_var *status_var,
                                  const CHARSET_INFO **charset, char *buff,
-                                 size_t *length) {
+                                 size_t *length, bool *is_null) {
   const char *value;
   const CHARSET_INFO *value_charset;
 
@@ -2503,6 +2539,11 @@ const char *get_one_variable_ext(THD *running_thd, THD *target_thd,
       value_charset = system_charset_info;
       break;
 
+    case SHOW_SIGNED_LONGLONG:
+      end = longlong10_to_str(*(longlong *)value, buff, -10);
+      value_charset = system_charset_info;
+      break;
+
     case SHOW_HA_ROWS:
       end = longlong10_to_str((longlong) * (ha_rows *)value, buff, 10);
       value_charset = system_charset_info;
@@ -2523,6 +2564,11 @@ const char *get_one_variable_ext(THD *running_thd, THD *target_thd,
       value_charset = system_charset_info;
       break;
 
+    case SHOW_SIGNED_INT:
+      end = int10_to_str((long)*(int32 *)value, buff, -10);
+      value_charset = system_charset_info;
+      break;
+
     case SHOW_HAVE: {
       SHOW_COMP_OPTION tmp = *(SHOW_COMP_OPTION *)value;
       pos = show_comp_option_name[(int)tmp];
@@ -2538,8 +2584,12 @@ const char *get_one_variable_ext(THD *running_thd, THD *target_thd,
     }
 
     case SHOW_CHAR_PTR: {
-      if (!(pos = *(char **)value)) pos = "";
-
+      if (!(pos = *(char **)value)) {
+        pos = "";
+        if (is_null) *is_null = true;
+      } else {
+        if (is_null) *is_null = false;
+      }
       end = strend(pos);
       break;
     }
@@ -2789,16 +2839,16 @@ static bool get_lookup_value(THD *thd, Item_func *item_func, TABLE_LIST *table,
     if (!cs->coll->strnncollsp(cs, (uchar *)field_name1, strlen(field_name1),
                                (uchar *)item_field->field_name,
                                strlen(item_field->field_name))) {
-      thd->make_lex_string(&lookup_field_vals->db_value, tmp_str->ptr(),
-                           tmp_str->length(), false);
+      lex_string_strmake(thd->mem_root, &lookup_field_vals->db_value,
+                         tmp_str->ptr(), tmp_str->length());
     }
     /* Lookup value is table name */
     else if (!cs->coll->strnncollsp(cs, (uchar *)field_name2,
                                     strlen(field_name2),
                                     (uchar *)item_field->field_name,
                                     strlen(item_field->field_name))) {
-      thd->make_lex_string(&lookup_field_vals->table_value, tmp_str->ptr(),
-                           tmp_str->length(), false);
+      lex_string_strmake(thd->mem_root, &lookup_field_vals->table_value,
+                         tmp_str->ptr(), tmp_str->length());
     }
   }
   return 0;
@@ -2954,8 +3004,8 @@ static bool get_lookup_field_values(THD *thd, Item *cond, TABLE_LIST *tables,
   switch (lex->sql_command) {
     case SQLCOM_SHOW_DATABASES:
       if (wild) {
-        thd->make_lex_string(&lookup_field_values->db_value, wild, strlen(wild),
-                             0);
+        lex_string_strmake(thd->mem_root, &lookup_field_values->db_value, wild,
+                           strlen(wild));
         lookup_field_values->wild_db_value = 1;
       }
       break;
@@ -2963,11 +3013,11 @@ static bool get_lookup_field_values(THD *thd, Item *cond, TABLE_LIST *tables,
     case SQLCOM_SHOW_TABLE_STATUS:
     case SQLCOM_SHOW_TRIGGERS:
     case SQLCOM_SHOW_EVENTS:
-      thd->make_lex_string(&lookup_field_values->db_value, lex->select_lex->db,
-                           strlen(lex->select_lex->db), 0);
+      lex_string_strmake(thd->mem_root, &lookup_field_values->db_value,
+                         lex->select_lex->db, strlen(lex->select_lex->db));
       if (wild) {
-        thd->make_lex_string(&lookup_field_values->table_value, wild,
-                             strlen(wild), 0);
+        lex_string_strmake(thd->mem_root, &lookup_field_values->table_value,
+                           wild, strlen(wild));
         lookup_field_values->wild_table_value = 1;
       }
       break;
@@ -3021,10 +3071,9 @@ enum enum_schema_tables get_schema_table_idx(ST_SCHEMA_TABLE *schema_table) {
 static int make_db_list(THD *thd, List<LEX_STRING> *files,
                         LOOKUP_FIELD_VALUES *lookup_field_vals,
                         bool *with_i_schema, MEM_ROOT *tmp_mem_root) {
-  LEX_STRING *i_s_name_copy = 0;
-  i_s_name_copy =
-      thd->make_lex_string(i_s_name_copy, INFORMATION_SCHEMA_NAME.str,
-                           INFORMATION_SCHEMA_NAME.length, true);
+  LEX_STRING *i_s_name_copy =
+      make_lex_string_root(thd->mem_root, INFORMATION_SCHEMA_NAME.str,
+                           INFORMATION_SCHEMA_NAME.length);
   *with_i_schema = 0;
   if (lookup_field_vals->wild_db_value) {
     /*
@@ -3096,13 +3145,14 @@ static bool add_schema_table(THD *thd, plugin_ref plugin, void *p_data) {
     if (lower_case_table_names) {
       if (wild_case_compare(files_charset_info, schema_table->table_name, wild))
         DBUG_RETURN(0);
-    } else if (wild_compare(schema_table->table_name, wild, 0))
+    } else if (wild_compare(schema_table->table_name,
+                            strlen(schema_table->table_name), wild,
+                            strlen(wild), 0))
       DBUG_RETURN(0);
   }
 
-  if ((file_name =
-           thd->make_lex_string(file_name, schema_table->table_name,
-                                strlen(schema_table->table_name), true)) &&
+  if ((file_name = make_lex_string_root(thd->mem_root, schema_table->table_name,
+                                        strlen(schema_table->table_name))) &&
       !file_list->push_back(file_name))
     DBUG_RETURN(0);
   DBUG_RETURN(1);
@@ -3122,12 +3172,14 @@ static int schema_tables_add(THD *thd, List<LEX_STRING> *files,
         if (wild_case_compare(files_charset_info, tmp_schema_table->table_name,
                               wild))
           continue;
-      } else if (wild_compare(tmp_schema_table->table_name, wild, 0))
+      } else if (wild_compare(tmp_schema_table->table_name,
+                              strlen(tmp_schema_table->table_name), wild,
+                              strlen(wild), 0))
         continue;
     }
-    if ((file_name = thd->make_lex_string(
-             file_name, tmp_schema_table->table_name,
-             strlen(tmp_schema_table->table_name), true)) &&
+    if ((file_name =
+             make_lex_string_root(thd->mem_root, tmp_schema_table->table_name,
+                                  strlen(tmp_schema_table->table_name))) &&
         !files->push_back(file_name))
       continue;
     DBUG_RETURN(1);
@@ -3186,9 +3238,9 @@ static int make_table_name_list(THD *thd, List<LEX_STRING> *table_names,
       ST_SCHEMA_TABLE *schema_table =
           find_schema_table(thd, lookup_field_vals->table_value.str);
       if (schema_table && !schema_table->hidden) {
-        if (!(name = thd->make_lex_string(name, schema_table->table_name,
-                                          strlen(schema_table->table_name),
-                                          true)) ||
+        if (!(name =
+                  make_lex_string_root(thd->mem_root, schema_table->table_name,
+                                       strlen(schema_table->table_name))) ||
             table_names->push_back(name))
           return 1;
       }
@@ -3246,8 +3298,9 @@ static int make_table_name_list(THD *thd, List<LEX_STRING> *table_names,
                              lookup_field_vals->table_value.length,
                          wild_prefix, wild_one, wild_many))
             continue;
-        } else if (wild_compare(name->c_str(),
-                                lookup_field_vals->table_value.str, 0))
+        } else if (wild_compare(name->c_str(), name->length(),
+                                lookup_field_vals->table_value.str,
+                                lookup_field_vals->table_value.length, 0))
           continue;
       }
 
@@ -3262,10 +3315,8 @@ static int make_table_name_list(THD *thd, List<LEX_STRING> *table_names,
         if (check_grant(thd, TABLE_ACLS, &table_list, true, 1, true)) continue;
       }
 
-      LEX_STRING *table_name = NULL;
-      table_name =
-          thd->make_lex_string(table_name, name->c_str(), name->length(), true);
-      table_names->push_back(table_name);
+      table_names->push_back(
+          make_lex_string_root(thd->mem_root, name->c_str(), name->length()));
     }
   }
 
@@ -3299,7 +3350,7 @@ static bool fill_schema_table_by_open(
     ST_SCHEMA_TABLE *schema_table, LEX_STRING *orig_db_name,
     LEX_STRING *orig_table_name, Open_tables_backup *open_tables_state_backup,
     bool can_deadlock) {
-  Query_arena i_s_arena(mem_root, Query_arena::STMT_CONVENTIONAL_EXECUTION),
+  Query_arena i_s_arena(mem_root, Query_arena::STMT_REGULAR_EXECUTION),
       backup_arena, *old_arena;
   LEX *old_lex = thd->lex, temp_lex, *lex;
   LEX_CSTRING db_name_lex_cstr, table_name_lex_cstr;
@@ -3322,7 +3373,7 @@ static bool fill_schema_table_by_open(
   */
   old_arena = thd->stmt_arena;
   thd->stmt_arena = &i_s_arena;
-  thd->set_n_backup_active_arena(&i_s_arena, &backup_arena);
+  thd->swap_query_arena(i_s_arena, &backup_arena);
 
   /* Prepare temporary LEX. */
   thd->lex = lex = &temp_lex;
@@ -3343,10 +3394,10 @@ static bool fill_schema_table_by_open(
     These copies are used for make_table_list() while unaltered values
     are passed to process_table() functions.
   */
-  if (!thd->make_lex_string(&db_name_lex_cstr, orig_db_name->str,
-                            orig_db_name->length, false) ||
-      !thd->make_lex_string(&table_name_lex_cstr, orig_table_name->str,
-                            orig_table_name->length, false))
+  if (lex_string_strmake(thd->mem_root, &db_name_lex_cstr, orig_db_name->str,
+                         orig_db_name->length) ||
+      lex_string_strmake(thd->mem_root, &table_name_lex_cstr,
+                         orig_table_name->str, orig_table_name->length))
     goto end;
 
   /*
@@ -3428,7 +3479,7 @@ end:
   lex_end(thd->lex);
 
   // Free items, before restoring backup_arena below.
-  DBUG_ASSERT(i_s_arena.free_list == NULL);
+  DBUG_ASSERT(i_s_arena.item_list() == NULL);
   thd->free_items();
 
   /*
@@ -3460,7 +3511,7 @@ end:
   thd->lex = old_lex;
 
   thd->stmt_arena = old_arena;
-  thd->restore_active_arena(&i_s_arena, &backup_arena);
+  thd->swap_query_arena(backup_arena, &i_s_arena);
 
   DBUG_RETURN(result);
 }
@@ -3828,7 +3879,7 @@ static int get_schema_tmp_table_columns_record(THD *thd, TABLE_LIST *tables,
         (const char *)pos, strlen((const char *)pos), cs);
 
     // COLUMN_DEFAULT
-    if (print_default_clause(field, &type, false)) {
+    if (print_default_clause(thd, field, &type, false)) {
       table->field[TMP_TABLE_COLUMNS_COLUMN_DEFAULT]->store(type.ptr(),
                                                             type.length(), cs);
       table->field[TMP_TABLE_COLUMNS_COLUMN_DEFAULT]->set_notnull();
@@ -4008,7 +4059,13 @@ static int get_schema_tmp_table_keys_record(THD *thd, TABLE_LIST *tables,
 
       // COLUMN_NAME
       str = (key_part->field ? key_part->field->field_name : "?unknown field?");
-      table->field[TMP_TABLE_KEYS_COLUMN_NAME]->store(str, strlen(str), cs);
+
+      if (key_part->field && key_part->field->is_hidden_from_user()) {
+        table->field[TMP_TABLE_KEYS_COLUMN_NAME]->set_null();
+      } else {
+        table->field[TMP_TABLE_KEYS_COLUMN_NAME]->store(str, strlen(str), cs);
+        table->field[TMP_TABLE_KEYS_COLUMN_NAME]->set_notnull();
+      }
 
       if (show_table->file) {
         // COLLATION
@@ -4094,6 +4151,17 @@ static int get_schema_tmp_table_keys_record(THD *thd, TABLE_LIST *tables,
                                                      strlen(is_visible), cs);
       table->field[TMP_TABLE_KEYS_IS_VISIBLE]->set_notnull();
 
+      // Expression for functional key parts
+      if (key_info->key_part->field->is_hidden_from_user()) {
+        Value_generator *gcol = key_info->key_part->field->gcol_info;
+
+        table->field[TMP_TABLE_KEYS_EXPRESSION]->store(
+            gcol->expr_str.str, gcol->expr_str.length, cs);
+        table->field[TMP_TABLE_KEYS_EXPRESSION]->set_notnull();
+      } else {
+        table->field[TMP_TABLE_KEYS_EXPRESSION]->set_null();
+      }
+
       if (schema_table_store_record(thd, table)) DBUG_RETURN(1);
     }
   }
@@ -4149,7 +4217,7 @@ static int fill_open_tables(THD *thd, TABLE_LIST *tables, Item *) {
   CHARSET_INFO *cs = system_charset_info;
   OPEN_TABLE_LIST *open_list;
   if (!(open_list = list_open_tables(thd, thd->lex->select_lex->db, wild)) &&
-      thd->is_fatal_error)
+      thd->is_fatal_error())
     DBUG_RETURN(1);
 
   for (; open_list; open_list = open_list->next) {
@@ -4527,10 +4595,10 @@ int make_schema_select(THD *thd, SELECT_LEX *sel,
      We have to make non const db_name & table_name
      because of lower_case_table_names
   */
-  thd->make_lex_string(&db, INFORMATION_SCHEMA_NAME.str,
-                       INFORMATION_SCHEMA_NAME.length, 0);
-  thd->make_lex_string(&table, schema_table->table_name,
-                       strlen(schema_table->table_name), 0);
+  lex_string_strmake(thd->mem_root, &db, INFORMATION_SCHEMA_NAME.str,
+                     INFORMATION_SCHEMA_NAME.length);
+  lex_string_strmake(thd->mem_root, &table, schema_table->table_name,
+                     strlen(schema_table->table_name));
 
   if (schema_table->old_format(thd, schema_table) || /* Handle old syntax */
       !sel->add_table_to_list(
@@ -4693,7 +4761,6 @@ bool get_schema_tables_result(JOIN *join,
         'executed_place' value then we should refresh the table.
       */
       if (table_list->schema_table_state && is_subselect) {
-        table_list->table->file->extra(HA_EXTRA_NO_CACHE);
         table_list->table->file->extra(HA_EXTRA_RESET_STATE);
         table_list->table->file->ha_delete_all_rows();
         free_io_cache(table_list->table);
@@ -4800,6 +4867,8 @@ ST_FIELD_INFO tmp_table_keys_fields_info[] = {
     {"INDEX_COMMENT", INDEX_COMMENT_MAXLEN, MYSQL_TYPE_STRING, 0, 0,
      "Index_comment", OPEN_FRM_ONLY},
     {"IS_VISIBLE", 4, MYSQL_TYPE_STRING, 0, 1, "Visible", OPEN_FULL_TABLE},
+    {"EXPRESSION", MAX_FIELD_BLOBLENGTH, MYSQL_TYPE_STRING, 0, 1, "Expression",
+     OPEN_FULL_TABLE},
     {0, 0, MYSQL_TYPE_STRING, 0, 0, 0, SKIP_OPEN_TABLE}};
 
 ST_FIELD_INFO user_privileges_fields_info[] = {
@@ -5374,7 +5443,13 @@ static void get_cs_converted_string_value(THD *thd, String *input_str,
     output_str->append("''");
     return;
   }
-  if (!use_hex) {
+  // Note that since the String charset conversion functions used below, are
+  // created to be used as (potentially unsafe) "casts" for user data, they
+  // perform conversion from binary to UTF-8 by simply copying bytes. By
+  // forcing a hex string when cs is binary, we avoid creating strings that are
+  // invalid. Such invalid strings looks strange and will cause asserts when
+  // they are stored in TEXT columns in the DD.
+  if (!use_hex && cs != &my_charset_bin) {
     String try_val;
     uint try_conv_error = 0;
 

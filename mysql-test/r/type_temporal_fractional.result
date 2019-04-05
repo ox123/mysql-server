@@ -73,13 +73,13 @@ NOW(0), NOW(1), NOW(2), NOW(3), NOW(4), NOW(5), NOW(6);
 SHOW CREATE TABLE t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
-  `NOW(0)` datetime NOT NULL DEFAULT '0000-00-00 00:00:00',
-  `NOW(1)` datetime(1) NOT NULL DEFAULT '0000-00-00 00:00:00.0',
-  `NOW(2)` datetime(2) NOT NULL DEFAULT '0000-00-00 00:00:00.00',
-  `NOW(3)` datetime(3) NOT NULL DEFAULT '0000-00-00 00:00:00.000',
-  `NOW(4)` datetime(4) NOT NULL DEFAULT '0000-00-00 00:00:00.0000',
-  `NOW(5)` datetime(5) NOT NULL DEFAULT '0000-00-00 00:00:00.00000',
-  `NOW(6)` datetime(6) NOT NULL DEFAULT '0000-00-00 00:00:00.000000'
+  `NOW(0)` datetime NOT NULL,
+  `NOW(1)` datetime(1) NOT NULL,
+  `NOW(2)` datetime(2) NOT NULL,
+  `NOW(3)` datetime(3) NOT NULL,
+  `NOW(4)` datetime(4) NOT NULL,
+  `NOW(5)` datetime(5) NOT NULL,
+  `NOW(6)` datetime(6) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 DROP TABLE t1;
 CREATE TABLE t1 AS SELECT
@@ -89,13 +89,13 @@ SYSDATE(4), SYSDATE(5), SYSDATE(6);
 SHOW CREATE TABLE t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
-  `SYSDATE(0)` datetime NOT NULL DEFAULT '0000-00-00 00:00:00',
-  `SYSDATE(1)` datetime(1) NOT NULL DEFAULT '0000-00-00 00:00:00.0',
-  `SYSDATE(2)` datetime(2) NOT NULL DEFAULT '0000-00-00 00:00:00.00',
-  `SYSDATE(3)` datetime(3) NOT NULL DEFAULT '0000-00-00 00:00:00.000',
-  `SYSDATE(4)` datetime(4) NOT NULL DEFAULT '0000-00-00 00:00:00.0000',
-  `SYSDATE(5)` datetime(5) NOT NULL DEFAULT '0000-00-00 00:00:00.00000',
-  `SYSDATE(6)` datetime(6) NOT NULL DEFAULT '0000-00-00 00:00:00.000000'
+  `SYSDATE(0)` datetime NOT NULL,
+  `SYSDATE(1)` datetime(1) NOT NULL,
+  `SYSDATE(2)` datetime(2) NOT NULL,
+  `SYSDATE(3)` datetime(3) NOT NULL,
+  `SYSDATE(4)` datetime(4) NOT NULL,
+  `SYSDATE(5)` datetime(5) NOT NULL,
+  `SYSDATE(6)` datetime(6) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 DROP TABLE t1;
 CREATE TABLE t1 AS SELECT
@@ -13898,7 +13898,7 @@ ERROR 42000: Invalid default value for 'a'
 CREATE TABLE t1 (a TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3));
 SHOW COLUMNS FROM t1;
 Field	Type	Null	Key	Default	Extra
-a	timestamp(3)	NO		CURRENT_TIMESTAMP(3)	
+a	timestamp(3)	NO		CURRENT_TIMESTAMP(3)	DEFAULT_GENERATED
 DROP TABLE t1;
 CREATE TABLE t1 (a TIMESTAMP(3) DEFAULT CURRENT_TIMESTAMP(4));
 ERROR 42000: Invalid default value for 'a'
@@ -13921,7 +13921,7 @@ ERROR 42000: Invalid default value for 'a'
 CREATE TABLE t1 (a TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6));
 SHOW COLUMNS FROM t1;
 Field	Type	Null	Key	Default	Extra
-a	timestamp(6)	NO		CURRENT_TIMESTAMP(6)	
+a	timestamp(6)	NO		CURRENT_TIMESTAMP(6)	DEFAULT_GENERATED
 DROP TABLE t1;
 CREATE TABLE t1 (a DATETIME DEFAULT CURRENT_TIMESTAMP(0));
 DROP TABLE t1;
@@ -13948,7 +13948,7 @@ ERROR 42000: Invalid default value for 'a'
 CREATE TABLE t1 (a DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3));
 SHOW COLUMNS FROM t1;
 Field	Type	Null	Key	Default	Extra
-a	datetime(3)	YES		CURRENT_TIMESTAMP(3)	
+a	datetime(3)	YES		CURRENT_TIMESTAMP(3)	DEFAULT_GENERATED
 DROP TABLE t1;
 CREATE TABLE t1 (a DATETIME(3) DEFAULT CURRENT_TIMESTAMP(4));
 ERROR 42000: Invalid default value for 'a'
@@ -13971,7 +13971,7 @@ ERROR 42000: Invalid default value for 'a'
 CREATE TABLE t1 (a DATETIME(6) DEFAULT CURRENT_TIMESTAMP(6));
 SHOW COLUMNS FROM t1;
 Field	Type	Null	Key	Default	Extra
-a	datetime(6)	YES		CURRENT_TIMESTAMP(6)	
+a	datetime(6)	YES		CURRENT_TIMESTAMP(6)	DEFAULT_GENERATED
 DROP TABLE t1;
 #
 # Testing that DEFAULT CURRENT_TIMESTAMP(n) truncates rather than rounds
@@ -14780,7 +14780,7 @@ CHARACTER_SET_NAME	NULL
 COLLATION_NAME	NULL
 COLUMN_TYPE	timestamp(6)
 COLUMN_KEY	
-EXTRA	on update CURRENT_TIMESTAMP(6)
+EXTRA	DEFAULT_GENERATED on update CURRENT_TIMESTAMP(6)
 PRIVILEGES	#
 COLUMN_COMMENT	
 GENERATION_EXPRESSION	
@@ -17577,7 +17577,7 @@ SET sql_mode = default;
 #
 SET NAMES utf8;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 CREATE TABLE t1 (
 c datetime(1) NOT NULL,
 KEY(c)

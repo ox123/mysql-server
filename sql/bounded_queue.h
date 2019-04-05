@@ -1,4 +1,4 @@
-/* Copyright (c) 2010, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2010, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -54,9 +54,13 @@ class Bounded_queue {
 
   typedef typename Queue_type::allocator_type allocator_type;
 
-  explicit Bounded_queue(
+  Bounded_queue(
+      size_t element_size = sizeof(Element_type),
       const allocator_type &alloc = allocator_type(PSI_NOT_INSTRUMENTED))
-      : m_queue(Key_compare(), alloc), m_sort_keys(NULL), m_sort_param(NULL) {}
+      : m_queue(Key_compare(), alloc),
+        m_sort_keys(NULL),
+        m_sort_param(NULL),
+        m_element_size(element_size) {}
 
   /**
     Initialize the queue.
@@ -97,12 +101,27 @@ class Bounded_queue {
     @param element        The element to be pushed.
    */
   void push(Element_type element) {
+    /*
+      Add one extra byte to each key, so that sort-key generating functions
+      won't be returning out-of-space. Since we know there's always room
+      given a "m_element_size"-sized buffer even in the worst case (by
+      definition), we could in principle make a special mode flag in
+      Sort_param::make_sortkey() instead for the case of fixed-length records,
+      but this is much simpler.
+     */
+    DBUG_ASSERT(m_element_size < 0xFFFFFFFF);
+    const uint element_size = m_element_size + 1;
+
     if (m_queue.size() == m_queue.capacity()) {
       const Key_type &pq_top = m_queue.top();
-      m_sort_param->make_sortkey(pq_top, element);
+      const uint MY_ATTRIBUTE((unused)) rec_sz =
+          m_sort_param->make_sortkey(pq_top, element_size, element);
+      DBUG_ASSERT(rec_sz <= m_element_size);
       m_queue.update_top();
     } else {
-      m_sort_param->make_sortkey(m_sort_keys[m_queue.size()], element);
+      const uint MY_ATTRIBUTE((unused)) rec_sz = m_sort_param->make_sortkey(
+          m_sort_keys[m_queue.size()], element_size, element);
+      DBUG_ASSERT(rec_sz <= m_element_size);
       m_queue.push(m_sort_keys[m_queue.size()]);
     }
   }
@@ -116,6 +135,7 @@ class Bounded_queue {
   Queue_type m_queue;
   Key_type *m_sort_keys;
   Key_generator *m_sort_param;
+  size_t m_element_size;
 };
 
 #endif  // BOUNDED_QUEUE_INCLUDED

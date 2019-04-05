@@ -11,19 +11,15 @@ ENGINE NDB;
 ALTER TABLESPACE ts1
 ADD DATAFILE 'ts1_datafile2.dat'
   INITIAL_SIZE = 4M;
-SELECT logfile_group_name, extra FROM information_schema.files
-WHERE file_name IS NULL AND file_type = 'UNDO LOG';
-logfile_group_name extra
-lg1  UNDO_BUFFER_SIZE=1048576
-SELECT DISTINCT file_name, file_type FROM information_schema.files
-WHERE file_name LIKE 'lg1_%' AND file_type = 'UNDO LOG';
-file_name  file_type
-lg1_undofile.dat UNDO LOG
-SELECT DISTINCT file_name, file_type FROM information_schema.files
-WHERE file_type = 'DATAFILE';
-file_name  file_type
-ts1_datafile.dat DATAFILE
-ts1_datafile2.dat  DATAFILE
+SELECT file_name, file_type FROM information_schema.files
+WHERE engine='ndbcluster' AND file_type = 'UNDO LOG';
+FILE_NAME	FILE_TYPE
+./lg1_undofile.dat	UNDO LOG
+SELECT file_name, file_type FROM information_schema.files
+WHERE engine='ndbcluster' AND file_type = 'DATAFILE';
+FILE_NAME	FILE_TYPE
+./ts1_datafile.dat	DATAFILE
+./ts1_datafile2.dat	DATAFILE
 ALTER TABLESPACE ts1
 DROP DATAFILE 'ts1_datafile.dat';
 ALTER TABLESPACE ts1
@@ -42,5 +38,39 @@ ENGINE NDB;
 ALTER TABLESPACE ts1
 DROP DATAFILE 'ts1_datafile.dat';
 DROP TABLESPACE ts1;
+#
+# WL#12236 - CREATE TABLESPACE without DATAFILE clause.
+#
+CREATE TABLESPACE ts1
+USE LOGFILE GROUP lg1
+INITIAL_SIZE 1M
+ENGINE NDB;
+ALTER TABLESPACE ts1 DROP DATAFILE 'DATAFILE_NAME';
+DROP TABLESPACE ts1;
+CREATE TABLESPACE ts2
+USE LOGFILE GROUP lg1
+INITIAL_SIZE 1M
+ENGINE NDB;
+ALTER TABLESPACE ts2
+ADD DATAFILE 'data_2.dat'
+    INITIAL_SIZE 1M;
+CREATE TABLE t2 (
+id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+last_name VARCHAR(50) NOT NULL,
+first_name VARCHAR(50) NOT NULL,
+dob DATE NOT NULL,
+joined DATE NOT NULL,
+INDEX(last_name, first_name)
+)
+TABLESPACE ts2 STORAGE DISK
+ENGINE NDB;
+INSERT INTO t2 VALUES(1,'aaa','bbb','1981-02-04','2017-07-17');
+SELECT * FROM t2;
+id	last_name	first_name	dob	joined
+1	aaa	bbb	1981-02-04	2017-07-17
+DROP TABLE t2;
+ALTER TABLESPACE ts2 DROP DATAFILE 'data_2.dat';
+ALTER TABLESPACE ts2 DROP DATAFILE 'DATAFILE_NAME';
+DROP TABLESPACE ts2;
 DROP LOGFILE GROUP lg1
 ENGINE=NDB;

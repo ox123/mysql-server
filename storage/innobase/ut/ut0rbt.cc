@@ -1,4 +1,4 @@
-/**
+/****************************************************************************
  Copyright (c) 2007, 2018, Oracle and/or its affiliates. All Rights Reserved.
 
  This program is free software; you can redistribute it and/or modify it under
@@ -30,7 +30,6 @@
  ***********************************************************************/
 
 #include "ut0rbt.h"
-#include "my_inttypes.h"
 #include "univ.i"
 #include "ut0new.h"
 
@@ -753,7 +752,7 @@ const ib_rbt_node_t *rbt_add_node(
 
   ++tree->n_nodes;
 
-#if defined UNIV_DEBUG || defined IB_RBT_TESTING
+#if (defined IB_RBT_TESTING)
   ut_a(rbt_validate(tree));
 #endif
   return (node);

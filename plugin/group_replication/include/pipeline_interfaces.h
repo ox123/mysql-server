@@ -23,11 +23,16 @@
 #ifndef PIPELINE_INTERFACES_INCLUDED
 #define PIPELINE_INTERFACES_INCLUDED
 
+#include <list>
+
 #include <mysql/group_replication_priv.h>
+#include <mysql/plugin_group_replication.h>
 #include "mysql/components/services/log_builtins.h"
 
+#include "mysqld_error.h"
 #include "plugin/group_replication/include/plugin_psi.h"
 #include "plugin/group_replication/include/plugin_server_include.h"
+#include "plugin/group_replication/libmysqlgcs/include/mysql/gcs/gcs_member_identifier.h"
 
 // Define the data packet type
 #define DATA_PACKET_TYPE 1
@@ -46,7 +51,7 @@ class Packet {
   */
   Packet(int type) : packet_type(type) {}
 
-  virtual ~Packet(){};
+  virtual ~Packet() {}
 
   /**
    @return the packet type
@@ -69,25 +74,39 @@ class Data_packet : public Packet {
 
     @param[in]  data             the packet data
     @param[in]  len              the packet length
+    @param[in]  consistency_level  the transaction consistency level
+    @param[in]  online_members     the ONLINE members when the transaction
+                                   message was delivered
   */
-  Data_packet(const uchar *data, ulong len)
-      : Packet(DATA_PACKET_TYPE), payload(NULL), len(len) {
+  Data_packet(const uchar *data, ulong len,
+              enum_group_replication_consistency_level consistency_level =
+                  GROUP_REPLICATION_CONSISTENCY_EVENTUAL,
+              std::list<Gcs_member_identifier> *online_members = NULL)
+      : Packet(DATA_PACKET_TYPE),
+        payload(NULL),
+        len(len),
+        m_consistency_level(consistency_level),
+        m_online_members(online_members) {
     payload = (uchar *)my_malloc(PSI_NOT_INSTRUMENTED, len, MYF(0));
     memcpy(payload, data, len);
   }
 
-  ~Data_packet() { my_free(payload); }
+  ~Data_packet() {
+    my_free(payload);
+    delete m_online_members;
+  }
 
   uchar *payload;
   ulong len;
+  const enum_group_replication_consistency_level m_consistency_level;
+  std::list<Gcs_member_identifier> *m_online_members;
 };
 
 // Define the data packet type
 #define UNDEFINED_EVENT_MODIFIER 0
 
-// Define the size of the pipeline IO_CACHEs
-#define DEFAULT_EVENT_IO_CACHE_SIZE 16384
-#define SHARED_EVENT_IO_CACHE_SIZE (DEFAULT_EVENT_IO_CACHE_SIZE * 16)
+// Define the size of the pipeline event buffer
+#define DEFAULT_EVENT_BUFFER_SIZE 16384
 
 /**
   @class Pipeline_event
@@ -109,18 +128,24 @@ class Pipeline_event {
 
     @param[in]  base_packet      the wrapper packet
     @param[in]  fde_event        the format description event for conversions
-    @param[in]  cache            IO_CACHED to be used on this event
     @param[in]  modifier         the event modifier
+    @param[in]  consistency_level  the transaction consistency level
+    @param[in]  online_members     the ONLINE members when the transaction
+                                   message was delivered
   */
   Pipeline_event(Data_packet *base_packet,
-                 Format_description_log_event *fde_event, IO_CACHE *cache,
-                 int modifier = UNDEFINED_EVENT_MODIFIER)
+                 Format_description_log_event *fde_event,
+                 int modifier = UNDEFINED_EVENT_MODIFIER,
+                 enum_group_replication_consistency_level consistency_level =
+                     GROUP_REPLICATION_CONSISTENCY_EVENTUAL,
+                 std::list<Gcs_member_identifier> *online_members = NULL)
       : packet(base_packet),
         log_event(NULL),
         event_context(modifier),
         format_descriptor(fde_event),
-        cache(cache),
-        user_provided_cache(cache != NULL) {}
+        m_consistency_level(consistency_level),
+        m_online_members(online_members),
+        m_online_members_memory_ownership(true) {}
 
   /**
     Create a new pipeline wrapper based on a log event.
@@ -129,17 +154,23 @@ class Pipeline_event {
 
     @param[in]  base_event       the wrapper log event
     @param[in]  fde_event        the format description event for conversions
-    @param[in]  cache            IO_CACHED to be used on this event
     @param[in]  modifier         the event modifier
+    @param[in]  consistency_level  the transaction consistency level
+    @param[in]  online_members     the ONLINE members when the transaction
+                                   message was delivered
   */
   Pipeline_event(Log_event *base_event, Format_description_log_event *fde_event,
-                 IO_CACHE *cache, int modifier = UNDEFINED_EVENT_MODIFIER)
+                 int modifier = UNDEFINED_EVENT_MODIFIER,
+                 enum_group_replication_consistency_level consistency_level =
+                     GROUP_REPLICATION_CONSISTENCY_EVENTUAL,
+                 std::list<Gcs_member_identifier> *online_members = NULL)
       : packet(NULL),
         log_event(base_event),
         event_context(modifier),
         format_descriptor(fde_event),
-        cache(cache),
-        user_provided_cache(cache != NULL) {}
+        m_consistency_level(consistency_level),
+        m_online_members(online_members),
+        m_online_members_memory_ownership(true) {}
 
   ~Pipeline_event() {
     if (packet != NULL) {
@@ -148,19 +179,10 @@ class Pipeline_event {
     if (log_event != NULL) {
       delete log_event;
     }
-
-    if (cache != NULL && !user_provided_cache) {
-      close_cached_file(cache); /* purecov: inspected */
-      my_free(cache);           /* purecov: inspected */
+    if (m_online_members_memory_ownership) {
+      delete m_online_members;
     }
   }
-
-  /**
-    Return the IO_CACHE used on this event for conversions.
-
-    @return the IO_CACHE (which may be NULL)
-  */
-  IO_CACHE *get_cache() { return cache; }
 
   /**
     Return current format description event.
@@ -265,6 +287,9 @@ class Pipeline_event {
     Format description events, are NOT deleted.
     This is due to the fact that they are given, and do not belong to the
     pipeline event.
+
+    Transaction consistency level is not reset, despite the event
+    is reset, consistency level belongs to the transaction.
   */
   void reset_pipeline_event() {
     if (packet != NULL) {
@@ -278,6 +303,39 @@ class Pipeline_event {
     event_context = UNDEFINED_EVENT_MODIFIER;
   }
 
+  /**
+    Get transaction consistency level.
+  */
+  enum_group_replication_consistency_level get_consistency_level() {
+    return m_consistency_level;
+  }
+
+  /**
+    Get the list of ONLINE Group members when a
+    Transaction_with_guarantee_message message was received, or NULL if
+    if any group member version is from a version lower than
+    #TRANSACTION_WITH_GUARANTEES_VERSION.
+    For Transaction_message messages it always return NULL
+
+    @return  list of all ONLINE members, if all members have version
+             equal or greater than #TRANSACTION_WITH_GUARANTEES_VERSION
+             for Transaction_with_guarantee_message messages
+             otherwise  NULL
+
+    @note the memory allocated for the list ownership belongs to the
+          caller
+  */
+  std::list<Gcs_member_identifier> *get_online_members() {
+    return m_online_members;
+  }
+
+  /**
+    Release memory ownership of m_online_members.
+  */
+  void release_online_members_memory_ownership() {
+    m_online_members_memory_ownership = false;
+  }
+
  private:
   /**
     Converts the existing packet into a log event.
@@ -287,24 +345,19 @@ class Pipeline_event {
       @retval 1      Error on packet conversion
   */
   int convert_packet_to_log_event() {
-    int error = 0;
-    const char *errmsg = 0;
-
     uint event_len = uint4korr(((uchar *)(packet->payload)) + EVENT_LEN_OFFSET);
-    log_event =
-        Log_event::read_log_event((const char *)packet->payload, event_len,
-                                  &errmsg, format_descriptor, true);
+    Binlog_read_error binlog_read_error = binlog_event_deserialize(
+        packet->payload, event_len, format_descriptor, true, &log_event);
 
-    if (unlikely(!log_event)) {
+    if (unlikely(binlog_read_error.has_error())) {
       LogPluginErr(ERROR_LEVEL, ER_GRP_RPL_UNABLE_TO_CONVERT_PACKET_TO_EVENT,
-                   errmsg); /* purecov: inspected */
-      error = 1;            /* purecov: inspected */
+                   binlog_read_error.get_str()); /* purecov: inspected */
     }
 
     delete packet;
     packet = NULL;
 
-    return error;
+    return binlog_read_error.has_error();
   }
 
   /**
@@ -316,97 +369,21 @@ class Pipeline_event {
   */
   int convert_log_event_to_packet() {
     int error = 0;
-    String packet_data;
+    StringBuffer_ostream<DEFAULT_EVENT_BUFFER_SIZE> ostream;
 
-    /*
-      Reuse the same cache for improved performance.
-    */
-    if (cache == NULL) {
-      /* Open cache. */
-      cache = (IO_CACHE *)my_malloc(PSI_NOT_INSTRUMENTED, sizeof(IO_CACHE),
-                                    MYF(MY_ZEROFILL));
-      if (!cache ||
-          (!my_b_inited(cache) &&
-           open_cached_file(cache, mysql_tmpdir,
-                            "group_replication_pipeline_cache",
-                            DEFAULT_EVENT_IO_CACHE_SIZE, MYF(MY_WME)))) {
-        my_free(cache); /* purecov: inspected */
-        cache = NULL;   /* purecov: inspected */
-        LogPluginErr(
-            ERROR_LEVEL,
-            ER_GRP_RPL_PIPELINE_CREATE_FAILED); /* purecov: inspected */
-        return 1;                               /* purecov: inspected */
-      }
-    } else {
-      /* Reinit cache. */
-      if ((error = reinit_io_cache(cache, WRITE_CACHE, 0, 0, 0))) {
-        LogPluginErr(
-            ERROR_LEVEL,
-            ER_GRP_RPL_PIPELINE_REINIT_FAILED_WRITE); /* purecov: inspected */
-        return error;                                 /* purecov: inspected */
-      }
-    }
-
-    if ((error = log_event->write(cache))) {
+    if ((error = log_event->write(&ostream))) {
       LogPluginErr(ERROR_LEVEL, ER_GRP_RPL_UNABLE_TO_CONVERT_EVENT_TO_PACKET,
-                   error); /* purecov: inspected */
-      return error;        /* purecov: inspected */
+                   "Out of memory"); /* purecov: inspected */
+      return error;                  /* purecov: inspected */
     }
 
-    /*
-      Avoid call flush_io_cache() before reinit_io_cache() to
-      READ_CACHE if temporary file does not exist.
-    */
-    if (cache->file != -1 && (error = flush_io_cache(cache))) {
-      LogPluginErr(ERROR_LEVEL,
-                   ER_GRP_RPL_PIPELINE_FLUSH_FAIL); /* purecov: inspected */
-      return error;                                 /* purecov: inspected */
-    }
-
-    if ((error = reinit_io_cache(cache, READ_CACHE, 0, 0, 0))) {
-      LogPluginErr(
-          ERROR_LEVEL,
-          ER_GRP_RPL_PIPELINE_REINIT_FAILED_READ); /* purecov: inspected */
-      return error;                                /* purecov: inspected */
-    }
-
-    if ((error = Log_event::read_log_event(
-             cache, &packet_data, 0, binary_log::BINLOG_CHECKSUM_ALG_OFF))) {
-      LogPluginErr(
-          ERROR_LEVEL, ER_GRP_RPL_UNABLE_TO_CONVERT_EVENT_TO_PACKET,
-          get_string_log_read_error_msg(error)); /* purecov: inspected */
-      return error;                              /* purecov: inspected */
-    }
-    packet = new Data_packet((uchar *)packet_data.ptr(),
-                             static_cast<ulong>(packet_data.length()));
+    packet = new Data_packet(reinterpret_cast<const uchar *>(ostream.c_ptr()),
+                             ostream.length());
 
     delete log_event;
     log_event = NULL;
 
     return error;
-  }
-
-  const char *get_string_log_read_error_msg(int error) {
-    switch (error) {
-      case LOG_READ_BOGUS:
-        return "corrupted data in log event";
-      case LOG_READ_TOO_LARGE:
-        return "log event entry exceeded slave_max_allowed_packet; Increase "
-               "slave_max_allowed_packet";
-      case LOG_READ_IO:
-        return "I/O error reading log event";
-      case LOG_READ_MEM:
-        return "memory allocation failed reading log event, machine is out of "
-               "memory";
-      case LOG_READ_TRUNC:
-        return "binlog truncated in the middle of event; consider out of disk "
-               "space";
-      case LOG_READ_CHECKSUM_FAILURE:
-        return "event read from binlog did not pass checksum algorithm "
-               "check specified on --binlog-checksum option";
-      default:
-        return "unknown error reading log event";
-    }
   }
 
  private:
@@ -415,8 +392,9 @@ class Pipeline_event {
   int event_context;
   /* Format description event used on conversions */
   Format_description_log_event *format_descriptor;
-  IO_CACHE *cache;
-  bool user_provided_cache;
+  enum_group_replication_consistency_level m_consistency_level;
+  std::list<Gcs_member_identifier> *m_online_members;
+  bool m_online_members_memory_ownership;
 };
 
 /**
@@ -525,7 +503,7 @@ class Pipeline_action {
  public:
   Pipeline_action(int action_type) { type = action_type; }
 
-  virtual ~Pipeline_action(){};
+  virtual ~Pipeline_action() {}
 
   /**
     Returns this action type.

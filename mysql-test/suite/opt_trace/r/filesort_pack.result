@@ -172,6 +172,10 @@ select * from t1 order by c1	{
             }
           },
           {
+            "finalizing_table_conditions": [
+            ]
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t1`"
@@ -214,9 +218,8 @@ select * from t1 order by c1	{
               "max_rows_per_buffer": 215,
               "num_rows_estimate": 215,
               "num_rows_found": 0,
-              "num_examined_rows": 0,
               "num_initial_chunks_spilled_to_disk": 0,
-              "sort_buffer_size": 222744,
+              "peak_memory_used": 0,
               "sort_algorithm": "none",
               "unpacked_addon_fields": "max_length_for_sort_data",
               "sort_mode": "<fixed_sort_key, rowid>"
@@ -330,6 +333,10 @@ select * from t1 order by c1	{
             }
           },
           {
+            "finalizing_table_conditions": [
+            ]
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t1`"
@@ -372,9 +379,8 @@ select * from t1 order by c1	{
               "max_rows_per_buffer": 15,
               "num_rows_estimate": 215,
               "num_rows_found": 0,
-              "num_examined_rows": 0,
               "num_initial_chunks_spilled_to_disk": 0,
-              "sort_buffer_size": 998480,
+              "peak_memory_used": 0,
               "sort_algorithm": "none",
               "unpacked_addon_fields": "row_too_large",
               "sort_mode": "<fixed_sort_key, additional_fields>"
@@ -488,6 +494,10 @@ select * from t1 order by c1	{
             }
           },
           {
+            "finalizing_table_conditions": [
+            ]
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t1`"
@@ -530,9 +540,8 @@ select * from t1 order by c1	{
               "max_rows_per_buffer": 15,
               "num_rows_estimate": 215,
               "num_rows_found": 0,
-              "num_examined_rows": 0,
               "num_initial_chunks_spilled_to_disk": 0,
-              "sort_buffer_size": 998480,
+              "peak_memory_used": 0,
               "sort_algorithm": "none",
               "unpacked_addon_fields": "row_too_large",
               "sort_mode": "<fixed_sort_key, additional_fields>"
@@ -646,6 +655,10 @@ select * from t1 order by c1	{
             }
           },
           {
+            "finalizing_table_conditions": [
+            ]
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t1`"
@@ -688,9 +701,8 @@ select * from t1 order by c1	{
               "max_rows_per_buffer": 15,
               "num_rows_estimate": 215,
               "num_rows_found": 0,
-              "num_examined_rows": 0,
               "num_initial_chunks_spilled_to_disk": 0,
-              "sort_buffer_size": 998512,
+              "peak_memory_used": 0,
               "sort_algorithm": "none",
               "sort_mode": "<fixed_sort_key, packed_additional_fields>"
             }
@@ -1066,6 +1078,10 @@ SELECT * FROM t1 ORDER BY c1	{
             }
           },
           {
+            "finalizing_table_conditions": [
+            ]
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t1`"
@@ -1108,9 +1124,8 @@ SELECT * FROM t1 ORDER BY c1	{
               "max_rows_per_buffer": 15,
               "num_rows_estimate": 15,
               "num_rows_found": 0,
-              "num_examined_rows": 0,
               "num_initial_chunks_spilled_to_disk": 0,
-              "sort_buffer_size": 4040,
+              "peak_memory_used": 0,
               "sort_algorithm": "none",
               "unpacked_addon_fields": "max_length_for_sort_data",
               "sort_mode": "<fixed_sort_key, rowid>"

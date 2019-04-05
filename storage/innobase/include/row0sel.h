@@ -24,8 +24,6 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
 *****************************************************************************/
 
-#include "my_compiler.h"
-
 /** @file include/row0sel.h
  Select
 
@@ -34,6 +32,8 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
 #ifndef row0sel_h
 #define row0sel_h
+
+#include "univ.i"
 
 #include "btr0pcur.h"
 #include "data0data.h"
@@ -45,7 +45,6 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "row0mysql.h"
 #include "row0types.h"
 #include "trx0types.h"
-#include "univ.i"
 
 /** Creates a select node struct.
  @return own: select node struct */
@@ -86,6 +85,33 @@ are not covered by current key.
 @param[in]	prebuilt	prebuilt struct. */
 void row_sel_copy_cached_fields_for_mysql(byte *buf, const byte *cached_rec,
                                           row_prebuilt_t *prebuilt);
+
+/** Convert a row in the Innobase format to a row in the MySQL format.
+Note that the template in prebuilt may advise us to copy only a few
+columns to mysql_rec, other columns are left blank. All columns may not
+be needed in the query.
+@param[out]	mysql_rec		row in the MySQL format
+@param[in]	prebuilt		prebuilt structure
+@param[in]	rec			Innobase record in the index
+                                        which was described in prebuilt's
+                                        template, or in the clustered index;
+                                        must be protected by a page latch
+@param[in]	vrow			virtual columns
+@param[in]	rec_clust		TRUE if rec is in the clustered index
+                                        instead of prebuilt->index
+@param[in]	index			index of rec
+@param[in]	offsets			array returned by rec_get_offsets(rec)
+@param[in]	clust_templ_for_sec	TRUE if rec belongs to secondary index
+                                        but the prebuilt->template is in
+                                        clustered index format and it
+                                        is used only for end range comparison
+@param[in]	lob_undo		the LOB undo information.
+@return true on success, false if not all columns could be retrieved */
+ibool row_sel_store_mysql_rec(byte *mysql_rec, row_prebuilt_t *prebuilt,
+                              const rec_t *rec, const dtuple_t *vrow,
+                              ibool rec_clust, const dict_index_t *index,
+                              const ulint *offsets, bool clust_templ_for_sec,
+                              lob::undo_vers_t *lob_undo);
 
 /** Converts a key value stored in MySQL format to an Innobase dtuple. The last
  field of the key value may be just a prefix of a fixed length field: hence

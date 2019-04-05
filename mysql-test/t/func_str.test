@@ -307,10 +307,10 @@ select POSITION(_latin1'B' IN _latin2'abcd');
 select FIND_IN_SET(_latin1'B',_latin1'a,b,c,d');
 
 # fix this:
---disable_parsing
+--disable_testcase BUG#0000
 select FIND_IN_SET(_latin1'B',_latin1'a,b,c,d' COLLATE latin1_bin);
 select FIND_IN_SET(_latin1'B' COLLATE latin1_bin,_latin1'a,b,c,d');
---enable_parsing
+--enable_testcase
 
 --error 1267
 select FIND_IN_SET(_latin1'B' COLLATE latin1_general_ci,_latin1'a,b,c,d' COLLATE latin1_bin);
@@ -320,10 +320,10 @@ select FIND_IN_SET(_latin1'B',_latin2'a,b,c,d');
 select SUBSTRING_INDEX(_latin1'abcdabcdabcd',_latin1'd',2);
 
 # fix this:
---disable_parsing
+--disable_testcase BUG#0000
 select SUBSTRING_INDEX(_latin1'abcdabcdabcd' COLLATE latin1_bin,_latin1'd',2);
 select SUBSTRING_INDEX(_latin1'abcdabcdabcd',_latin1'd' COLLATE latin1_bin,2);
---enable_parsing
+--enable_testcase
 
 --error 1267
 select SUBSTRING_INDEX(_latin1'abcdabcdabcd',_latin2'd',2);
@@ -2042,3 +2042,28 @@ CREATE TABLE t3 AS SELECT quote('a');
 SHOW CREATE TABLE t3;
 SET NAMES DEFAULT;
 DROP TABLE t1, t2, t3;
+
+--echo #
+--echo # Bug #27410088: LOWER(CHAR(51386)) NOT EVALUATED CONSISTENTLY IN
+--echo #                STORED PROCEDURE
+--echo #
+DELIMITER |;
+CREATE PROCEDURE proc (ofs INT, count INT)
+BEGIN
+  DECLARE i INT DEFAULT ofs;
+  WHILE i < count DO
+    SELECT i AS i;
+    IF LOWER(CHAR(i USING utf8) COLLATE utf8_tolower_ci) !=
+       LOWER(CHAR(i USING utf8mb4) COLLATE utf8mb4_0900_as_ci) THEN
+      SELECT i AS 'found funny character';
+    END IF;
+    SET i = i + 1;
+  END WHILE;
+END|
+DELIMITER ;|
+# There should be same result for following two calls.
+--disable_warnings
+CALL proc(51390, 51394);
+CALL proc(51390, 51394);
+--enable_warnings
+DROP PROCEDURE proc;

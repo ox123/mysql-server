@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0,
@@ -22,8 +22,8 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
-#ifndef NGS_SYSTEM_INTERFACE_H_
-#define NGS_SYSTEM_INTERFACE_H_
+#ifndef PLUGIN_X_NGS_INCLUDE_NGS_COMMON_SYSTEM_INTERFACE_H_
+#define PLUGIN_X_NGS_INCLUDE_NGS_COMMON_SYSTEM_INTERFACE_H_
 
 #include "plugin/x/ngs/include/ngs/memory.h"
 
@@ -45,7 +45,9 @@ class System_interface {
   virtual int get_pid() = 0;
 
   virtual int get_socket_errno() = 0;
-  virtual void get_socket_error_and_message(int &err, std::string &strerr) = 0;
+  virtual void set_socket_errno(const int err) = 0;
+  virtual void get_socket_error_and_message(int &out_err,
+                                            std::string &out_strerr) = 0;
 
   virtual void freeaddrinfo(addrinfo *ai) = 0;
   virtual int getaddrinfo(const char *node, const char *service,
@@ -55,4 +57,4 @@ class System_interface {
 
 }  // namespace ngs
 
-#endif  // NGS_SYSTEM_INTERFACE_H_
+#endif  // PLUGIN_X_NGS_INCLUDE_NGS_COMMON_SYSTEM_INTERFACE_H_

@@ -21,7 +21,7 @@
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 
 SET (DEB_COMMERCIAL_CONTROL_EXTRAS "
-Package: mysql-commercial-backup
+Package: mysql-${DEB_PRODUCTNAME}-backup
 Architecture: any
 Depends: \${shlibs:Depends}, \${misc:Depends}
 Description: MySQL Enterprise Backup
@@ -29,3 +29,4 @@ Description: MySQL Enterprise Backup
 ")
 
 SET (DEB_CMAKE_EXTRAS "${DEB_CMAKE_EXTRAS} -DWITH_MEB=1 -DMYSQL_SERVER_SUFFIX=\"-commercial\"")
+SET (DEB_CONTROL_BDEPS_COMMERCIAL ", libcurl4-openssl-dev")

@@ -22,12 +22,15 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
-#ifndef _NGS_CLIENT_INTERFACE_H_
-#define _NGS_CLIENT_INTERFACE_H_
+#ifndef PLUGIN_X_NGS_INCLUDE_NGS_INTERFACE_CLIENT_INTERFACE_H_
+#define PLUGIN_X_NGS_INCLUDE_NGS_INTERFACE_CLIENT_INTERFACE_H_
 
 #include "plugin/x/ngs/include/ngs/interface/session_interface.h"
 #include "plugin/x/ngs/include/ngs/interface/vio_interface.h"
 #include "plugin/x/ngs/include/ngs_common/chrono.h"
+#include "plugin/x/src/helper/multithread/mutex.h"
+
+class THD;
 
 namespace ngs {
 
@@ -62,11 +65,12 @@ class Client_interface {
   virtual void on_server_shutdown() = 0;
 
   virtual void run(const bool skip_resolve_name) = 0;
-  virtual Mutex &get_session_exit_mutex() = 0;
+  virtual xpl::Mutex &get_session_exit_mutex() = 0;
 
  public:
   virtual const char *client_address() const = 0;
   virtual const char *client_hostname() const = 0;
+  virtual const char *client_hostname_or_address() const = 0;
   virtual const char *client_id() const = 0;
   virtual Client_id client_id_num() const = 0;
   virtual int client_port() const = 0;
@@ -84,16 +88,17 @@ class Client_interface {
   virtual void set_wait_timeout(const uint32_t) = 0;
 
   virtual Session_interface *session() = 0;
-  virtual ngs::shared_ptr<ngs::Session_interface> session_smart_ptr() = 0;
+  virtual ngs::shared_ptr<ngs::Session_interface> session_smart_ptr() const = 0;
 
- public:
   virtual void on_session_reset(Session_interface &s) = 0;
   virtual void on_session_close(Session_interface &s) = 0;
   virtual void on_session_auth_success(Session_interface &s) = 0;
 
   virtual void disconnect_and_trigger_close() = 0;
+
+  virtual bool is_handler_thd(const THD *thd) const = 0;
 };
 
 }  // namespace ngs
 
-#endif  // _NGS_CLIENT_INTERFACE_H_
+#endif  // PLUGIN_X_NGS_INCLUDE_NGS_INTERFACE_CLIENT_INTERFACE_H_

@@ -223,22 +223,26 @@ DROP TABLE t1;
 CREATE TABLE t(a INT);
 INSERT INTO t values (1),(2),(3),(6),(0);
 
+#Costs vary in some of the platforms. So not printing these values.
 --echo Discard w
 let $query=
    SELECT 1 FROM t WINDOW w AS(PARTITION BY NULL,NULL ORDER BY NULL ASC);
 eval $query;
+--replace_regex /(_cost": )"[0-9.]+"/\1"#"/ /(per_join": )"[0-9]+"/\1"#"/ /(per_scan": )[0-9]+/\1"#"/ /(per_join": )[0-9]+/\1"#"/
 eval EXPLAIN FORMAT=JSON $query;
 
 --echo Discard w
 let $query=
    SELECT 1 FROM t WINDOW w AS(PARTITION BY 1+2,3+4,5+6 ORDER BY 1+2,3+4);
 eval $query;
+--replace_regex /(_cost": )"[0-9.]+"/\1"#"/ /(per_join": )"[0-9]+"/\1"#"/ /(per_scan": )[0-9]+/\1"#"/ /(per_join": )[0-9]+/\1"#"/
 eval EXPLAIN FORMAT=JSON $query;
 
 --echo Discard w2
 let $query=
    SELECT RANK() OVER w1 FROM t WINDOW w1 AS (ORDER BY a), w2 AS (w1);
 eval $query;
+--replace_regex /(_cost": )"[0-9.]+"/\1"#"/ /(per_join": )"[0-9]+"/\1"#"/ /(per_scan": )[0-9]+/\1"#"/ /(per_join": )[0-9]+/\1"#"/
 eval EXPLAIN FORMAT=JSON $query;
 
 --echo Don't discard either w1 or w2. Non-optimal: could replace with
@@ -247,30 +251,35 @@ eval EXPLAIN FORMAT=JSON $query;
 let $query=
    SELECT RANK() OVER w2 FROM t WINDOW w1 AS (ORDER BY a), w2 AS (w1);
 eval $query;
+--replace_regex /(_cost": )"[0-9.]+"/\1"#"/ /(per_join": )"[0-9]+"/\1"#"/ /(per_scan": )[0-9]+/\1"#"/ /(per_join": )[0-9]+/\1"#"/
 eval EXPLAIN FORMAT=JSON $query;
 
 --echo Discard w3. Non-optimal: see previous case.
 let $query=
    SELECT RANK() OVER w2 FROM t WINDOW w1 AS (ORDER BY a), w2 AS (w1), w3 AS (w1);
 eval $query;
+--replace_regex /(_cost": )"[0-9.]+"/\1"#"/ /(per_join": )"[0-9]+"/\1"#"/ /(per_scan": )[0-9]+/\1"#"/ /(per_join": )[0-9]+/\1"#"/
 eval EXPLAIN FORMAT=JSON $query;
 
 --echo Discard w1. Non-optimal: see previous case.
 let $query=
    SELECT RANK() OVER w3 FROM t WINDOW w1 AS (w2), w3 AS (w2), w2 AS ();
 eval $query;
+--replace_regex /(_cost": )"[0-9.]+"/\1"#"/ /(per_join": )"[0-9]+"/\1"#"/ /(per_scan": )[0-9]+/\1"#"/ /(per_join": )[0-9]+/\1"#"/
 eval EXPLAIN FORMAT=JSON $query;
 
 --echo Discard w2.
 let $query=
    SELECT RANK() OVER w1 FROM t WINDOW w2 AS (w1), w1 AS (ORDER BY a);
 eval $query;
+--replace_regex /(_cost": )"[0-9.]+"/\1"#"/ /(per_join": )"[0-9]+"/\1"#"/ /(per_scan": )[0-9]+/\1"#"/ /(per_join": )[0-9]+/\1"#"/
 eval EXPLAIN FORMAT=JSON $query;
 
 --echo Discard none.
 let $query=
    SELECT RANK() OVER w1 FROM t WINDOW w1 AS (ROWS UNBOUNDED PRECEDING);
 eval $query;
+--replace_regex /(_cost": )"[0-9.]+"/\1"#"/ /(per_join": )"[0-9]+"/\1"#"/ /(per_scan": )[0-9]+/\1"#"/ /(per_join": )[0-9]+/\1"#"/
 eval EXPLAIN FORMAT=JSON $query;
 
 DROP TABLE t;
@@ -383,3 +392,168 @@ SELECT b, CUME_DIST() OVER (
   PARTITION BY b ORDER BY a RANGE BETWEEN CURRENT ROW AND 1 FOLLOWING
 ) FROM t;
 DROP TABLE t;
+
+--echo #
+--echo # Bug#27452179: WINDOW: ASSERTION FAILED: SCALE >= 0 && PRECISION > 0
+--echo #               && SCALE <= PRECISION
+--echo #
+
+CREATE TABLE t(f1 INTEGER);
+INSERT INTO t VALUES(0),(1),(2),(3);
+SELECT * FROM (SELECT IF(1, WEEKDAY('1'), ROW_NUMBER() OVER (PARTITION BY f1))
+               FROM t) AS a;
+DROP TABLE t;
+
+--echo #
+--echo # Bug#27453155 W->FRAME_BUFFER()->S->DB_TYPE()->DB_TYPE ==
+--echo #              DB_TYPE_INNODB || CNT <= 1 || (W->LA
+--echo #
+CREATE TABLE t(a SMALLINT);
+INSERT INTO t(a) VALUES (-32768), (-1), (32767), (32767), (1);
+SELECT a, COUNT(a) OVER w, LAG(1,13) RESPECT NULLS OVER w
+  FROM t
+  WINDOW w AS (ORDER BY a RANGE BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING);
+DROP TABLE t;
+
+--echo #
+--echo # Bug#28105241: WINDOWS FUNC + AGGREGATES: ASSERTION FAILED:
+--echo #               HYBRID_TYPE == DECIMAL_RESULT
+--echo #
+
+DO ST_CROSSES(@g,SUM(SHA(@g))OVER());
+DO UNHEX(SUM(@g)OVER());
+DO BIT_LENGTH(AVG(@f)OVER());
+DO COMPRESS(SUM(' >')OVER());
+DO LTRIM(AVG(LOG2(@c))OVER());
+DO (~(SUM(@f)OVER()));
+DO IS_UUID(SUM(@e)OVER());
+DO TO_BASE64(AVG(@d)OVER());
+
+--echo #
+--echo # Bug#28080199 UBSAN: DECIMAL_ADD, LOAD OF VALUE 53,
+--echo #              WHICH IS NOT A VALID VALUE FOR TYPE
+--echo #
+
+SELECT bit_count(sum(cos(-66365726))over());
+SELECT bit_count(avg(cos(-66365726))over());
+
+--echo #
+--echo # Bug#28431783 ASSERTION FALSE IN ITEM::TYPE_FOR_VARIABLE()
+--echo # Regression after introduction of window functions
+--echo #
+CREATE TABLE t(a DATETIME(6) NOT NULL)ENGINE=INNODB;
+INSERT INTO t(a) VALUES('2008-01-01 00:22:33');
+SELECT( SELECT a FROM  ( SELECT 1 FROM t ) e ORDER BY (@f:=a) )
+    FROM t GROUP BY a;
+DROP TABLE t;
+
+--echo #
+--echo # Bug #27452365: UBSAN: SIGNED INTEGER OVERFLOW IN
+--echo #                PROCESS_BUFFERED_WINDOWING_RECORD
+--echo #
+
+CREATE TABLE t(a INTEGER);
+INSERT INTO t VALUES (1),(2),(3),(4);
+
+SELECT NTILE(74) OVER(ORDER BY a ROWS BETWEEN CURRENT ROW AND
+                      9223372036854775807 FOLLOWING) FROM t;
+
+SELECT SUM(a) OVER(ORDER BY a ROWS BETWEEN 9223372036854775807 FOLLOWING AND
+                   9223372036854775807 FOLLOWING) as `sum` FROM t;
+
+SELECT SUM(a) OVER(ORDER BY a ROWS BETWEEN 9223372036854775806 FOLLOWING AND
+                   9223372036854775807 FOLLOWING) as `sum` FROM t;
+
+SELECT SUM(a) OVER(ORDER BY a ROWS BETWEEN 9223372036854775805 FOLLOWING AND
+                   9223372036854775807 FOLLOWING) as `sum` FROM t;
+
+SELECT SUM(a) OVER(ORDER BY a ROWS BETWEEN 9223372036854775807 FOLLOWING AND
+                   9223372036854775805 FOLLOWING) as `sum` FROM t;
+
+SELECT SUM(a) OVER(ORDER BY a ROWS BETWEEN 9223372036854775807 PRECEDING AND
+                   9223372036854775805 PRECEDING) as `sum` FROM t;
+
+DROP TABLE t;
+
+--echo #
+--echo # Bug#27808099: "UNKNOWN FIELD IN WINDOW ORDER BY " ERROR EVEN
+--echo #                WHEN FIELD IS FOUND IN TABLE
+--echo #
+
+CREATE TABLE t1 (i INTEGER);
+WITH der AS (SELECT CASE WHEN i IN ('0') THEN i END AS a FROM t1),
+     der1 AS (SELECT ROW_NUMBER() OVER (ORDER BY a), a FROM der)
+  SELECT * FROM der1;
+
+WITH der AS (SELECT CASE WHEN i IN ('0') THEN i END AS a FROM t1),
+     der1 AS (SELECT ROW_NUMBER() OVER (ORDER BY a) FROM der)
+  SELECT * FROM der1;
+
+WITH der AS (SELECT i AS a FROM t1),
+     der1 AS (SELECT ROW_NUMBER() OVER (ORDER BY a) FROM der)
+  SELECT * FROM der1;
+
+--error ER_BAD_FIELD_ERROR
+SELECT i AS b, ROW_NUMBER() OVER (ORDER BY b) FROM t1;
+--error ER_BAD_FIELD_ERROR
+SELECT i+1 AS b, ROW_NUMBER() OVER (ORDER BY b) FROM t1;
+
+SELECT 3 AS i, ROW_NUMBER() OVER (ORDER BY i) FROM t1;
+
+DROP TABLE t1;
+
+--echo #
+--echo # Bug#27973860: ASSERTION FAILED: M_COUNT > 0 && M_COUNT >
+--echo #               M_FRAME_NULL_COUNT
+--echo #
+
+CREATE TABLE t ( a INT, b DATETIME(3));
+
+INSERT t VALUES(1986,'9344-11-05 13:39:24.686');
+INSERT t VALUES(1995,'7213-04-25 08:35:10.618');
+INSERT t VALUES(1971,'9352-01-31 07:55:58.233');
+SELECT SUM(a) OVER w FROM t
+WINDOW w AS(ORDER BY a,b RANGE BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING);
+
+DROP TABLE t;
+
+--echo # Bug#27816506 WINDOW FUNC; ASSERTION FAILED:
+--echo #              CURRENT_ROW > PREV_LAST_ROWNO_IN_FRAME && LOWER_L
+--echo #
+
+SET @savmode=@@SESSION.SQL_MODE;
+SET SESSION SQL_MODE='';
+CREATE TABLE t(
+  a TEXT CHARACTER SET CP1251
+  GENERATED ALWAYS AS (LPAD(1,10621933,10)) VIRTUAL,
+  b BLOB
+  GENERATED ALWAYS AS (LPAD(1,10621933,10)) VIRTUAL
+  ) ENGINE=INNODB;
+INSERT INTO t VALUES (), ();
+
+# With TEXT:
+--error ER_SUBQUERY_NO_1_ROW
+SET @f =
+(
+  SELECT NTILE(39) OVER w1 FROM t
+  WINDOW w1 AS(ORDER BY a)
+);
+
+PREPARE stmt FROM 'SELECT NTILE(39) OVER w1 FROM t
+WINDOW w1 AS(ORDER BY a)';
+EXECUTE stmt;
+
+# and with BLOB:
+--error ER_SUBQUERY_NO_1_ROW
+SET @f =
+(
+  SELECT NTILE(39) OVER w1 FROM t
+  WINDOW w1 AS(ORDER BY b)
+);
+
+PREPARE stmt FROM 'SELECT NTILE(39) OVER w1 FROM t
+WINDOW w1 AS(ORDER BY b)';
+EXECUTE stmt;
+
+DROP TABLE t;
+SET SESSION SQL_MODE=@savmode;

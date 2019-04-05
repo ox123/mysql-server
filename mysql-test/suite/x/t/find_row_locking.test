@@ -5,6 +5,7 @@
 --source include/xplugin_create_user.inc
 
 let $old_innodb_lock_wait_timeout= `SELECT @@innodb_lock_wait_timeout`;
+create schema xtest default charset 'utf8mb4';
 
 # Tests
 --write_file $MYSQL_TMP_DIR/find_row_locking.tmp
@@ -32,9 +33,11 @@ let $old_innodb_lock_wait_timeout= `SELECT @@innodb_lock_wait_timeout`;
 
 -->macro Rollback_sessions
 -->callmacro Expect_data_locks_table_is_not_empty
+-->echo switched to session session1
 -->setsession session1
 -->stmtsql ROLLBACK;
 -->recvresult
+-->echo switched to session session2
 -->setsession session2
 -->stmtsql ROLLBACK;
 -->recvresult
@@ -42,6 +45,7 @@ let $old_innodb_lock_wait_timeout= `SELECT @@innodb_lock_wait_timeout`;
 -->endmacro
 
 -->macro Use_first_transation
+-->echo switched to session session1
 -->setsession session1
 -->callmacro Expect_data_locks_table_is_empty
 -->stmtsql START TRANSACTION;
@@ -50,17 +54,19 @@ let $old_innodb_lock_wait_timeout= `SELECT @@innodb_lock_wait_timeout`;
 
 -->macro Switch_to_second_transaction
 -->callmacro Expect_data_locks_table_is_not_empty
+-->echo switched to session session2
 -->setsession session2
 -->stmtsql START TRANSACTION;
 -->recvresult
 -->endmacro
 
 -->echo ######### preparation #########
+
+-->stmtadmin create_collection	{"schema":"xtest","name":"test_coll"}
+-->recvresult
+
 -->sql
-drop schema if exists xtest;
-create schema xtest default charset 'utf8mb4';
 use xtest;
-create table test_coll (doc JSON, _id VARBINARY(16) GENERATED ALWAYS AS (json_unquote(json_extract(doc, '$._id'))) stored PRIMARY KEY);
 insert into test_coll (doc) values ('{"_id": "1", "a": 1}');
 insert into test_coll (doc) values ('{"_id": "2", "a": 2}');
 insert into test_coll (doc) values ('{"_id": "3", "a": 30}');

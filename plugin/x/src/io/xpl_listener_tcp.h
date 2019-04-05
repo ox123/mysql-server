@@ -22,8 +22,8 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
-#ifndef XPL_LISTENER_TCP_H_
-#define XPL_LISTENER_TCP_H_
+#ifndef PLUGIN_X_SRC_IO_XPL_LISTENER_TCP_H_
+#define PLUGIN_X_SRC_IO_XPL_LISTENER_TCP_H_
 
 #include "my_inttypes.h"
 #include "plugin/x/ngs/include/ngs/interface/listener_interface.h"
@@ -42,20 +42,20 @@ class Listener_tcp : public ngs::Listener_interface {
   Listener_tcp(Factory_ptr operations_factory, std::string &bind_address,
                const uint16 port, const uint32 port_open_timeout,
                ngs::Socket_events_interface &event, const uint32 backlog);
-  ~Listener_tcp();
+  ~Listener_tcp() override;
 
-  bool is_handled_by_socket_event();
+  Sync_variable_state &get_state() override;
+  std::string get_last_error() override;
+  std::string get_name_and_configuration() const override;
+  std::vector<std::string> get_configuration_variables() const override;
 
-  Sync_variable_state &get_state();
-  std::string get_last_error();
-  std::string get_name_and_configuration() const;
-  std::vector<std::string> get_configuration_variables() const;
-
-  bool setup_listener(On_connection on_connection);
-  void close_listener();
-  void loop();
+  bool setup_listener(On_connection on_connection) override;
+  void close_listener() override;
+  void loop() override;
+  void report_properties(On_report_properties on_status) override;
 
  private:
+  std::string choose_property_value(const std::string &value) const;
   Socket_interface_ptr create_socket();
 
   Factory_ptr m_operations_factory;
@@ -71,4 +71,4 @@ class Listener_tcp : public ngs::Listener_interface {
 
 }  // namespace xpl
 
-#endif  // XPL_LISTENER_TCP_H_
+#endif  // PLUGIN_X_SRC_IO_XPL_LISTENER_TCP_H_

@@ -39,6 +39,7 @@ external tools. */
 #include "dict0dict.h"
 #include "mem0mem.h"
 #include "rem/rec.h"
+#include "rem0rec.h"
 
 /** The following function determines the offsets to each field in the
  record.	 The offsets are written to a previously allocated array of
@@ -86,8 +87,10 @@ void rec_init_offsets(const rec_t *rec,          /*!< in: physical record */
         return;
     }
 
+    ut_ad(!rec_get_instant_flag_new(rec));
+
     nulls = rec - (REC_N_NEW_EXTRA_BYTES + 1);
-    lens = nulls - UT_BITS_IN_BYTES(index->n_nullable);
+    lens = nulls - UT_BITS_IN_BYTES(index->n_instant_nullable);
     offs = 0;
     null_mask = 1;
 
@@ -168,23 +171,38 @@ void rec_init_offsets(const rec_t *rec,          /*!< in: physical record */
     /* Old-style record: determine extra size and end offsets */
     offs = REC_N_OLD_EXTRA_BYTES;
     if (rec_get_1byte_offs_flag(rec)) {
-      offs += rec_offs_n_fields(offsets);
+      offs += rec_get_n_fields_old_raw(rec);
       *rec_offs_base(offsets) = offs;
       /* Determine offsets to fields */
       do {
-        offs = rec_1_get_field_end_info(rec, i);
+        if (index->has_instant_cols() && i >= rec_get_n_fields_old_raw(rec)) {
+          offs &= ~REC_OFFS_SQL_NULL;
+          offs = rec_get_instant_offset(index, i, offs);
+        } else {
+          offs = rec_1_get_field_end_info(rec, i);
+        }
+
         if (offs & REC_1BYTE_SQL_NULL_MASK) {
           offs &= ~REC_1BYTE_SQL_NULL_MASK;
           offs |= REC_OFFS_SQL_NULL;
         }
+
+        ut_ad(i < rec_get_n_fields_old_raw(rec) || (offs & REC_OFFS_SQL_NULL) ||
+              (offs & REC_OFFS_DEFAULT));
         rec_offs_base(offsets)[1 + i] = offs;
       } while (++i < rec_offs_n_fields(offsets));
     } else {
-      offs += 2 * rec_offs_n_fields(offsets);
+      offs += 2 * rec_get_n_fields_old_raw(rec);
       *rec_offs_base(offsets) = offs;
       /* Determine offsets to fields */
       do {
-        offs = rec_2_get_field_end_info(rec, i);
+        if (index->has_instant_cols() && i >= rec_get_n_fields_old_raw(rec)) {
+          offs &= ~(REC_OFFS_SQL_NULL | REC_OFFS_EXTERNAL);
+          offs = rec_get_instant_offset(index, i, offs);
+        } else {
+          offs = rec_2_get_field_end_info(rec, i);
+        }
+
         if (offs & REC_2BYTE_SQL_NULL_MASK) {
           offs &= ~REC_2BYTE_SQL_NULL_MASK;
           offs |= REC_OFFS_SQL_NULL;
@@ -194,6 +212,9 @@ void rec_init_offsets(const rec_t *rec,          /*!< in: physical record */
           offs |= REC_OFFS_EXTERNAL;
           *rec_offs_base(offsets) |= REC_OFFS_EXTERNAL;
         }
+
+        ut_ad(i < rec_get_n_fields_old_raw(rec) || (offs & REC_OFFS_SQL_NULL) ||
+              (offs & REC_OFFS_DEFAULT));
         rec_offs_base(offsets)[1 + i] = offs;
       } while (++i < rec_offs_n_fields(offsets));
     }
@@ -202,6 +223,10 @@ void rec_init_offsets(const rec_t *rec,          /*!< in: physical record */
 
 /** The following function determines the offsets to each field
  in the record.	It can reuse a previously returned array.
+ Note that after instant ADD COLUMN, if this is a record
+ from clustered index, fields in the record may be less than
+ the fields defined in the clustered index. So the offsets
+ size is allocated according to the clustered index fields.
  @return the new offsets */
 ulint *rec_get_offsets_func(
     const rec_t *rec,          /*!< in: physical record */
@@ -244,10 +269,9 @@ ulint *rec_get_offsets_func(
         break;
       default:
         ut_error;
-        return (NULL);
     }
   } else {
-    n = rec_get_n_fields_old(rec);
+    n = rec_get_n_fields_old(rec, index);
   }
 
   if (UNIV_UNLIKELY(n_fields < n)) {
@@ -388,3 +412,55 @@ void rec_get_offsets_reverse(
   *rec_offs_base(offsets) =
       (lens - extra + REC_N_NEW_EXTRA_BYTES) | REC_OFFS_COMPACT | any_ext;
 }
+
+#ifdef UNIV_DEBUG
+/** Check if the given two record offsets are identical.
+@param[in]  offsets1  field offsets of a record
+@param[in]  offsets2  field offsets of a record
+@return true if they are identical, false otherwise. */
+bool rec_offs_cmp(ulint *offsets1, ulint *offsets2) {
+  ulint n1 = rec_offs_n_fields(offsets1);
+  ulint n2 = rec_offs_n_fields(offsets2);
+
+  if (n1 != n2) {
+    return (false);
+  }
+
+  for (ulint i = 0; i < n1; ++i) {
+    ulint len_1;
+    ulint field_offset_1 = rec_get_nth_field_offs(offsets1, i, &len_1);
+
+    ulint len_2;
+    ulint field_offset_2 = rec_get_nth_field_offs(offsets2, i, &len_2);
+
+    if (field_offset_1 != field_offset_2) {
+      return (false);
+    }
+
+    if (len_1 != len_2) {
+      return (false);
+    }
+  }
+  return (true);
+}
+
+/** Print the record offsets.
+@param[in]    out         the output stream to which offsets are printed.
+@param[in]    offsets     the field offsets of the record.
+@return the output stream. */
+std::ostream &rec_offs_print(std::ostream &out, const ulint *offsets) {
+  ulint n = rec_offs_n_fields(offsets);
+
+  out << "[rec offsets: &offsets[0]=" << (void *)&offsets[0] << ", n=" << n
+      << std::endl;
+  for (ulint i = 0; i < n; ++i) {
+    ulint len;
+    ulint field_offset = rec_get_nth_field_offs(offsets, i, &len);
+    out << "i=" << i << ", offsets[" << i << "]=" << offsets[i]
+        << ", field_offset=" << field_offset << ", len=" << len << std::endl;
+  }
+  out << "]" << std::endl;
+  return (out);
+}
+
+#endif /* UNIV_DEBUG */

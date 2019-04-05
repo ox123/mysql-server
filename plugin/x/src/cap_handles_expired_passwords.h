@@ -22,8 +22,8 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
-#ifndef _CAP_HANDLES_EXPIRED_PASSWORDS_H_
-#define _CAP_HANDLES_EXPIRED_PASSWORDS_H_
+#ifndef PLUGIN_X_SRC_CAP_HANDLES_EXPIRED_PASSWORDS_H_
+#define PLUGIN_X_SRC_CAP_HANDLES_EXPIRED_PASSWORDS_H_
 
 #include "plugin/x/ngs/include/ngs/capabilities/handler.h"
 #include "plugin/x/ngs/include/ngs/mysqlx/getter_any.h"
@@ -52,7 +52,8 @@ class Cap_handles_expired_passwords : public ngs::Capability_handler {
     try {
       m_value = ngs::Getter_any::get_numeric_value<bool>(any);
     } catch (const ngs::Error_code &error) {
-      log_error(ER_XPLUGIN_CAPABILITY_EXPIRED_PASSWORD, error.message.c_str());
+      log_debug("Capability expired password failed with error: %s",
+                error.message.c_str());
       return false;
     }
     return true;
@@ -66,4 +67,4 @@ class Cap_handles_expired_passwords : public ngs::Capability_handler {
 };
 
 }  // namespace xpl
-#endif
+#endif  // PLUGIN_X_SRC_CAP_HANDLES_EXPIRED_PASSWORDS_H_

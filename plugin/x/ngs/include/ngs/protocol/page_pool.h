@@ -22,8 +22,8 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
-#ifndef _NGS_PAGE_POOL_H_
-#define _NGS_PAGE_POOL_H_
+#ifndef PLUGIN_X_NGS_INCLUDE_NGS_PROTOCOL_PAGE_POOL_H_
+#define PLUGIN_X_NGS_INCLUDE_NGS_PROTOCOL_PAGE_POOL_H_
 
 #include <stdint.h>
 #include <atomic>
@@ -31,6 +31,7 @@
 
 #include "plugin/x/ngs/include/ngs/memory.h"
 #include "plugin/x/ngs/include/ngs/thread.h"
+#include "plugin/x/src/helper/multithread/mutex.h"
 
 #define BUFFER_PAGE_SIZE 4096
 
@@ -44,17 +45,15 @@ class Page {
   Page(uint32_t pcapacity, char *pdata) {
     capacity = pcapacity;
     data = pdata;
-    length = 0;
+    data_length = 0;
     references = 0;
-    saved_length = 0;
   }
 
   Page(uint32_t pcapacity = BUFFER_PAGE_SIZE) {
     capacity = pcapacity;
     ngs::allocate_array(data, capacity, KEY_memory_x_recv_buffer);
-    length = 0;
+    data_length = 0;
     references = 0;
-    saved_length = 0;
   }
 
   virtual ~Page() { ngs::free_array(data); }
@@ -64,16 +63,15 @@ class Page {
     if (0 == --references) destroy();
   }
 
-  void save_state() { saved_length = length; }
-  void rollback() { length = saved_length; }
+  uint32_t get_free_bytes() const { return capacity - data_length; }
 
-  uint32_t get_free_bytes() { return capacity - length; }
-
-  uint8_t *get_free_ptr() { return (uint8_t *)data + length; }
+  uint8_t *get_free_ptr() const {
+    return reinterpret_cast<uint8_t *>(data) + data_length;
+  }
 
   char *data;
   uint32_t capacity;
-  uint32_t length;
+  uint32_t data_length;
 
  protected:
   virtual void destroy() {}
@@ -83,7 +81,6 @@ class Page {
   void operator=(const Page &);
 
   uint16_t references;
-  uint32_t saved_length;
 };
 
 template <typename ResType>
@@ -98,6 +95,8 @@ class Resource {
   ResType *operator->();
   ResType *operator->() const;
 
+  ResType *get() const;
+
  private:
   ResType *m_res;
 };
@@ -110,8 +109,6 @@ struct Pool_config {
 
 class Page_pool {
  public:
-  /* Unlimited allocation, no caching */
-  Page_pool(const int32_t page_size = BUFFER_PAGE_SIZE);
   Page_pool(const Pool_config &pool_config);
   ~Page_pool();
 
@@ -119,7 +116,7 @@ class Page_pool {
 
   class No_more_pages_exception : public std::exception {
    public:
-    virtual const char *what() const throw() {
+    virtual const char *what() const noexcept {
       return "No more memory pages available";
     }
   };
@@ -151,7 +148,7 @@ class Page_pool {
   int32_t m_pages_cache_max;
   int32_t m_pages_cached;
   const int32_t m_page_size;
-  Mutex m_mutex;
+  xpl::Mutex m_mutex;
   std::atomic<int32_t> m_pages_allocated;
 };
 
@@ -183,6 +180,12 @@ template <typename ResType>
 ResType *Resource<ResType>::operator->() const {
   return m_res;
 }
+
+template <typename ResType>
+ResType *Resource<ResType>::get() const {
+  return m_res;
+}
+
 }  // namespace ngs
 
-#endif  // _NGS_PAGE_POOL_H_
+#endif  // PLUGIN_X_NGS_INCLUDE_NGS_PROTOCOL_PAGE_POOL_H_

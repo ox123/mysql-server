@@ -1,7 +1,7 @@
 #ifndef SQL_GIS_GEOMETRIES_H_INCLUDED
 #define SQL_GIS_GEOMETRIES_H_INCLUDED
 
-// Copyright (c) 2017, Oracle and/or its affiliates. All rights reserved.
+// Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
 //
 // This program is free software; you can redistribute it and/or modify
 // it under the terms of the GNU General Public License, version 2.0,
@@ -98,7 +98,10 @@ class Geometry_visitor;
 /// coordinate system.
 class Geometry {
  public:
+  Geometry() = default;
   virtual ~Geometry() = default;
+  Geometry(const Geometry &) = default;
+  Geometry &operator=(const Geometry &) = default;
 
   /// Gets the geometry type of the object.
   ///
@@ -141,8 +144,8 @@ class Geometry {
 /// Point is an instantiable type in SQL.
 class Point : public Geometry {
  public:
-  Point() : m_x(std::nan("")), m_y(std::nan("")){};
-  Point(double x, double y) : m_x(x), m_y(y){};
+  Point() : m_x(std::nan("")), m_y(std::nan("")) {}
+  Point(double x, double y) : m_x(x), m_y(y) {}
   Geometry_type type() const override { return Geometry_type::kPoint; }
   bool accept(Geometry_visitor *v) override;
   bool is_empty() const override {
@@ -267,6 +270,9 @@ class Linestring : public Curve {
   /// @return Number of points in the linestring.
   virtual std::size_t size() const = 0;
 
+  /// Removes all points from the linestring.
+  virtual void clear() noexcept = 0;
+
   virtual Point &operator[](std::size_t i) = 0;
   virtual const Point &operator[](std::size_t i) const = 0;
 };
@@ -375,6 +381,17 @@ class Geometrycollection : public Geometry {
   /// @return Number of geometries in the geometrycollection.
   virtual std::size_t size() const = 0;
 
+  /// Resizes the geometrycollection to contain a given number of elements.
+  ///
+  /// If the new size is smaller than the current size, the remaining geometries
+  /// are discarded.
+  ///
+  /// @param[in] count The new number of geometries.
+  virtual void resize(std::size_t count) = 0;
+
+  /// Removes all geometries from the geometrycollection.
+  virtual void clear() noexcept = 0;
+
   virtual Geometry &operator[](std::size_t i) = 0;
   virtual const Geometry &operator[](std::size_t i) const = 0;
 };
@@ -426,6 +443,13 @@ class Multipolygon : public Multisurface {
   Geometry_type type() const override { return Geometry_type::kMultipolygon; }
   bool accept(Geometry_visitor *v) override = 0;
 };
+
+/// Get the type name string corresponding to a geometry type.
+///
+/// @param type The geometry type.
+///
+/// @return A string containing the type name (in uppercase).
+const char *type_to_name(Geometry_type type);
 
 }  // namespace gis
 

@@ -933,6 +933,10 @@ SELECT (SELECT 1 FROM t6 WHERE d = ifnull(c,null) UNION SELECT 2 FROM t6 WHERE d
             } /* attaching_conditions_to_tables */
           },
           {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
+          },
+          {
             "refine_plan": [
               {
                 "table": "``.``"
@@ -1271,6 +1275,10 @@ SELECT * FROM t5 WHERE 5 IN (SELECT 1 FROM t6 WHERE d = ifnull(c,null) UNION SEL
                         } /* attaching_conditions_to_tables */
                       },
                       {
+                        "finalizing_table_conditions": [
+                        ] /* finalizing_table_conditions */
+                      },
+                      {
                         "refine_plan": [
                           {
                             "table": "``.``"
@@ -1326,27 +1334,35 @@ SELECT * FROM t5 WHERE 5 IN (SELECT 1 FROM t6 WHERE d = ifnull(c,null) UNION SEL
 select (@query:=QUERY)+NULL, (@trace:=TRACE)+NULL from information_schema.OPTIMIZER_TRACE;
 (@query:=QUERY)+NULL	(@trace:=TRACE)+NULL
 NULL	NULL
+Warnings:
+Warning	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
+Warning	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
 select length(@trace);
 length(@trace)
-13676
+13842
 set @max_mem_size=13900;
 set optimizer_trace_max_mem_size=@max_mem_size;
 select length(@query)+length(@trace) > @@optimizer_trace_max_mem_size;
 length(@query)+length(@trace) > @@optimizer_trace_max_mem_size
-0
+1
 SELECT * FROM t5 WHERE 5 IN (SELECT 1 FROM t6 WHERE d = ifnull(c,null) UNION SELECT 2 FROM t6 WHERE d = ifnull(c,null));
 c
 select (@missing_bytes:=missing_bytes_beyond_max_mem_size) from information_schema.OPTIMIZER_TRACE;
 (@missing_bytes:=missing_bytes_beyond_max_mem_size)
-0
+66
+Warnings:
+Warning	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
 select (@query2:=QUERY)+NULL,(@trace2:=TRACE)+NULL from information_schema.OPTIMIZER_TRACE;
 (@query2:=QUERY)+NULL	(@trace2:=TRACE)+NULL
 NULL	NULL
+Warnings:
+Warning	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
+Warning	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
 select length(@trace2),
 (length(@trace2) + @missing_bytes) = length(@trace),
 @query2 = @query;
 length(@trace2)	(length(@trace2) + @missing_bytes) = length(@trace)	@query2 = @query
-13676	1	1
+13776	1	1
 select length(@query2) + length(@trace2)
 between (@@optimizer_trace_max_mem_size-200) and (@@optimizer_trace_max_mem_size+200);
 length(@query2) + length(@trace2)
@@ -1782,6 +1798,15 @@ explain select * from t1 where s1 > any (select s2 from t1)	{
             } /* attaching_conditions_to_tables */
           },
           {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t1`",
+                "original_table_condition": "<nop>((`t1`.`s1` > (/* select#2 */ select min(`t1`.`s2`) from `t1`)))",
+                "final_table_condition   ": "<nop>((`t1`.`s1` > (/* select#2 */ select min(`t1`.`s2`) from `t1`)))"
+              }
+            ] /* finalizing_table_conditions */
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t1`"
@@ -1857,6 +1882,10 @@ explain select * from t1 where s1 > any (select s2 from t1)	{
           {
             "optimizing_distinct_group_by_order_by": {
             } /* optimizing_distinct_group_by_order_by */
+          },
+          {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -2027,6 +2056,15 @@ explain select * from t1 where s1 > any (select max(s2) from t1)	{
             } /* attaching_conditions_to_tables */
           },
           {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t1`",
+                "original_table_condition": "<nop>((`t1`.`s1` > <min>(/* select#2 */ select max(`t1`.`s2`) from `t1`)))",
+                "final_table_condition   ": "<nop>((`t1`.`s1` > <min>(/* select#2 */ select max(`t1`.`s2`) from `t1`)))"
+              }
+            ] /* finalizing_table_conditions */
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t1`"
@@ -2102,6 +2140,10 @@ explain select * from t1 where s1 > any (select max(s2) from t1)	{
           {
             "optimizing_distinct_group_by_order_by": {
             } /* optimizing_distinct_group_by_order_by */
+          },
+          {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -2282,6 +2324,15 @@ explain select * from t1 where s1 in (select s2 from t1)	{
             } /* attaching_conditions_to_tables */
           },
           {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t1`",
+                "original_table_condition": "<in_optimizer>(`t1`.`s1`,<exists>(/* select#2 */ select `t1`.`s2` from `t1` where (<cache>(`t1`.`s1`) = `t1`.`s2`)))",
+                "final_table_condition   ": "<in_optimizer>(`t1`.`s1`,<exists>(/* select#2 */ select `t1`.`s2` from `t1` where (<cache>(`t1`.`s1`) = `t1`.`s2`)))"
+              }
+            ] /* finalizing_table_conditions */
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t1`"
@@ -2392,6 +2443,15 @@ explain select * from t1 where s1 in (select s2 from t1)	{
                 }
               ] /* attached_conditions_summary */
             } /* attaching_conditions_to_tables */
+          },
+          {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t1`",
+                "original_table_condition": "(<cache>(`t1`.`s1`) = `t1`.`s2`)",
+                "final_table_condition   ": "(<cache>(`t1`.`s1`) = `t1`.`s2`)"
+              }
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -2568,6 +2628,15 @@ explain select * from t1 where (s1,s2) in (select s2,s1 from t1)	{
             } /* attaching_conditions_to_tables */
           },
           {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t1`",
+                "original_table_condition": "<in_optimizer>((`t1`.`s1`,`t1`.`s2`),<exists>(/* select#2 */ select `t1`.`s2`,`t1`.`s1` from `t1` where ((<cache>(`t1`.`s1`) = `t1`.`s2`) and (<cache>(`t1`.`s2`) = `t1`.`s1`))))",
+                "final_table_condition   ": "<in_optimizer>((`t1`.`s1`,`t1`.`s2`),<exists>(/* select#2 */ select `t1`.`s2`,`t1`.`s1` from `t1` where ((<cache>(`t1`.`s1`) = `t1`.`s2`) and (<cache>(`t1`.`s2`) = `t1`.`s1`))))"
+              }
+            ] /* finalizing_table_conditions */
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t1`"
@@ -2678,6 +2747,15 @@ explain select * from t1 where (s1,s2) in (select s2,s1 from t1)	{
                 }
               ] /* attached_conditions_summary */
             } /* attaching_conditions_to_tables */
+          },
+          {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t1`",
+                "original_table_condition": "((<cache>(`t1`.`s1`) = `t1`.`s2`) and (<cache>(`t1`.`s2`) = `t1`.`s1`))",
+                "final_table_condition   ": "((<cache>(`t1`.`s1`) = `t1`.`s2`) and (<cache>(`t1`.`s2`) = `t1`.`s1`))"
+              }
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -2882,6 +2960,10 @@ explain select * from t1,t2	{
             } /* attaching_conditions_to_tables */
           },
           {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t2`"
@@ -2986,6 +3068,10 @@ explain select * from t1,t2	{
                 }
               ] /* attached_conditions_summary */
             } /* attaching_conditions_to_tables */
+          },
+          {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -3191,6 +3277,15 @@ where a1 in (select b1 from t2_16 where b1 > '0')	{
             } /* attaching_conditions_to_tables */
           },
           {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t1_16`",
+                "original_table_condition": "<in_optimizer>(`t1_16`.`a1`,<exists>(/* select#2 */ select `t2_16`.`b1` from `t2_16` where ((`t2_16`.`b1` > '0') and (<cache>(`t1_16`.`a1`) = `t2_16`.`b1`))))",
+                "final_table_condition   ": "<in_optimizer>(`t1_16`.`a1`,<exists>(/* select#2 */ select `t2_16`.`b1` from `t2_16` where ((`t2_16`.`b1` > '0') and (<cache>(`t1_16`.`a1`) = `t2_16`.`b1`))))"
+              }
+            ] /* finalizing_table_conditions */
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t1_16`"
@@ -3301,6 +3396,15 @@ where a1 in (select b1 from t2_16 where b1 > '0')	{
                 }
               ] /* attached_conditions_summary */
             } /* attaching_conditions_to_tables */
+          },
+          {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t2_16`",
+                "original_table_condition": "((`t2_16`.`b1` > '0') and (<cache>(`t1_16`.`a1`) = `t2_16`.`b1`))",
+                "final_table_condition   ": "((`t2_16`.`b1` > '0') and (<cache>(`t1_16`.`a1`) = `t2_16`.`b1`))"
+              }
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -3564,6 +3668,20 @@ WHERE c2 IN ( SELECT c2 FROM t2 WHERE c2 IN ( 1 ) )	{
             } /* attaching_conditions_to_tables */
           },
           {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t1`",
+                "original_table_condition": "<in_optimizer>(`t1`.`c1`,<exists>(/* select#2 */ select `t2`.`c2` from `t2` where ((`t2`.`c2` = 1) and (<cache>(`t2`.`c2`) = `t2`.`c2`))))",
+                "final_table_condition   ": "<in_optimizer>(`t1`.`c1`,<exists>(/* select#2 */ select `t2`.`c2` from `t2` where ((`t2`.`c2` = 1) and (<cache>(`t2`.`c2`) = `t2`.`c2`))))"
+              },
+              {
+                "table": "`t2`",
+                "original_table_condition": "(`t2`.`c2` = `t1`.`c1`)",
+                "final_table_condition   ": "(`t2`.`c2` = `t1`.`c1`)"
+              }
+            ] /* finalizing_table_conditions */
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t1`"
@@ -3677,6 +3795,15 @@ WHERE c2 IN ( SELECT c2 FROM t2 WHERE c2 IN ( 1 ) )	{
                 }
               ] /* attached_conditions_summary */
             } /* attaching_conditions_to_tables */
+          },
+          {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t2`",
+                "original_table_condition": "((`t2`.`c2` = 1) and (<cache>(`t2`.`c2`) = 1))",
+                "final_table_condition   ": "((`t2`.`c2` = 1) and (<cache>(`t2`.`c2`) = 1))"
+              }
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -3882,6 +4009,15 @@ SELECT * FROM t1 WHERE c1=5 UNION SELECT * FROM t2 WHERE c2=5	{
             } /* attaching_conditions_to_tables */
           },
           {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t1`",
+                "original_table_condition": "(`t1`.`c1` = 5)",
+                "final_table_condition   ": "(`t1`.`c1` = 5)"
+              }
+            ] /* finalizing_table_conditions */
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t1`"
@@ -3983,6 +4119,15 @@ SELECT * FROM t1 WHERE c1=5 UNION SELECT * FROM t2 WHERE c2=5	{
             } /* attaching_conditions_to_tables */
           },
           {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t2`",
+                "original_table_condition": "(`t2`.`c2` = 5)",
+                "final_table_condition   ": "(`t2`.`c2` = 5)"
+              }
+            ] /* finalizing_table_conditions */
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t2`"
@@ -4054,6 +4199,10 @@ SELECT * FROM t1 WHERE c1=5 UNION SELECT * FROM t2 WHERE c2=5	{
                 }
               ] /* attached_conditions_summary */
             } /* attaching_conditions_to_tables */
+          },
+          {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -4278,6 +4427,15 @@ concat(c1,'y') IN
             } /* attaching_conditions_to_tables */
           },
           {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t1`",
+                "original_table_condition": "(<in_optimizer>(concat(`t1`.`c1`,'x'),<exists>(/* select#2 */ select left(`t2`.`c2`,8) from `t2` where (<cache>(concat(`t1`.`c1`,'x')) = left(`t2`.`c2`,8)))) and <in_optimizer>(concat(`t1`.`c1`,'y'),<exists>(/* select#3 */ select left(`t2`.`c2`,9) from `t2` where (<cache>(concat(`t1`.`c1`,'y')) = left(`t2`.`c2`,9)))))",
+                "final_table_condition   ": "(<in_optimizer>(concat(`t1`.`c1`,'x'),<exists>(/* select#2 */ select left(`t2`.`c2`,8) from `t2` where (<cache>(concat(`t1`.`c1`,'x')) = left(`t2`.`c2`,8)))) and <in_optimizer>(concat(`t1`.`c1`,'y'),<exists>(/* select#3 */ select left(`t2`.`c2`,9) from `t2` where (<cache>(concat(`t1`.`c1`,'y')) = left(`t2`.`c2`,9)))))"
+              }
+            ] /* finalizing_table_conditions */
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t1`"
@@ -4390,6 +4548,15 @@ concat(c1,'y') IN
             } /* attaching_conditions_to_tables */
           },
           {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t2`",
+                "original_table_condition": "(<cache>(concat(`t1`.`c1`,'y')) = left(`t2`.`c2`,9))",
+                "final_table_condition   ": "(<cache>(concat(`t1`.`c1`,'y')) = left(`t2`.`c2`,9))"
+              }
+            ] /* finalizing_table_conditions */
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t2`"
@@ -4500,6 +4667,15 @@ concat(c1,'y') IN
                 }
               ] /* attached_conditions_summary */
             } /* attaching_conditions_to_tables */
+          },
+          {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t2`",
+                "original_table_condition": "(<cache>(concat(`t1`.`c1`,'x')) = left(`t2`.`c2`,8))",
+                "final_table_condition   ": "(<cache>(concat(`t1`.`c1`,'x')) = left(`t2`.`c2`,8))"
+              }
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -5057,6 +5233,15 @@ select * from t1 left join t2 on t2.a=500 where t2.a is NULL	{
             } /* attaching_conditions_to_tables */
           },
           {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t2`",
+                "original_table_condition": "(<if>(found_match(t2), isnull(`t2`.`a`), true) and <if>(is_not_null_compl(t2), (`t2`.`a` = 500), true))",
+                "final_table_condition   ": "(<if>(found_match(t2), isnull(`t2`.`a`), true) and <if>(is_not_null_compl(t2), (`t2`.`a` = 500), true))"
+              }
+            ] /* finalizing_table_conditions */
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t1`"
@@ -5227,6 +5412,15 @@ select * from t1 where (t1.a,t1.b) not in (select c,d from t2 where c>0)	{
             } /* attaching_conditions_to_tables */
           },
           {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t1`",
+                "original_table_condition": "(not(<in_optimizer>((`t1`.`a`,`t1`.`b`),<exists>(/* select#2 */ select `t2`.`c`,`t2`.`d` from `t2` where ((`t2`.`c` > 0) and <if>(outer_field_is_not_null, ((<cache>(`t1`.`a`) = `t2`.`c`) or isnull(`t2`.`c`)), true) and <if>(outer_field_is_not_null, ((<cache>(`t1`.`b`) = `t2`.`d`) or isnull(`t2`.`d`)), true)) having (<if>(outer_field_is_not_null, <is_not_null_test>(`t2`.`c`), true) and <if>(outer_field_is_not_null, <is_not_null_test>(`t2`.`d`), true))))))",
+                "final_table_condition   ": "(not(<in_optimizer>((`t1`.`a`,`t1`.`b`),<exists>(/* select#2 */ select `t2`.`c`,`t2`.`d` from `t2` where ((`t2`.`c` > 0) and <if>(outer_field_is_not_null, ((<cache>(`t1`.`a`) = `t2`.`c`) or isnull(`t2`.`c`)), true) and <if>(outer_field_is_not_null, ((<cache>(`t1`.`b`) = `t2`.`d`) or isnull(`t2`.`d`)), true)) having (<if>(outer_field_is_not_null, <is_not_null_test>(`t2`.`c`), true) and <if>(outer_field_is_not_null, <is_not_null_test>(`t2`.`d`), true))))))"
+              }
+            ] /* finalizing_table_conditions */
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t1`"
@@ -5353,6 +5547,15 @@ select * from t1 where (t1.a,t1.b) not in (select c,d from t2 where c>0)	{
                 }
               ] /* attached_conditions_summary */
             } /* attaching_conditions_to_tables */
+          },
+          {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t2`",
+                "original_table_condition": "((`t2`.`c` > 0) and <if>(outer_field_is_not_null, ((<cache>(`t1`.`a`) = `t2`.`c`) or isnull(`t2`.`c`)), true) and <if>(outer_field_is_not_null, ((<cache>(`t1`.`b`) = `t2`.`d`) or isnull(`t2`.`d`)), true))",
+                "final_table_condition   ": "((`t2`.`c` > 0) and <if>(outer_field_is_not_null, ((<cache>(`t1`.`a`) = `t2`.`c`) or isnull(`t2`.`c`)), true) and <if>(outer_field_is_not_null, ((<cache>(`t1`.`b`) = `t2`.`d`) or isnull(`t2`.`d`)), true))"
+              }
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -5639,6 +5842,15 @@ trace
             } /* optimizing_distinct_group_by_order_by */
           },
           {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t2`",
+                "original_table_condition": "(`t2`.`c` > -(1))",
+                "final_table_condition   ": "(`t2`.`c` > <cache>(-(1)))"
+              }
+            ] /* finalizing_table_conditions */
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t2`"
@@ -5695,7 +5907,7 @@ trace
         "select#": 1,
         "steps": [
           {
-            "expanded_query": "/* select#1 */ select `t1`.`a` AS `a`,avg(`t2`.`c`) AS `moyenne` from `t1` join `t2` where (`t2`.`c` > -(1)) group by `t1`.`a` having (4 = 5)"
+            "expanded_query": "/* select#1 */ select `t1`.`a` AS `a`,avg(`t2`.`c`) AS `moyenne` from `t1` join `t2` where (`t2`.`c` > -(1)) group by `t1`.`a` having 0"
           }
         ] /* steps */
       } /* join_preparation */
@@ -5727,11 +5939,11 @@ trace
           {
             "condition_processing": {
               "condition": "HAVING",
-              "original_condition": "(4 = 5)",
+              "original_condition": "0",
               "steps": [
                 {
                   "transformation": "constant_propagation",
-                  "resulting_condition": "(4 = 5)"
+                  "resulting_condition": "0"
                 },
                 {
                   "transformation": "trivial_condition_removal",
@@ -5765,7 +5977,7 @@ update t6 set d=5 where d is NULL	{
       "update_preparation": {
         "select#": 1,
         "steps": [
-          "/* select#1 */ select `t6`.`d` AS `d` from `t6` where isnull(`t6`.`d`)"
+          "update `t6` set `t6`.`d` = 5 where isnull(`t6`.`d`)"
         ] /* steps */
       } /* update_preparation */
     },
@@ -5815,6 +6027,10 @@ update t6 set d=5 where d is NULL	{
           "chosen": false,
           "cause": "no_join"
         } /* group_index_range */,
+        "skip_scan_range": {
+          "chosen": false,
+          "cause": "no_join"
+        } /* skip_scan_range */,
         "analyzing_range_alternatives": {
           "range_scan_alternatives": [
             {
@@ -5862,7 +6078,7 @@ delete from t6 where d=5	{
       "delete_preparation": {
         "select#": 1,
         "steps": [
-          "/* select#1 */ select  from `t6` where (`t6`.`d` = 5)"
+          "delete from `t6` where (`t6`.`d` = 5)"
         ] /* steps */
       } /* delete_preparation */
     },
@@ -5912,6 +6128,10 @@ delete from t6 where d=5	{
           "chosen": false,
           "cause": "no_join"
         } /* group_index_range */,
+        "skip_scan_range": {
+          "chosen": false,
+          "cause": "no_join"
+        } /* skip_scan_range */,
         "analyzing_range_alternatives": {
           "range_scan_alternatives": [
             {
@@ -5963,7 +6183,7 @@ insert into t6 select * from t6 where d>7	{
         "select#": 1,
         "steps": [
           {
-            "expanded_query": "/* select#1 */ select sql_buffer_result `t6`.`d` AS `d` from `t6` where (`t6`.`d` > 7)"
+            "expanded_query": "insert into `t6` /* select#1 */ select sql_buffer_result `t6`.`d` AS `d` from `t6` where (`t6`.`d` > 7)"
           }
         ] /* steps */
       } /* join_preparation */
@@ -6040,6 +6260,15 @@ insert into t6 select * from t6 where d>7	{
                     "chosen": false,
                     "cause": "not_group_by_or_distinct"
                   } /* group_index_range */,
+                  "skip_scan_range": {
+                    "potential_skip_scan_indexes": [
+                      {
+                        "index": "d",
+                        "usable": false,
+                        "cause": "prefix_not_const_equality"
+                      }
+                    ] /* potential_skip_scan_indexes */
+                  } /* skip_scan_range */,
                   "analyzing_range_alternatives": {
                     "range_scan_alternatives": [
                       {
@@ -6119,6 +6348,15 @@ insert into t6 select * from t6 where d>7	{
             } /* attaching_conditions_to_tables */
           },
           {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t6`",
+                "original_table_condition": "(`t6`.`d` > 7)",
+                "final_table_condition   ": "(`t6`.`d` > 7)"
+              }
+            ] /* finalizing_table_conditions */
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t6`"
@@ -6169,7 +6407,7 @@ update t5, t6 set t6.d=t6.d+t5.c+4-t5.c-4 where d>7000	{
       "update_preparation": {
         "select#": 1,
         "steps": [
-          "/* select#1 */ select `t6`.`d` AS `d` from `t5` join `t6` where (`t6`.`d` > 7000)"
+          "update `t5` join `t6` set `t6`.`d` = ((((`t6`.`d` + `t5`.`c`) + 4) - `t5`.`c`) - 4) where (`t6`.`d` > 7000)"
         ] /* steps */
       } /* update_preparation */
     },
@@ -6254,6 +6492,10 @@ update t5, t6 set t6.d=t6.d+t5.c+4-t5.c-4 where d>7000	{
                     "chosen": false,
                     "cause": "not_single_table"
                   } /* group_index_range */,
+                  "skip_scan_range": {
+                    "chosen": false,
+                    "cause": "not_single_table"
+                  } /* skip_scan_range */,
                   "analyzing_range_alternatives": {
                     "range_scan_alternatives": [
                       {
@@ -6351,6 +6593,15 @@ update t5, t6 set t6.d=t6.d+t5.c+4-t5.c-4 where d>7000	{
             } /* creating_tmp_table */
           },
           {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t6`",
+                "original_table_condition": "(`t6`.`d` > 7000)",
+                "final_table_condition   ": "(`t6`.`d` > 7000)"
+              }
+            ] /* finalizing_table_conditions */
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t6`"
@@ -6378,7 +6629,7 @@ delete t6 from t5, t6 where d>7000	{
       "delete_preparation": {
         "select#": 1,
         "steps": [
-          "/* select#1 */ select  from `t5` join `t6` where (`t6`.`d` > 7000)"
+          "delete `t6` from `t5` join `t6` where (`t6`.`d` > 7000)"
         ] /* steps */
       } /* delete_preparation */
     },
@@ -6468,6 +6719,10 @@ delete t6 from t5, t6 where d>7000	{
                     "chosen": false,
                     "cause": "not_single_table"
                   } /* group_index_range */,
+                  "skip_scan_range": {
+                    "chosen": false,
+                    "cause": "not_single_table"
+                  } /* skip_scan_range */,
                   "analyzing_range_alternatives": {
                     "range_scan_alternatives": [
                       {
@@ -6549,6 +6804,15 @@ delete t6 from t5, t6 where d>7000	{
                 }
               ] /* attached_conditions_summary */
             } /* attaching_conditions_to_tables */
+          },
+          {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t6`",
+                "original_table_condition": "(`t6`.`d` > 7000)",
+                "final_table_condition   ": "(`t6`.`d` > 7000)"
+              }
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -6873,10 +7137,36 @@ select * from t6 where d in (select f1() from t2 where s="c")	{
             "rows_estimation": [
               {
                 "table": "`t6`",
-                "table_scan": {
-                  "rows": 4,
-                  "cost": 0.5017
-                } /* table_scan */
+                "range_analysis": {
+                  "table_scan": {
+                    "rows": 4,
+                    "cost": 3.0017
+                  } /* table_scan */,
+                  "potential_range_indexes": [
+                    {
+                      "index": "d",
+                      "usable": true,
+                      "key_parts": [
+                        "d"
+                      ] /* key_parts */
+                    }
+                  ] /* potential_range_indexes */,
+                  "best_covering_index_scan": {
+                    "index": "d",
+                    "cost": 0.6674,
+                    "chosen": true
+                  } /* best_covering_index_scan */,
+                  "setup_range_conditions": [
+                  ] /* setup_range_conditions */,
+                  "group_index_range": {
+                    "chosen": false,
+                    "cause": "not_group_by_or_distinct"
+                  } /* group_index_range */,
+                  "skip_scan_range": {
+                    "chosen": false,
+                    "cause": "disjuntive_predicate_present"
+                  } /* skip_scan_range */
+                } /* range_analysis */
               }
             ] /* rows_estimation */
           },
@@ -6916,6 +7206,15 @@ select * from t6 where d in (select f1() from t2 where s="c")	{
                 }
               ] /* attached_conditions_summary */
             } /* attaching_conditions_to_tables */
+          },
+          {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t6`",
+                "original_table_condition": "<in_optimizer>(`t6`.`d`,<exists>(/* select#2 */ select `f1`() from `t2` where ((`t2`.`s` = 'c') and (<cache>(`t6`.`d`) = `f1`()))))",
+                "final_table_condition   ": "<in_optimizer>(`t6`.`d`,<exists>(/* select#2 */ select `f1`() from `t2` where ((`t2`.`s` = 'c') and (<cache>(`t6`.`d`) = `f1`()))))"
+              }
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -7030,6 +7329,15 @@ select * from t6 where d in (select f1() from t2 where s="c")	{
             } /* attaching_conditions_to_tables */
           },
           {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t2`",
+                "original_table_condition": "((`t2`.`s` = 'c') and (<cache>(`t6`.`d`) = `f1`()))",
+                "final_table_condition   ": "((`t2`.`s` = 'c') and (<cache>(`t6`.`d`) = `f1`()))"
+              }
+            ] /* finalizing_table_conditions */
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t2`"
@@ -7118,7 +7426,7 @@ delete from t1 where id="z"	{
       "delete_preparation": {
         "select#": 1,
         "steps": [
-          "/* select#1 */ select  from `t1` where (`t1`.`id` = 'z')"
+          "delete from `t1` where (`t1`.`id` = 'z')"
         ] /* steps */
       } /* delete_preparation */
     },
@@ -7235,6 +7543,10 @@ select sum(data) into ret from t1	{
           {
             "optimizing_distinct_group_by_order_by": {
             } /* optimizing_distinct_group_by_order_by */
+          },
+          {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -7277,7 +7589,7 @@ delete from t1 where id="z"	{
       "delete_preparation": {
         "select#": 1,
         "steps": [
-          "/* select#1 */ select  from `t1` where (`t1`.`id` = 'z')"
+          "delete from `t1` where (`t1`.`id` = 'z')"
         ] /* steps */
       } /* delete_preparation */
     },
@@ -7394,6 +7706,10 @@ select sum(data) into ret from t1	{
           {
             "optimizing_distinct_group_by_order_by": {
             } /* optimizing_distinct_group_by_order_by */
+          },
+          {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -7436,7 +7752,7 @@ delete from t1 where id="z"	{
       "delete_preparation": {
         "select#": 1,
         "steps": [
-          "/* select#1 */ select  from `t1` where (`t1`.`id` = 'z')"
+          "delete from `t1` where (`t1`.`id` = 'z')"
         ] /* steps */
       } /* delete_preparation */
     },
@@ -7553,6 +7869,10 @@ select sum(data) into ret from t1	{
           {
             "optimizing_distinct_group_by_order_by": {
             } /* optimizing_distinct_group_by_order_by */
+          },
+          {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -7595,7 +7915,7 @@ delete from t1 where id="z"	{
       "delete_preparation": {
         "select#": 1,
         "steps": [
-          "/* select#1 */ select  from `t1` where (`t1`.`id` = 'z')"
+          "delete from `t1` where (`t1`.`id` = 'z')"
         ] /* steps */
       } /* delete_preparation */
     },
@@ -7712,6 +8032,10 @@ select sum(data) into ret from t1	{
           {
             "optimizing_distinct_group_by_order_by": {
             } /* optimizing_distinct_group_by_order_by */
+          },
+          {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -7754,7 +8078,7 @@ delete from t1 where id="z"	{
       "delete_preparation": {
         "select#": 1,
         "steps": [
-          "/* select#1 */ select  from `t1` where (`t1`.`id` = 'z')"
+          "delete from `t1` where (`t1`.`id` = 'z')"
         ] /* steps */
       } /* delete_preparation */
     },
@@ -7911,10 +8235,36 @@ select d into res from t6 where d in (select f1() from t2 where s=arg)	{
             "rows_estimation": [
               {
                 "table": "`t6`",
-                "table_scan": {
-                  "rows": 4,
-                  "cost": 0.5017
-                } /* table_scan */
+                "range_analysis": {
+                  "table_scan": {
+                    "rows": 4,
+                    "cost": 3.0017
+                  } /* table_scan */,
+                  "potential_range_indexes": [
+                    {
+                      "index": "d",
+                      "usable": true,
+                      "key_parts": [
+                        "d"
+                      ] /* key_parts */
+                    }
+                  ] /* potential_range_indexes */,
+                  "best_covering_index_scan": {
+                    "index": "d",
+                    "cost": 0.6674,
+                    "chosen": true
+                  } /* best_covering_index_scan */,
+                  "setup_range_conditions": [
+                  ] /* setup_range_conditions */,
+                  "group_index_range": {
+                    "chosen": false,
+                    "cause": "not_group_by_or_distinct"
+                  } /* group_index_range */,
+                  "skip_scan_range": {
+                    "chosen": false,
+                    "cause": "disjuntive_predicate_present"
+                  } /* skip_scan_range */
+                } /* range_analysis */
               }
             ] /* rows_estimation */
           },
@@ -7954,6 +8304,15 @@ select d into res from t6 where d in (select f1() from t2 where s=arg)	{
                 }
               ] /* attached_conditions_summary */
             } /* attaching_conditions_to_tables */
+          },
+          {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t6`",
+                "original_table_condition": "<in_optimizer>(`t6`.`d`,<exists>(/* select#2 */ select `f1`() from `t2` where ((`t2`.`s` = arg@0) and (<cache>(`t6`.`d`) = `f1`()))))",
+                "final_table_condition   ": "<in_optimizer>(`t6`.`d`,<exists>(/* select#2 */ select `f1`() from `t2` where ((`t2`.`s` = arg@0) and (<cache>(`t6`.`d`) = `f1`()))))"
+              }
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -8060,6 +8419,15 @@ select d into res from t6 where d in (select f1() from t2 where s=arg)	{
             } /* attaching_conditions_to_tables */
           },
           {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t2`",
+                "original_table_condition": "((`t2`.`s` = arg@0) and (<cache>(`t6`.`d`) = `f1`()))",
+                "final_table_condition   ": "((`t2`.`s` = <cache>(arg@0)) and (<cache>(`t6`.`d`) = `f1`()))"
+              }
+            ] /* finalizing_table_conditions */
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t2`"
@@ -8148,7 +8516,7 @@ delete from t1 where id="z"	{
       "delete_preparation": {
         "select#": 1,
         "steps": [
-          "/* select#1 */ select  from `t1` where (`t1`.`id` = 'z')"
+          "delete from `t1` where (`t1`.`id` = 'z')"
         ] /* steps */
       } /* delete_preparation */
     },
@@ -8265,6 +8633,10 @@ select sum(data) into ret from t1	{
           {
             "optimizing_distinct_group_by_order_by": {
             } /* optimizing_distinct_group_by_order_by */
+          },
+          {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -8307,7 +8679,7 @@ delete from t1 where id="z"	{
       "delete_preparation": {
         "select#": 1,
         "steps": [
-          "/* select#1 */ select  from `t1` where (`t1`.`id` = 'z')"
+          "delete from `t1` where (`t1`.`id` = 'z')"
         ] /* steps */
       } /* delete_preparation */
     },
@@ -8424,6 +8796,10 @@ select sum(data) into ret from t1	{
           {
             "optimizing_distinct_group_by_order_by": {
             } /* optimizing_distinct_group_by_order_by */
+          },
+          {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -8466,7 +8842,7 @@ delete from t1 where id="z"	{
       "delete_preparation": {
         "select#": 1,
         "steps": [
-          "/* select#1 */ select  from `t1` where (`t1`.`id` = 'z')"
+          "delete from `t1` where (`t1`.`id` = 'z')"
         ] /* steps */
       } /* delete_preparation */
     },
@@ -8583,6 +8959,10 @@ select sum(data) into ret from t1	{
           {
             "optimizing_distinct_group_by_order_by": {
             } /* optimizing_distinct_group_by_order_by */
+          },
+          {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -8625,7 +9005,7 @@ delete from t1 where id="z"	{
       "delete_preparation": {
         "select#": 1,
         "steps": [
-          "/* select#1 */ select  from `t1` where (`t1`.`id` = 'z')"
+          "delete from `t1` where (`t1`.`id` = 'z')"
         ] /* steps */
       } /* delete_preparation */
     },
@@ -8742,6 +9122,10 @@ select sum(data) into ret from t1	{
           {
             "optimizing_distinct_group_by_order_by": {
             } /* optimizing_distinct_group_by_order_by */
+          },
+          {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -8900,7 +9284,7 @@ insert into t2 select d,100,200 from t6 where d is not null	{
         "select#": 1,
         "steps": [
           {
-            "expanded_query": "/* select#1 */ select `t6`.`d` AS `d`,100 AS `100`,200 AS `200` from `t6` where (`t6`.`d` is not null)"
+            "expanded_query": "insert into `t2` /* select#1 */ select `t6`.`d` AS `d`,100 AS `100`,200 AS `200` from `t6` where (`t6`.`d` is not null)"
           }
         ] /* steps */
       } /* join_preparation */
@@ -8977,6 +9361,15 @@ insert into t2 select d,100,200 from t6 where d is not null	{
                     "chosen": false,
                     "cause": "not_group_by_or_distinct"
                   } /* group_index_range */,
+                  "skip_scan_range": {
+                    "potential_skip_scan_indexes": [
+                      {
+                        "index": "d",
+                        "usable": false,
+                        "cause": "prefix_not_const_equality"
+                      }
+                    ] /* potential_skip_scan_indexes */
+                  } /* skip_scan_range */,
                   "analyzing_range_alternatives": {
                     "range_scan_alternatives": [
                       {
@@ -9041,6 +9434,15 @@ insert into t2 select d,100,200 from t6 where d is not null	{
             } /* attaching_conditions_to_tables */
           },
           {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t6`",
+                "original_table_condition": "(`t6`.`d` is not null)",
+                "final_table_condition   ": "(`t6`.`d` is not null)"
+              }
+            ] /* finalizing_table_conditions */
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t6`"
@@ -9077,7 +9479,7 @@ delete from t1 where id="z"	{
       "delete_preparation": {
         "select#": 1,
         "steps": [
-          "/* select#1 */ select  from `t1` where (`t1`.`id` = 'z')"
+          "delete from `t1` where (`t1`.`id` = 'z')"
         ] /* steps */
       } /* delete_preparation */
     },
@@ -9194,6 +9596,10 @@ select sum(data) into ret from t1	{
           {
             "optimizing_distinct_group_by_order_by": {
             } /* optimizing_distinct_group_by_order_by */
+          },
+          {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -9240,7 +9646,7 @@ delete from t1 where id="z"	{
       "delete_preparation": {
         "select#": 1,
         "steps": [
-          "/* select#1 */ select  from `t1` where (`t1`.`id` = 'z')"
+          "delete from `t1` where (`t1`.`id` = 'z')"
         ] /* steps */
       } /* delete_preparation */
     },
@@ -9357,6 +9763,10 @@ select sum(data) into ret from t1	{
           {
             "optimizing_distinct_group_by_order_by": {
             } /* optimizing_distinct_group_by_order_by */
+          },
+          {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -9403,7 +9813,7 @@ delete from t1 where id="z"	{
       "delete_preparation": {
         "select#": 1,
         "steps": [
-          "/* select#1 */ select  from `t1` where (`t1`.`id` = 'z')"
+          "delete from `t1` where (`t1`.`id` = 'z')"
         ] /* steps */
       } /* delete_preparation */
     },
@@ -9520,6 +9930,10 @@ select sum(data) into ret from t1	{
           {
             "optimizing_distinct_group_by_order_by": {
             } /* optimizing_distinct_group_by_order_by */
+          },
+          {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -9566,7 +9980,7 @@ delete from t1 where id="z"	{
       "delete_preparation": {
         "select#": 1,
         "steps": [
-          "/* select#1 */ select  from `t1` where (`t1`.`id` = 'z')"
+          "delete from `t1` where (`t1`.`id` = 'z')"
         ] /* steps */
       } /* delete_preparation */
     },
@@ -9683,6 +10097,10 @@ select sum(data) into ret from t1	{
           {
             "optimizing_distinct_group_by_order_by": {
             } /* optimizing_distinct_group_by_order_by */
+          },
+          {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -9841,6 +10259,15 @@ select @trace;
             } /* optimizing_distinct_group_by_order_by */
           },
           {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t1`",
+                "original_table_condition": "(`t1`.`data` = 'c')",
+                "final_table_condition   ": "(`t1`.`data` = 'c')"
+              }
+            ] /* finalizing_table_conditions */
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t1`"
@@ -9987,10 +10414,36 @@ select d into res from t6 where d in (select f1() from t2 where s=arg)	{
             "rows_estimation": [
               {
                 "table": "`t6`",
-                "table_scan": {
-                  "rows": 4,
-                  "cost": 0.5017
-                } /* table_scan */
+                "range_analysis": {
+                  "table_scan": {
+                    "rows": 4,
+                    "cost": 3.0017
+                  } /* table_scan */,
+                  "potential_range_indexes": [
+                    {
+                      "index": "d",
+                      "usable": true,
+                      "key_parts": [
+                        "d"
+                      ] /* key_parts */
+                    }
+                  ] /* potential_range_indexes */,
+                  "best_covering_index_scan": {
+                    "index": "d",
+                    "cost": 0.6674,
+                    "chosen": true
+                  } /* best_covering_index_scan */,
+                  "setup_range_conditions": [
+                  ] /* setup_range_conditions */,
+                  "group_index_range": {
+                    "chosen": false,
+                    "cause": "not_group_by_or_distinct"
+                  } /* group_index_range */,
+                  "skip_scan_range": {
+                    "chosen": false,
+                    "cause": "disjuntive_predicate_present"
+                  } /* skip_scan_range */
+                } /* range_analysis */
               }
             ] /* rows_estimation */
           },
@@ -10030,6 +10483,15 @@ select d into res from t6 where d in (select f1() from t2 where s=arg)	{
                 }
               ] /* attached_conditions_summary */
             } /* attaching_conditions_to_tables */
+          },
+          {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t6`",
+                "original_table_condition": "<in_optimizer>(`t6`.`d`,<exists>(/* select#2 */ select `f1`() from `t2` where ((`t2`.`s` = arg@0) and (<cache>(`t6`.`d`) = `f1`()))))",
+                "final_table_condition   ": "<in_optimizer>(`t6`.`d`,<exists>(/* select#2 */ select `f1`() from `t2` where ((`t2`.`s` = arg@0) and (<cache>(`t6`.`d`) = `f1`()))))"
+              }
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -10136,6 +10598,15 @@ select d into res from t6 where d in (select f1() from t2 where s=arg)	{
             } /* attaching_conditions_to_tables */
           },
           {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t2`",
+                "original_table_condition": "((`t2`.`s` = arg@0) and (<cache>(`t6`.`d`) = `f1`()))",
+                "final_table_condition   ": "((`t2`.`s` = <cache>(arg@0)) and (<cache>(`t6`.`d`) = `f1`()))"
+              }
+            ] /* finalizing_table_conditions */
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t2`"
@@ -10224,7 +10695,7 @@ delete from t1 where id="z"	{
       "delete_preparation": {
         "select#": 1,
         "steps": [
-          "/* select#1 */ select  from `t1` where (`t1`.`id` = 'z')"
+          "delete from `t1` where (`t1`.`id` = 'z')"
         ] /* steps */
       } /* delete_preparation */
     },
@@ -10341,6 +10812,10 @@ select sum(data) into ret from t1	{
           {
             "optimizing_distinct_group_by_order_by": {
             } /* optimizing_distinct_group_by_order_by */
+          },
+          {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -10383,7 +10858,7 @@ delete from t1 where id="z"	{
       "delete_preparation": {
         "select#": 1,
         "steps": [
-          "/* select#1 */ select  from `t1` where (`t1`.`id` = 'z')"
+          "delete from `t1` where (`t1`.`id` = 'z')"
         ] /* steps */
       } /* delete_preparation */
     },
@@ -10500,6 +10975,10 @@ select sum(data) into ret from t1	{
           {
             "optimizing_distinct_group_by_order_by": {
             } /* optimizing_distinct_group_by_order_by */
+          },
+          {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -10542,7 +11021,7 @@ delete from t1 where id="z"	{
       "delete_preparation": {
         "select#": 1,
         "steps": [
-          "/* select#1 */ select  from `t1` where (`t1`.`id` = 'z')"
+          "delete from `t1` where (`t1`.`id` = 'z')"
         ] /* steps */
       } /* delete_preparation */
     },
@@ -10659,6 +11138,10 @@ select sum(data) into ret from t1	{
           {
             "optimizing_distinct_group_by_order_by": {
             } /* optimizing_distinct_group_by_order_by */
+          },
+          {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -10701,7 +11184,7 @@ delete from t1 where id="z"	{
       "delete_preparation": {
         "select#": 1,
         "steps": [
-          "/* select#1 */ select  from `t1` where (`t1`.`id` = 'z')"
+          "delete from `t1` where (`t1`.`id` = 'z')"
         ] /* steps */
       } /* delete_preparation */
     },
@@ -10818,6 +11301,10 @@ select sum(data) into ret from t1	{
           {
             "optimizing_distinct_group_by_order_by": {
             } /* optimizing_distinct_group_by_order_by */
+          },
+          {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -10886,7 +11373,7 @@ explain select * from v1 where id="b"	{
             } /* view */
           },
           {
-            "expanded_query": "/* select#1 */ select `t1`.`id` AS `id`,`t1`.`data` AS `data` from (`t1`) where (`t1`.`id` = 'b')"
+            "expanded_query": "/* select#1 */ select `t1`.`id` AS `id`,`t1`.`data` AS `data` from <constant table> join (`t1`) on((`t1`.`id` < 'c')) where (`t1`.`id` = 'b')"
           },
           {
             "transformations_to_nested_joins": {
@@ -10995,6 +11482,15 @@ explain select * from v1 where id="b"	{
             } /* attaching_conditions_to_tables */
           },
           {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t1`",
+                "original_table_condition": "(`t1`.`id` = 'b')",
+                "final_table_condition   ": "(`t1`.`id` = 'b')"
+              }
+            ] /* finalizing_table_conditions */
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t1`"
@@ -11063,14 +11559,14 @@ delete from v1 where data=100	{
               "merged": true
             } /* view */
           },
-          "/* select#1 */ select  from (`t1`) where (`t1`.`data` = 100)",
+          "delete from (`t1`) on((`t1`.`id` < 'c')) where (`t1`.`data` = 100)",
           {
             "transformations_to_nested_joins": {
               "transformations": [
                 "JOIN_condition_to_WHERE",
                 "parenthesis_removal"
               ] /* transformations */,
-              "expanded_query": "/* select#1 */ select  from `t1` where ((`t1`.`data` = 100) and (`t1`.`id` < 'c'))"
+              "expanded_query": "delete from (`t1`) where ((`t1`.`data` = 100) and (`t1`.`id` < 'c'))"
             } /* transformations_to_nested_joins */
           }
         ] /* steps */
@@ -11115,7 +11611,7 @@ drop view v1;
 create view v1 as select * from t1 where id < "c" limit 2;
 explain select * from v1 where id="b";
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
-1	PRIMARY	<derived2>	NULL	ref	<auto_key0>	<auto_key0>	64	const	1	100.00	NULL
+1	PRIMARY	<derived2>	NULL	ref	<auto_key0>	<auto_key0>	64	const	1	100.00	Using where
 2	DERIVED	t1	NULL	ALL	NULL	NULL	NULL	NULL	3	33.33	Using where
 Warnings:
 Note	1003	/* select#1 */ select `v1`.`id` AS `id`,`v1`.`data` AS `data` from `test`.`v1` where (`v1`.`id` = 'b')
@@ -11249,6 +11745,15 @@ explain select * from v1 where id="b"	{
                   } /* attaching_conditions_to_tables */
                 },
                 {
+                  "finalizing_table_conditions": [
+                    {
+                      "table": "`t1`",
+                      "original_table_condition": "(`t1`.`id` < 'c')",
+                      "final_table_condition   ": "(`t1`.`id` < 'c')"
+                    }
+                  ] /* finalizing_table_conditions */
+                },
+                {
                   "refine_plan": [
                     {
                       "table": "`t1`"
@@ -11349,10 +11854,19 @@ explain select * from v1 where id="b"	{
               "attached_conditions_summary": [
                 {
                   "table": "`v1`",
-                  "attached": null
+                  "attached": "(`v1`.`id` = 'b')"
                 }
               ] /* attached_conditions_summary */
             } /* attaching_conditions_to_tables */
+          },
+          {
+            "finalizing_table_conditions": [
+              {
+                "table": "`v1`",
+                "original_table_condition": "(`v1`.`id` = 'b')",
+                "final_table_condition   ": "(`v1`.`id` = 'b')"
+              }
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -11524,6 +12038,10 @@ select TRACE into dumpfile 'MYSQLTEST_VARDIR/tmp/optimizer_trace.txt' from infor
                 }
               ]
             }
+          },
+          {
+            "finalizing_table_conditions": [
+            ]
           },
           {
             "refine_plan": [

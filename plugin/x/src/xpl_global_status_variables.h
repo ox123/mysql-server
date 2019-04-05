@@ -22,8 +22,8 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
-#ifndef _XPL_GLOBAL_STATUS_VARIABLES_H_
-#define _XPL_GLOBAL_STATUS_VARIABLES_H_
+#ifndef PLUGIN_X_SRC_XPL_GLOBAL_STATUS_VARIABLES_H_
+#define PLUGIN_X_SRC_XPL_GLOBAL_STATUS_VARIABLES_H_
 
 #include "plugin/x/ngs/include/ngs/common_status_variables.h"
 
@@ -37,6 +37,7 @@ class Global_status_variables : public ngs::Common_status_variables {
     return singleton;
   }
 
+  Global_status_variables &operator=(const Global_status_variables &) = default;
   void reset() { *this = Global_status_variables(); }
 
   Variable m_sessions_count;
@@ -49,6 +50,7 @@ class Global_status_variables : public ngs::Common_status_variables {
   Variable m_accepted_connections_count;
   Variable m_rejected_connections_count;
   Variable m_connection_errors_count;
+  Variable m_notified_by_group_replication;
   Variable m_connection_accept_errors_count;
   Variable m_accepted_sessions_count;
   Variable m_rejected_sessions_count;
@@ -62,4 +64,4 @@ class Global_status_variables : public ngs::Common_status_variables {
 
 }  // namespace xpl
 
-#endif  // _XPL_GLOBAL_STATUS_VARIABLES_H_
+#endif  // PLUGIN_X_SRC_XPL_GLOBAL_STATUS_VARIABLES_H_

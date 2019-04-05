@@ -41,7 +41,6 @@ external tools. */
 #ifndef UNIV_HOTBACKUP
 #include "lock0lock.h"
 #endif /* !UNIV_HOTBACKUP */
-#include "my_inttypes.h"
 
 /** Append 'name' to 'col_names'.  @see dict_table_t::col_names
  @return new column names array */
@@ -191,6 +190,7 @@ dict_table_t *dict_mem_table_create(
   table->n_t_cols = (unsigned int)(n_cols + table->get_n_sys_cols());
   table->n_v_cols = (unsigned int)(n_v_cols);
   table->n_cols = table->n_t_cols - table->n_v_cols;
+  table->n_instant_cols = table->n_cols;
 
   table->cols = static_cast<dict_col_t *>(
       mem_heap_alloc(heap, table->n_cols * sizeof(dict_col_t)));
@@ -217,10 +217,6 @@ dict_table_t *dict_mem_table_create(
   table->autoinc_field_no = ULINT_UNDEFINED;
   table->sess_row_id = 0;
   table->sess_trx_id = 0;
-
-  /* The number of transactions that are either waiting on the
-  AUTOINC lock or have been granted the lock. */
-  table->n_waiting_or_granted_auto_inc_locks = 0;
 
   /* If the table has an FTS index or we are in the process
   of building one, create the table->fts */
@@ -347,6 +343,7 @@ void dict_mem_fill_column_struct(
   column->mtype = (unsigned int)mtype;
   column->prtype = (unsigned int)prtype;
   column->len = (unsigned int)col_len;
+  column->instant_default = nullptr;
 #ifndef UNIV_HOTBACKUP
 #ifndef UNIV_LIBRARY
   ulint mbminlen;

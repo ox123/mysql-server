@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0,
@@ -22,11 +22,11 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
-#ifndef X_TESTS_DRIVER_PROCESSOR_SQL_BLOCK_PROCESSOR_H_
-#define X_TESTS_DRIVER_PROCESSOR_SQL_BLOCK_PROCESSOR_H_
+#ifndef PLUGIN_X_TESTS_DRIVER_PROCESSOR_SQL_BLOCK_PROCESSOR_H_
+#define PLUGIN_X_TESTS_DRIVER_PROCESSOR_SQL_BLOCK_PROCESSOR_H_
 
-#include <list>
 #include <string>
+#include <vector>
 
 #include "plugin/x/tests/driver/connector/result_fetcher.h"
 #include "plugin/x/tests/driver/processor/block_processor.h"
@@ -42,14 +42,15 @@ class Sql_block_processor : public Block_processor {
   virtual Result feed(std::istream &input, const char *linebuf);
   virtual bool feed_ended_is_state_ok();
 
- private:
+ protected:
   int run_sql_batch(xcl::XSession *conn, const std::string &sql_,
                     const bool be_quiet);
-
+  void handle_warnings(Result_fetcher *fetcher,
+                       std::vector<Warning> *out_warnings_aggregation);
   Execution_context *m_context;
   Connection_manager *m_cm;
   std::string m_rawbuffer;
   bool m_sql;
 };
 
-#endif  // X_TESTS_DRIVER_PROCESSOR_SQL_BLOCK_PROCESSOR_H_
+#endif  // PLUGIN_X_TESTS_DRIVER_PROCESSOR_SQL_BLOCK_PROCESSOR_H_

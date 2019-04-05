@@ -1,4 +1,4 @@
-/* Copyright (c) 2002, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2002, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -26,12 +26,13 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
 #include <errno.h>
-#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
+
+#include <limits>
 
 #include "m_ctype.h"
 #include "m_string.h"
@@ -791,7 +792,7 @@ static int my_wildcmp_8bit_impl(const CHARSET_INFO *cs, const char *str,
                                    w_one, w_many, recurse_level + 1);
           if (tmp <= 0) return (tmp);
         }
-      } while (str != str_end && wildstr[0] != w_many);
+      } while (str != str_end);
       return (-1);
     }
   }
@@ -1331,7 +1332,10 @@ exp: /* [ E [ <sign> ] <unsigned integer> ] */
         if (++str == end) goto ret_sign;
       }
       for (exponent = 0; str < end && (ch = (uchar)(*str - '0')) < 10; str++) {
-        exponent = exponent * 10 + ch;
+        if (exponent <= (std::numeric_limits<longlong>::max() - ch) / 10)
+          exponent = exponent * 10 + ch;
+        else
+          goto ret_too_big;
       }
       shift += negative_exp ? -exponent : exponent;
     }

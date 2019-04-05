@@ -30,17 +30,17 @@
 #include "plugin/group_replication/libmysqlgcs/include/mysql/gcs/gcs_logging_system.h"
 #include "plugin/group_replication/libmysqlgcs/include/mysql/gcs/xplatform/byteorder.h"
 #include "plugin/group_replication/libmysqlgcs/include/mysql/gcs/xplatform/my_xp_util.h"
-#include "plugin/group_replication/libmysqlgcs/src/bindings/xcom/gcs_xcom_utils.h"
 
 Gcs_xcom_node_address::Gcs_xcom_node_address(std::string member_address)
     : m_member_address(member_address), m_member_ip(), m_member_port(0) {
-  std::size_t idx = member_address.find(":");
+  char address[IP_MAX_SIZE];
+  xcom_port port;
 
-  if (idx != std::string::npos) {
-    m_member_ip.append(m_member_address, 0, idx);
-    std::string sport;
-    sport.append(m_member_address, idx + 1, m_member_address.size() - idx);
-    m_member_port = static_cast<xcom_port>(strtoul(sport.c_str(), NULL, 0));
+  int error = get_ip_and_port(const_cast<char *>(member_address.c_str()),
+                              address, &port);
+  if (!error) {
+    m_member_ip.append(address);
+    m_member_port = port;
   }
 }
 
@@ -56,6 +56,10 @@ std::string *Gcs_xcom_node_address::get_member_representation() const {
   return new std::string(m_member_address);
 }
 
+bool Gcs_xcom_node_address::is_valid() const {
+  return !m_member_ip.empty() && m_member_port != 0;
+}
+
 Gcs_xcom_node_address::~Gcs_xcom_node_address() {}
 
 Gcs_xcom_node_information::Gcs_xcom_node_information(
@@ -64,7 +68,8 @@ Gcs_xcom_node_information::Gcs_xcom_node_information(
       m_uuid(Gcs_xcom_uuid::create_uuid()),
       m_node_no(VOID_NODE_NO),
       m_alive(alive),
-      m_timestamp(0) {}
+      m_member(false),
+      m_suspicion_creation_timestamp(0) {}
 
 Gcs_xcom_node_information::Gcs_xcom_node_information(
     const std::string &member_id, const Gcs_xcom_uuid &uuid,
@@ -73,13 +78,16 @@ Gcs_xcom_node_information::Gcs_xcom_node_information(
       m_uuid(uuid),
       m_node_no(node_no),
       m_alive(alive),
-      m_timestamp(0) {}
+      m_member(false),
+      m_suspicion_creation_timestamp(0) {}
 
-void Gcs_xcom_node_information::set_timestamp(uint64_t ts) { m_timestamp = ts; }
+void Gcs_xcom_node_information::set_suspicion_creation_timestamp(uint64_t ts) {
+  m_suspicion_creation_timestamp = ts;
+}
 
 /* purecov: begin tested */
-uint64_t Gcs_xcom_node_information::get_timestamp() const {
-  return m_timestamp;
+uint64_t Gcs_xcom_node_information::get_suspicion_creation_timestamp() const {
+  return m_suspicion_creation_timestamp;
 }
 /* purecov: end */
 
@@ -107,9 +115,13 @@ unsigned int Gcs_xcom_node_information::get_node_no() const {
 
 bool Gcs_xcom_node_information::is_alive() const { return m_alive; }
 
+bool Gcs_xcom_node_information::is_member() const { return m_member; }
+
+void Gcs_xcom_node_information::set_member(bool m) { m_member = m; }
+
 bool Gcs_xcom_node_information::has_timed_out(uint64_t now_ts,
                                               uint64_t timeout) {
-  return (m_timestamp + timeout) < now_ts;
+  return (m_suspicion_creation_timestamp + timeout) < now_ts;
 }
 
 Gcs_xcom_uuid Gcs_xcom_uuid::create_uuid() {
@@ -187,6 +199,7 @@ Gcs_xcom_nodes::Gcs_xcom_nodes(const site_def *site, node_set &nodes)
       m_addrs(NULL),
       m_uuids(NULL) {
   Gcs_xcom_uuid uuid;
+
   for (unsigned int i = 0; i < nodes.node_set_len; ++i) {
     /* Get member address and save it. */
     std::string address(site->nodes.node_list_val[i].address);

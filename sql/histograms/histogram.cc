@@ -1,4 +1,4 @@
-/* Copyright (c) 2016, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2016, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -220,14 +220,14 @@ Histogram::Histogram(MEM_ROOT *mem_root, const std::string &db_name,
       m_mem_root(mem_root),
       m_hist_type(type),
       m_data_type(data_type) {
-  make_lex_string_root(m_mem_root, &m_database_name, db_name.c_str(),
-                       db_name.length(), false);
+  lex_string_strmake(m_mem_root, &m_database_name, db_name.c_str(),
+                     db_name.length());
 
-  make_lex_string_root(m_mem_root, &m_table_name, tbl_name.c_str(),
-                       tbl_name.length(), false);
+  lex_string_strmake(m_mem_root, &m_table_name, tbl_name.c_str(),
+                     tbl_name.length());
 
-  make_lex_string_root(m_mem_root, &m_column_name, col_name.c_str(),
-                       col_name.length(), false);
+  lex_string_strmake(m_mem_root, &m_column_name, col_name.c_str(),
+                     col_name.length());
 }
 
 Histogram::Histogram(MEM_ROOT *mem_root, const Histogram &other)
@@ -238,14 +238,14 @@ Histogram::Histogram(MEM_ROOT *mem_root, const Histogram &other)
       m_mem_root(mem_root),
       m_hist_type(other.m_hist_type),
       m_data_type(other.m_data_type) {
-  make_lex_string_root(m_mem_root, &m_database_name, other.m_database_name.str,
-                       other.m_database_name.length, false);
+  lex_string_strmake(m_mem_root, &m_database_name, other.m_database_name.str,
+                     other.m_database_name.length);
 
-  make_lex_string_root(m_mem_root, &m_table_name, other.m_table_name.str,
-                       other.m_table_name.length, false);
+  lex_string_strmake(m_mem_root, &m_table_name, other.m_table_name.str,
+                     other.m_table_name.length);
 
-  make_lex_string_root(m_mem_root, &m_column_name, other.m_column_name.str,
-                       other.m_column_name.length, false);
+  lex_string_strmake(m_mem_root, &m_column_name, other.m_column_name.str,
+                     other.m_column_name.length);
 }
 
 bool Histogram::histogram_to_json(Json_object *json_object) const {
@@ -897,12 +897,6 @@ bool update_histogram(THD *thd, TABLE_LIST *table, const columns_set &columns,
 
   table->reinit_before_use(thd);
   if (open_and_lock_tables(thd, table, 0)) {
-    if (thd->is_error() &&
-        thd->get_stmt_da()->mysql_errno() == ER_NO_SUCH_TABLE)
-      results.emplace("", Message::NO_SUCH_TABLE);
-    else
-      results.emplace("",
-                      Message::UNABLE_TO_OPEN_TABLE); /* purecov: deadcode */
     return true;
   }
 

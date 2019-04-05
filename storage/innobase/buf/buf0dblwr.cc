@@ -591,6 +591,11 @@ void buf_dblwr_process() {
   page_no_t page_no_dblwr = 0;
   recv_dblwr_t &dblwr = recv_sys->dblwr;
 
+  /* For cloned database double write pages should be ignored. */
+  if (recv_sys->is_cloned_db) {
+    dblwr.pages.clear();
+  }
+
   for (auto i = dblwr.pages.begin(); i != dblwr.pages.end();
        ++i, ++page_no_dblwr) {
     const byte *page = *i;
@@ -773,10 +778,6 @@ static void buf_dblwr_check_block(
     const buf_block_t *block) /*!< in: block to check */
 {
   ut_ad(buf_block_get_state(block) == BUF_BLOCK_FILE_PAGE);
-
-  if (block->skip_flush_check) {
-    return;
-  }
 
   switch (fil_page_get_type(block->frame)) {
     case FIL_PAGE_INDEX:

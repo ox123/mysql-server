@@ -1497,7 +1497,7 @@ title VARCHAR(200),
 text TEXT
 ) CHARACTER SET = utf8, ENGINE=InnoDB;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 INSERT INTO t1 (title, text) VALUES
 ('Я могу есть стекло', 'оно мне не вредит'),
 ('Мога да ям стъкло', 'то не ми вреди'),
@@ -1543,7 +1543,8 @@ DROP TABLE t1;
 # Bug #18924341 CRASH IN TEST_IF_SKIP_SORT_ORDER, GROUP BY MATCH AGAINST DESC
 #
 CREATE TABLE t1 (f1 CHAR(1), FULLTEXT KEY (f1));
-SELECT 1 FROM t1 NATURAL JOIN t1 a GROUP BY MATCH(t1.f1) AGAINST ("1") DESC;
+SELECT 1 FROM t1 NATURAL JOIN t1 a GROUP BY MATCH(t1.f1) AGAINST ("1")
+ORDER BY MATCH(t1.f1) AGAINST ("1") DESC;
 1
 DROP TABLE t1;
 #
@@ -1576,7 +1577,7 @@ DROP TABLE t1;
 #
 CREATE TABLE t1(a TEXT CHARSET LATIN1, FULLTEXT KEY(a)) ENGINE=INNODB;
 SELECT MATCH(a) AGAINST ('') FROM (SELECT a FROM t1 LIMIT 1) q;
-ERROR HY000: Can't find FULLTEXT index matching the column list
+ERROR HY000: The used table type doesn't support FULLTEXT indexes
 DROP TABLE t1;
 #
 # Bug#21140067 EXPLAIN .. MATCH AGAINST: ASSERTION FAILED: TO <= END

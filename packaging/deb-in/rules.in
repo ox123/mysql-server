@@ -43,15 +43,17 @@ override_dh_auto_configure:
 		-DINSTALL_MANDIR=share/man \
 		-DINSTALL_MYSQLTESTDIR=lib/mysql-test \
 		-DINSTALL_PLUGINDIR=lib/mysql/plugin \
+		-DROUTER_INSTALL_PLUGINDIR=lib/mysqlrouter/plugin \
 		-DINSTALL_SBINDIR=sbin \
 		-DSYSCONFDIR=/etc/mysql \
 		-DMYSQL_UNIX_ADDR=/var/run/mysqld/mysqld.sock \
-		-DWITH_SSL=bundled \
 		-DWITH_INNODB_MEMCACHED=1 \
 		-DWITH_MECAB=system \
 		-DWITH_NUMA=ON \
-		-DCOMPILATION_COMMENT="MySQL @DEB_PRODUCTNAMEC@ Server - @DEB_LICENSENAME@" \
+		-DCOMPILATION_COMMENT="MySQL @DEB_PRODUCTNAMEC@ - @DEB_LICENSENAME@" \
+		-DCOMPILATION_COMMENT_SERVER="MySQL @DEB_PRODUCTNAMEC@ Server - @DEB_LICENSENAME@" \
 		-DINSTALL_LAYOUT=DEB \
+		-DREPRODUCIBLE_BUILD=OFF \
 		-DDEB_PRODUCT=@DEB_PRODUCT@ \
 		@DEB_CMAKE_EXTRAS@
 
@@ -85,16 +87,17 @@ override_dh_auto_install:
 	# add apparmor profile
 	@DEB_RULES_INSTALL_APPARMOR@
 	# add systemd script
-	@DEB_RULES_INSTALL_SYSTEMD@
+	install -m 0755 debian/extra/mysql-systemd-start debian/tmp/usr/share/mysql-@MYSQL_BASE_VERSION@/
 	touch $@
 
 override_dh_installinit:
 	@echo "RULES.$@"
 	@DEB_RULES_APPARMOR_LOAD@
-	@DEB_RULES_SYSTEMD_ENABLE@
+	dh_systemd_enable --name=mysql
 	dh_installinit --name=mysql -- defaults 19 21
 	dh_installinit --name=mysql@ -- disable
-	@DEB_RULES_SYSTEMD_START@
+	dh_installinit --name=mysqlrouter -- defaults 19 21
+	dh_systemd_start --restart-after-upgrade
 	touch $@
 
 override_dh_install:

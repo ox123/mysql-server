@@ -1,4 +1,4 @@
-/* Copyright (c) 2002, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2002, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -64,7 +64,10 @@ sp_rcontext::sp_rcontext(const sp_pcontext *root_parsing_ctx,
       m_ccount(0) {}
 
 sp_rcontext::~sp_rcontext() {
-  if (m_var_table) free_blobs(m_var_table);
+  if (m_var_table) {
+    free_blobs(m_var_table);
+    destroy(m_var_table);
+  }
 
   delete_container_pointers(m_activated_handlers);
   delete_container_pointers(m_visible_handlers);
@@ -149,7 +152,7 @@ bool sp_rcontext::set_return_value(THD *thd, Item **return_value_item) {
   return sp_eval_expr(thd, m_return_value_fld, return_value_item);
 }
 
-bool sp_rcontext::push_cursor(THD *thd, sp_instr_cpush *i) {
+bool sp_rcontext::push_cursor(sp_instr_cpush *i) {
   /*
     We should create cursors on the system heap because:
      - they could be (and usually are) used in several instructions,
@@ -157,7 +160,7 @@ bool sp_rcontext::push_cursor(THD *thd, sp_instr_cpush *i) {
      - a cursor can be pushed/popped many times in a loop, having these objects
        on callers' mem-root would lead to a memory leak in every iteration.
   */
-  sp_cursor *c = new (std::nothrow) sp_cursor(thd, i);
+  sp_cursor *c = new (std::nothrow) sp_cursor(i);
 
   if (!c) {
     sql_alloc_error_handler();
@@ -405,14 +408,13 @@ bool sp_rcontext::set_variable(THD *thd, Field *field, Item **value) {
 Item_cache *sp_rcontext::create_case_expr_holder(THD *thd,
                                                  const Item *item) const {
   Item_cache *holder;
-  Query_arena current_arena;
+  Query_arena backup_arena;
 
-  thd->set_n_backup_active_arena(thd->sp_runtime_ctx->callers_arena,
-                                 &current_arena);
+  thd->swap_query_arena(*thd->sp_runtime_ctx->callers_arena, &backup_arena);
 
   holder = Item_cache::get_cache(item);
 
-  thd->restore_active_arena(thd->sp_runtime_ctx->callers_arena, &current_arena);
+  thd->swap_query_arena(backup_arena, thd->sp_runtime_ctx->callers_arena);
 
   return holder;
 }
@@ -509,17 +511,18 @@ bool sp_cursor::fetch(List<sp_variable> *vars) {
 // sp_cursor::Query_fetch_into_spvars implementation.
 ///////////////////////////////////////////////////////////////////////////
 
-bool sp_cursor::Query_fetch_into_spvars::prepare(List<Item> &fields,
+bool sp_cursor::Query_fetch_into_spvars::prepare(THD *thd, List<Item> &fields,
                                                  SELECT_LEX_UNIT *u) {
   /*
     Cache the number of columns in the result set in order to easily
     return an error if column count does not match value count.
   */
   field_count = fields.elements;
-  return Query_result_interceptor::prepare(fields, u);
+  return Query_result_interceptor::prepare(thd, fields, u);
 }
 
-bool sp_cursor::Query_fetch_into_spvars::send_data(List<Item> &items) {
+bool sp_cursor::Query_fetch_into_spvars::send_data(THD *thd,
+                                                   List<Item> &items) {
   List_iterator_fast<sp_variable> spvar_iter(*spvar_list);
   List_iterator_fast<Item> item_iter(items);
   sp_variable *spvar;

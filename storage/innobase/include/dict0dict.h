@@ -629,10 +629,8 @@ dict_table_t::flags |     0     |    1    |     1      |    1
 fil_space_t::flags  |     0     |    0    |     1      |    1
 ==================================================================
 @param[in]	table_flags	dict_table_t::flags
-@param[in]	is_encrypted	if it's an encrypted table
 @return tablespace flags (fil_space_t::flags) */
-ulint dict_tf_to_fsp_flags(ulint table_flags, bool is_encrypted = false)
-    MY_ATTRIBUTE((const));
+ulint dict_tf_to_fsp_flags(ulint table_flags) MY_ATTRIBUTE((const));
 
 /** Extract the page size from table flags.
 @param[in]	flags	flags
@@ -791,7 +789,7 @@ include page no field.
 @param[in]	index	index
 @return number of fields */
 UNIV_INLINE
-ulint dict_index_get_n_unique_in_tree_nonleaf(const dict_index_t *index)
+uint16_t dict_index_get_n_unique_in_tree_nonleaf(const dict_index_t *index)
     MY_ATTRIBUTE((warn_unused_result));
 /** Gets the number of user-defined ordering fields in the index. In the
  internal representation we add the row id to the ordering fields to make all
@@ -892,7 +890,7 @@ rec_t *dict_index_copy_rec_order_prefix(
     ulint *n_fields,           /*!< out: number of fields copied */
     byte **buf,                /*!< in/out: memory buffer for the
                                copied prefix, or NULL */
-    ulint *buf_size)           /*!< in/out: buffer size */
+    size_t *buf_size)          /*!< in/out: buffer size */
     MY_ATTRIBUTE((warn_unused_result));
 /** Builds a typed data tuple out of a physical record.
  @return own: data tuple */
@@ -1163,7 +1161,8 @@ struct dict_sys_t {
   @param[in]	space	tablespace id to check
   @return true if a reserved tablespace id, otherwise false */
   static bool is_reserved(space_id_t space) {
-    return (space >= dict_sys_t::s_reserved_space_id);
+    return (space >= dict_sys_t::s_reserved_space_id ||
+            fsp_is_session_temporary(space));
   }
 
   /** Set of ids of DD tables */
@@ -1191,15 +1190,26 @@ struct dict_sys_t {
   /** The innodb_temporary tablespace ID. */
   static constexpr space_id_t s_temp_space_id = 0xFFFFFFFD;
 
+  /** The number of space IDs dedicated to each undo tablespace */
+  static constexpr space_id_t undo_space_id_range = 512;
+
   /** The lowest undo tablespace ID. */
   static constexpr space_id_t s_min_undo_space_id =
-      s_log_space_first_id - TRX_SYS_N_RSEGS;
+      s_log_space_first_id - (FSP_MAX_UNDO_TABLESPACES * undo_space_id_range);
 
   /** The highest undo  tablespace ID. */
   static constexpr space_id_t s_max_undo_space_id = s_log_space_first_id - 1;
 
   /** The first reserved tablespace ID */
   static constexpr space_id_t s_reserved_space_id = s_min_undo_space_id;
+
+  /** Leave 1K space_ids and start space_ids for temporary
+  general tablespaces (total 400K space_ids)*/
+  static constexpr space_id_t s_max_temp_space_id = s_reserved_space_id - 1000;
+
+  /** Lowest temporary general space id */
+  static constexpr space_id_t s_min_temp_space_id =
+      s_reserved_space_id - 1000 - 400000;
 
   /** The dd::Tablespace::id of the dictionary tablespace. */
   static constexpr dd::Object_id s_dd_space_id = 1;
@@ -1227,6 +1237,10 @@ struct dict_sys_t {
 
   /** The hard-coded tablespace name innodb_file_per_table. */
   static const char *s_file_per_table_name;
+
+  /** These two undo tablespaces cannot be dropped. */
+  static const char *s_default_undo_space_name_1;
+  static const char *s_default_undo_space_name_2;
 
   /** The table ID of mysql.innodb_dynamic_metadata */
   static constexpr table_id_t s_dynamic_meta_table_id = 2;
@@ -1365,6 +1379,10 @@ class DDTableBuffer {
   be freed before return */
   mem_heap_t *m_dynamic_heap;
 
+  /** The heap used during replace() operation, which should always
+  be freed before return */
+  mem_heap_t *m_replace_heap;
+
   /** The heap used to create the search tuple and replace tuple */
   mem_heap_t *m_heap;
 
@@ -1478,13 +1496,6 @@ bool dict_tf2_is_valid(ulint flags, ulint flags2);
  @return true if the tablespace has been discarded. */
 UNIV_INLINE
 bool dict_table_is_discarded(
-    const dict_table_t *table) /*!< in: table to check */
-    MY_ATTRIBUTE((warn_unused_result));
-
-/** Check if it is a encrypted table.
- @return true if table encryption flag is set. */
-UNIV_INLINE
-bool dict_table_is_encrypted(
     const dict_table_t *table) /*!< in: table to check */
     MY_ATTRIBUTE((warn_unused_result));
 
@@ -1605,12 +1616,12 @@ UNIV_INLINE
 bool dict_table_have_virtual_index(dict_table_t *table);
 
 /** Retrieve in-memory index for SDI table.
-@param[in]	tablespace_id	innodb tablespace id
+@param[in]	tablespace_id	innodb tablespace ID
 @return dict_index_t structure or NULL*/
 dict_index_t *dict_sdi_get_index(space_id_t tablespace_id);
 
 /** Retrieve in-memory table object for SDI table.
-@param[in]	tablespace_id	innodb tablespace id
+@param[in]	tablespace_id	innodb tablespace ID
 @param[in]	dict_locked	true if dict_sys mutex is acquired
 @param[in]	is_create	true when creating SDI Index
 @return dict_table_t structure */
@@ -1618,7 +1629,7 @@ dict_table_t *dict_sdi_get_table(space_id_t tablespace_id, bool dict_locked,
                                  bool is_create);
 
 /** Remove the SDI table from table cache.
-@param[in]	space_id	InnoDB tablesapce_id
+@param[in]	space_id	InnoDB tablespace ID
 @param[in]	sdi_table	SDI table
 @param[in]	dict_locked	true if dict_sys mutex acquired */
 void dict_sdi_remove_from_cache(space_id_t space_id, dict_table_t *sdi_table,
@@ -1653,7 +1664,7 @@ Acquistion order of SDI MDL and SDI table has to be in same
 order:
 
 1. dd_sdi_acquire_exclusive_mdl
-2. row_drop_table_from_cache()/innobase_drop_tablespace()
+2. row_drop_table_from_cache()/innodb_drop_tablespace()
    ->dd_sdi_remove_from_cache()->dd_table_open_on_id()
 
 In purge:
@@ -1677,7 +1688,7 @@ Acquistion order of SDI MDL and SDI table has to be in same
 order:
 
 1. dd_sdi_acquire_exclusive_mdl
-2. row_drop_table_from_cache()/innobase_drop_tablespace()
+2. row_drop_table_from_cache()/innodb_drop_tablespace()
    ->dict_sdi_remove_from_cache()->dd_table_open_on_id()
 
 In purge:

@@ -27,11 +27,15 @@
 #include "my_dbug.h"
 #include "my_inttypes.h"
 #include "my_io.h"
+#include "plugin/group_replication/include/consistency_manager.h"
+#include "plugin/group_replication/include/hold_transactions.h"
 #include "plugin/group_replication/include/observer_server_actions.h"
 #include "plugin/group_replication/include/observer_server_state.h"
 #include "plugin/group_replication/include/observer_trans.h"
 #include "plugin/group_replication/include/pipeline_stats.h"
 #include "plugin/group_replication/include/plugin.h"
+#include "plugin/group_replication/include/udf/udf_registration.h"
+#include "plugin/group_replication/include/udf/udf_utils.h"
 
 #ifndef DBUG_OFF
 #include "plugin/group_replication/include/services/notification/impl/gms_listener_test.h"
@@ -48,7 +52,7 @@ unsigned int plugin_version = 0;
 static mysql_mutex_t plugin_running_mutex;
 static mysql_mutex_t plugin_online_mutex;
 static mysql_cond_t plugin_online_condition;
-static bool group_replication_running;
+static std::atomic<bool> group_replication_running(false);
 bool wait_on_engine_initialization = false;
 bool server_shutdown_status = false;
 bool plugin_is_auto_starting_on_install = false;
@@ -57,6 +61,7 @@ static bool group_member_mgr_configured;
 static bool plugin_is_waiting_to_set_server_read_mode = false;
 static bool plugin_is_being_uninstalled = false;
 bool plugin_is_setting_read_mode = false;
+std::atomic<bool> plugin_is_stopping(false);
 
 static SERVICE_TYPE(registry) *reg_srv = nullptr;
 SERVICE_TYPE(log_builtins) *log_bi = nullptr;
@@ -71,11 +76,17 @@ Recovery_module *recovery_module = NULL;
 Gcs_operations *gcs_module = NULL;
 // The registry module
 Registry_module_interface *registry_module = NULL;
+// The observation module for group events
+Group_events_observation_manager *group_events_observation_manager = NULL;
 // The channel observation modules
 Channel_observation_manager_list *channel_observation_manager_list = NULL;
 // The Single primary channel observation module
 Asynchronous_channels_state_observer *asynchronous_channels_state_observer =
     NULL;
+Group_transaction_observation_manager *group_transaction_observation_manager =
+    NULL;
+// The plugin transaction consistency manager
+Transaction_consistency_manager *transaction_consistency_manager;
 // Lock to check if the plugin is running or not.
 Checkable_rwlock *plugin_stop_lock;
 // Class to coordinate access to the plugin stop lock
@@ -88,6 +99,12 @@ Group_partition_handling *group_partition_handler = NULL;
 Blocked_transaction_handler *blocked_transaction_handler = NULL;
 // The handler to wait till member becomes online
 Plugin_waitlock *online_wait_mutex = NULL;
+// The coordinator for group actions
+Group_action_coordinator *group_action_coordinator = NULL;
+// The primary election handler
+Primary_election_handler *primary_election_handler = NULL;
+// Hold transaction mechanism
+Hold_transactions *hold_transactions = NULL;
 
 /* Group communication options */
 char *local_address_var = NULL;
@@ -135,7 +152,7 @@ Compatibility_module *compatibility_mgr = NULL;
 const char *group_replication_plugin_name = "group_replication";
 char *group_name_var = NULL;
 bool start_group_replication_at_boot_var = true;
-rpl_sidno group_sidno;
+rpl_sidno group_sidno = 0;
 bool single_primary_mode_var = false;
 bool enforce_update_everywhere_checks_var = true;
 
@@ -187,6 +204,12 @@ ulong components_stop_timeout_var = LONG_TIMEOUT;
 /* The timeout before going to error when majority becomes unreachable */
 ulong timeout_on_unreachable_var = 0;
 
+/*
+ Exit state action that is executed when a server involuntarily leaves the
+ group.
+*/
+ulong exit_state_action_var = EXIT_STATE_ACTION_ABORT_SERVER;
+
 /**
   The default value for auto_increment_increment is choosen taking into
   account the maximum usable values for each possible auto_increment_increment
@@ -236,14 +259,20 @@ ulong transaction_size_limit_var = DEFAULT_TRANSACTION_SIZE_LIMIT;
 #define MIN_MEMBER_WEIGHT 0
 uint member_weight_var = DEFAULT_MEMBER_WEIGHT;
 
+/* Member Expel Timeout limits */
+#define DEFAULT_MEMBER_EXPEL_TIMEOUT 0
+#define MAX_MEMBER_EXPEL_TIMEOUT 3600
+#define MIN_MEMBER_EXPEL_TIMEOUT 0
+ulong member_expel_timeout_var = DEFAULT_MEMBER_EXPEL_TIMEOUT;
+
 /* Downgrade options */
 bool allow_local_lower_version_join_var = 0;
 
 /* Define what debug options will be activated */
 char *communication_debug_options_var = NULL;
 
-/* Certification latch */
-Wait_ticket<my_thread_id> *certification_latch;
+/* Transactions latch */
+Wait_ticket<my_thread_id> *transactions_latch;
 
 /*
   Internal auxiliary functions signatures.
@@ -289,7 +318,7 @@ int terminate_plugin_modules(bool flag_stop_async_channel = false,
 int terminate_applier_module();
 int terminate_recovery_module();
 void terminate_asynchronous_channels_observer();
-void set_auto_increment_handler();
+void set_auto_increment_handler_values();
 
 /*
   Auxiliary public functions.
@@ -308,6 +337,11 @@ bool is_plugin_configured_and_starting() { return group_member_mgr_configured; }
 
 int plugin_group_replication_set_retrieved_certification_info(void *info) {
   return recovery_module->set_retrieved_cert_info(info);
+}
+
+rpl_sidno get_group_sidno() {
+  DBUG_ASSERT(group_sidno > 0);
+  return group_sidno;
 }
 
 /**
@@ -502,10 +536,10 @@ int plugin_group_replication_start(char **) {
     goto err;
   }
 
-  /*
-    Instantiate certification latch.
-  */
-  certification_latch = new Wait_ticket<my_thread_id>();
+  DBUG_ASSERT(transactions_latch->empty());
+
+  // Reset the coordinator in case there was a previous stop.
+  group_action_coordinator->reset_coordinator_process();
 
   // GR delayed initialization.
   if (!server_engine_initialized()) {
@@ -641,7 +675,7 @@ int initialize_plugin_and_join(
     Member_version other_version = plugin_version + (0x000001);
     compatibility_mgr->set_local_version(other_version);
     Member_version local_member_version(plugin_version);
-    // Add an incomparability with the real plugin version
+    // Add an incompatibility with the real plugin version
     compatibility_mgr->add_incompatibility(other_version, local_member_version);
   };);
   DBUG_EXECUTE_IF("group_replication_compatibility_higher_minor_version", {
@@ -650,6 +684,10 @@ int initialize_plugin_and_join(
   };);
   DBUG_EXECUTE_IF("group_replication_compatibility_higher_major_version", {
     Member_version higher_version = plugin_version + (0x010000);
+    compatibility_mgr->set_local_version(higher_version);
+  };);
+  DBUG_EXECUTE_IF("group_replication_compatibility_minor_minor_version", {
+    Member_version higher_version = plugin_version - (0x000001);
     compatibility_mgr->set_local_version(higher_version);
   };);
   DBUG_EXECUTE_IF("group_replication_compatibility_restore_version", {
@@ -665,17 +703,38 @@ int initialize_plugin_and_join(
 
   // we can only start the applier if the log has been initialized
   if (configure_and_start_applier_module()) {
+    /*
+      We must signal listeners of the group_join_waiting signal because an early
+      applier error can be caught here or just before the join (asynchronously).
+
+      This means that tests that need to trigger an early applier error and wait
+      until the applier errored out should wait on group_join_waiting.
+
+      If we didn't duplicate this signal here, these tests would timeout,
+      because the flow from here on goes to error handling and it doesn't signal
+      the original group_join_waiting signal where it was supposed to be
+      signalled.
+    */
+    DBUG_EXECUTE_IF("group_replication_before_joining_the_group", {
+      const char act[] = "now signal signal.group_join_waiting";
+      DBUG_ASSERT(!debug_sync_set_action(current_thd, STRING_WITH_LEN(act)));
+    });
     error = GROUP_REPLICATION_REPLICATION_APPLIER_INIT_ERROR;
     goto err;
   }
 
   initialize_group_partition_handler();
-  set_auto_increment_handler();
+  set_auto_increment_handler_values();
 
   DBUG_EXECUTE_IF("group_replication_before_joining_the_group", {
-    const char act[] = "now wait_for signal.continue_group_join";
+    const char act[] =
+        "now signal signal.group_join_waiting "
+        "wait_for signal.continue_group_join";
     DBUG_ASSERT(!debug_sync_set_action(current_thd, STRING_WITH_LEN(act)));
   });
+
+  primary_election_handler =
+      new Primary_election_handler(components_stop_timeout_var);
 
   if ((error = start_group_communication())) {
     LogPluginErr(ERROR_LEVEL, ER_GRP_RPL_FAILED_TO_START_COMMUNICATION_ENGINE);
@@ -688,9 +747,15 @@ int initialize_plugin_and_join(
       LogPluginErr(ERROR_LEVEL, ER_GRP_RPL_TIMEOUT_ON_VIEW_AFTER_JOINING_GRP);
     }
     error = view_change_notifier->get_error();
+    gcs_module->remove_view_notifer(view_change_notifier);
     goto err;
   }
+  gcs_module->remove_view_notifer(view_change_notifier);
+
+  transaction_consistency_manager->register_transaction_observer();
+  transaction_consistency_manager->plugin_started();
   group_replication_running = true;
+  plugin_is_stopping = false;
   log_primary_member_details();
 
 err:
@@ -701,6 +766,12 @@ err:
 
     // Unblock the possible stuck delayed thread
     if (delayed_init_thd) delayed_init_thd->signal_read_mode_ready();
+
+    DBUG_EXECUTE_IF("group_replication_wait_before_leave_on_error", {
+      const char act[] = "now wait_for signal.continue_leave_process";
+      DBUG_ASSERT(!debug_sync_set_action(current_thd, STRING_WITH_LEN(act)));
+    });
+
     leave_group();
     terminate_plugin_modules();
 
@@ -709,9 +780,15 @@ err:
       set_read_mode_state(sql_command_interface, read_only_mode,
                           super_read_only_mode);
     }
-    if (certification_latch != NULL) {
-      delete certification_latch; /* purecov: inspected */
-      certification_latch = NULL; /* purecov: inspected */
+
+    DBUG_ASSERT(transactions_latch->empty());
+    // Inform the transaction observer that we won't apply any further backlog
+    // (because we are erroring out).
+    hold_transactions->disable();
+    if (primary_election_handler) {
+      primary_election_handler->unregister_transaction_observer();
+      delete primary_election_handler;
+      primary_election_handler = NULL;
     }
   }
 
@@ -755,13 +832,22 @@ int configure_group_member_manager(char *hostname, char *uuid, uint port,
                   { local_version = plugin_version + (0x000100); };);
   DBUG_EXECUTE_IF("group_replication_compatibility_higher_major_version",
                   { local_version = plugin_version + (0x010000); };);
+  DBUG_EXECUTE_IF("group_replication_compatibility_minor_minor_version",
+                  { local_version = plugin_version - (0x000001); };);
+  DBUG_EXECUTE_IF("group_replication_legacy_election_version",
+                  { local_version = 0x080012; };);
   Member_version local_member_plugin_version(local_version);
 
   DBUG_EXECUTE_IF("group_replication_force_member_uuid", {
     uuid = const_cast<char *>("cccccccc-cccc-cccc-cccc-cccccccccccc");
   };);
-  delete local_member_info;
-  local_member_info = new Group_member_info(
+
+  /*
+    To avoid leaving a invalid pointer on Group_member_info_manager,
+    first we update the local member information on group_member_mgr,
+    and only then we delete and update the local_member_info.
+  */
+  Group_member_info *local_member_info_tmp = new Group_member_info(
       hostname, port, uuid, write_set_extraction_algorithm,
       gcs_local_member_identifier, Group_member_info::MEMBER_OFFLINE,
       local_member_plugin_version, gtid_assignment_block_size_var,
@@ -769,9 +855,14 @@ int configure_group_member_manager(char *hostname, char *uuid, uint port,
       enforce_update_everywhere_checks_var, member_weight_var,
       gr_lower_case_table_names);
 
+  // Update membership info of member itself
+  if (group_member_mgr != NULL) group_member_mgr->update(local_member_info_tmp);
   // Create the membership info visible for the group
-  delete group_member_mgr;
-  group_member_mgr = new Group_member_info_manager(local_member_info);
+  else
+    group_member_mgr = new Group_member_info_manager(local_member_info_tmp);
+  // Update local_member_info
+  delete local_member_info;
+  local_member_info = local_member_info_tmp;
   group_member_mgr_configured = true;
 
   LogPluginErr(
@@ -819,7 +910,8 @@ int leave_group() {
   if (gcs_module->belongs_to_group()) {
     view_change_notifier->start_view_modification();
 
-    Gcs_operations::enum_leave_state state = gcs_module->leave();
+    Gcs_operations::enum_leave_state state =
+        gcs_module->leave(view_change_notifier);
 
     longlong log_severity = WARNING_LEVEL;
     longlong errcode = 0;
@@ -839,16 +931,18 @@ int leave_group() {
         break;
       /* purecov: end */
       case Gcs_operations::NOW_LEAVING:
-        goto bypass_message;
+        break;
     }
-    LogPluginErr(log_severity, errcode);
-  bypass_message:
-    // Wait anyway
-    LogPluginErr(INFORMATION_LEVEL, ER_GRP_RPL_WAITING_FOR_VIEW_UPDATE);
-    if (view_change_notifier->wait_for_view_modification()) {
-      LogPluginErr(WARNING_LEVEL,
-                   ER_GRP_RPL_TIMEOUT_RECEIVING_VIEW_CHANGE_ON_SHUTDOWN);
+    if (errcode) LogPluginErr(log_severity, errcode);
+
+    if (!errcode || ER_GRP_RPL_SERVER_IS_ALREADY_LEAVING == errcode) {
+      LogPluginErr(INFORMATION_LEVEL, ER_GRP_RPL_WAITING_FOR_VIEW_UPDATE);
+      if (view_change_notifier->wait_for_view_modification()) {
+        LogPluginErr(WARNING_LEVEL,
+                     ER_GRP_RPL_TIMEOUT_RECEIVING_VIEW_CHANGE_ON_SHUTDOWN);
+      }
     }
+    gcs_module->remove_view_notifer(view_change_notifier);
   } else {
     /*
       Even when we do not belong to the group we invoke leave()
@@ -862,19 +956,15 @@ int leave_group() {
     */
     LogPluginErr(INFORMATION_LEVEL,
                  ER_GRP_RPL_REQUESTING_NON_MEMBER_SERVER_TO_LEAVE);
-    gcs_module->leave();
+    gcs_module->leave(nullptr);
   }
 
   // Finalize GCS.
   gcs_module->finalize();
 
-  auto_increment_handler->reset_auto_increment_variables();
-
   // Destroy handlers and notifiers
   delete events_handler;
   events_handler = NULL;
-  delete view_change_notifier;
-  view_change_notifier = NULL;
 
   return 0;
 }
@@ -883,6 +973,8 @@ int plugin_group_replication_stop(char **error_message) {
   DBUG_ENTER("plugin_group_replication_stop");
 
   Mutex_autolock auto_lock_mutex(&plugin_running_mutex);
+
+  plugin_is_stopping = true;
 
   /*
     We delete the delayed initialization object here because:
@@ -912,9 +1004,16 @@ int plugin_group_replication_stop(char **error_message) {
 
   plugin_is_waiting_to_set_server_read_mode = true;
 
+  transaction_consistency_manager->plugin_is_stopping();
+
+  DBUG_EXECUTE_IF("group_replication_hold_stop_before_leave_the_group", {
+    const char act[] = "now wait_for signal.resume_stop_before_leave_the_group";
+    DBUG_ASSERT(!debug_sync_set_action(current_thd, STRING_WITH_LEN(act)));
+  });
+
   // wait for all transactions waiting for certification
   bool timeout =
-      certification_latch->block_until_empty(TRANSACTION_KILL_TIMEOUT);
+      transactions_latch->block_until_empty(TRANSACTION_KILL_TIMEOUT);
   if (timeout) {
     // if they are blocked, kill them
     blocked_transaction_handler->unblock_waiting_transactions();
@@ -946,6 +1045,22 @@ int plugin_group_replication_stop(char **error_message) {
     plugin_is_waiting_to_set_server_read_mode = false;
   }
 
+  // plugin is stopping, resume hold connections
+  hold_transactions->disable();
+  if (primary_election_handler) {
+    primary_election_handler->unregister_transaction_observer();
+    delete primary_election_handler;
+    primary_election_handler = NULL;
+  }
+
+  /*
+    Clear transaction consistency manager, waiting transactions
+    were already killed above under the protection of
+    shared_plugin_stop_lock.
+  */
+  transaction_consistency_manager->unregister_transaction_observer();
+  transaction_consistency_manager->clear();
+
   DBUG_RETURN(error);
 }
 
@@ -967,6 +1082,19 @@ int terminate_plugin_modules(bool flag_stop_async_channel,
     DBUG_ASSERT(!debug_sync_set_action(current_thd, STRING_WITH_LEN(act)));
   });
 
+  group_action_coordinator->stop_coordinator_process(true, true);
+
+  while (!UDF_counter::is_zero()) {
+    /* Give 50 ms to udf terminate*/
+    my_sleep(50000);
+  }
+
+  if (primary_election_handler != NULL) {
+    primary_election_handler->terminate_election_process();
+  }
+
+  reset_auto_increment_handler_values();
+
   /*
     The applier is only shutdown after the communication layer to avoid
     messages being delivered in the current view, but not applied
@@ -978,48 +1106,34 @@ int terminate_plugin_modules(bool flag_stop_async_channel,
   }
 
   if (flag_stop_async_channel) {
+    std::string stop_error_message;
     int channel_err =
         channel_stop_all(CHANNEL_APPLIER_THREAD | CHANNEL_RECEIVER_THREAD,
-                         components_stop_timeout_var, error_message);
+                         components_stop_timeout_var, &stop_error_message);
     if (channel_err) {
-      if (error_message != NULL) {
-        if (*error_message == NULL) {
-          char err_tmp_arr[MYSQL_ERRMSG_SIZE];
-          size_t err_len =
-              snprintf(err_tmp_arr, sizeof(err_tmp_arr),
-                       "Error stopping all replication channels while"
-                       " server was leaving the group. Got error: %d."
-                       " Please check the  error log for more details.",
-                       channel_err);
+      std::stringstream err_tmp_ss;
+      if (stop_error_message.empty()) {
+        err_tmp_ss << "Error stopping all replication channels while"
+                   << " server was leaving the group. Got error: "
+                   << channel_err
+                   << ". Please check the  error log for more details.";
+      } else {
+        err_tmp_ss << "Error stopping all replication channels while"
+                   << " server was leaving the group. ";
+        err_tmp_ss << stop_error_message;
 
-          *error_message =
-              (char *)my_malloc(PSI_NOT_INSTRUMENTED, err_len + 1, MYF(0));
-          strncpy(*error_message, err_tmp_arr, err_len);
-        } else {
-          char err_tmp_arr[] =
-              "Error stopping all replication channels while"
-              " server was leaving the group. ";
-          size_t total_length = strlen(*error_message) + strlen(err_tmp_arr);
-          size_t error_length = strlen(*error_message);
-
-          if (total_length < MYSQL_ERRMSG_SIZE) {
-            LogPluginErr(INFORMATION_LEVEL, ER_GRP_RPL_MODULE_TERMINATE_ERROR,
-                         *error_message);
-
-            char *ptr = (char *)my_realloc(PSI_NOT_INSTRUMENTED, *error_message,
-                                           total_length + 1, MYF(0));
-
-            memmove(ptr + strlen(err_tmp_arr), ptr, error_length);
-            memcpy(ptr, err_tmp_arr, strlen(err_tmp_arr));
-            ptr[total_length] = '\0';
-            *error_message = ptr;
-          }
-        }
+        LogPluginErr(INFORMATION_LEVEL, ER_GRP_RPL_MODULE_TERMINATE_ERROR,
+                     stop_error_message.c_str());
       }
 
-      if (!error) {
-        error = GROUP_REPLICATION_COMMAND_FAILURE;
+      std::string err_tmp_msg = err_tmp_ss.str();
+      if (err_tmp_msg.length() + 1 < MYSQL_ERRMSG_SIZE) {
+        *error_message = (char *)my_malloc(PSI_NOT_INSTRUMENTED,
+                                           err_tmp_msg.length() + 1, MYF(0));
+        strcpy(*error_message, err_tmp_msg.c_str());
       }
+
+      if (!error) error = GROUP_REPLICATION_COMMAND_FAILURE;
     }
   }
 
@@ -1029,18 +1143,7 @@ int terminate_plugin_modules(bool flag_stop_async_channel,
   delete blocked_transaction_handler;
   blocked_transaction_handler = NULL;
 
-  /*
-    Destroy certification latch.
-  */
-  if (certification_latch != NULL) {
-    delete certification_latch;
-    certification_latch = NULL;
-  }
-
-  /*
-    Clear server sessions opened caches on transactions observer.
-  */
-  observer_trans_clear_io_cache_unused_list();
+  DBUG_ASSERT(transactions_latch->empty());
 
   if (group_member_mgr != NULL && local_member_info != NULL) {
     Notification_context ctx;
@@ -1089,9 +1192,9 @@ int plugin_group_replication_init(MYSQL_PLUGIN plugin_info) {
   );
 
   shared_plugin_stop_lock = new Shared_writelock(plugin_stop_lock);
-
-  // Initialize transactions observer structures
-  observer_trans_initialize();
+  transactions_latch = new Wait_ticket<my_thread_id>();
+  transaction_consistency_manager = new Transaction_consistency_manager();
+  hold_transactions = new Hold_transactions();
 
   plugin_info_ptr = plugin_info;
 
@@ -1111,6 +1214,8 @@ int plugin_group_replication_init(MYSQL_PLUGIN plugin_info) {
     /* purecov: end */
   }
 
+  group_transaction_observation_manager =
+      new Group_transaction_observation_manager();
   if (register_trans_observer(&trans_observer, (void *)plugin_info_ptr)) {
     /* purecov: begin inspected */
     LogPluginErr(ERROR_LEVEL,
@@ -1128,6 +1233,14 @@ int plugin_group_replication_init(MYSQL_PLUGIN plugin_info) {
     /* purecov: end */
   }
 
+  group_events_observation_manager = new Group_events_observation_manager();
+  group_action_coordinator =
+      new Group_action_coordinator(components_stop_timeout_var);
+  group_action_coordinator->register_coordinator_observers();
+
+  bool const error = register_udfs();
+  if (error) return 1;
+
   // Initialize the recovery SSL option map
   initialize_ssl_option_map();
 
@@ -1136,6 +1249,7 @@ int plugin_group_replication_init(MYSQL_PLUGIN plugin_info) {
   channel_observation_manager_list = new Channel_observation_manager_list(
       plugin_info, END_CHANNEL_OBSERVATION_MANAGER_POS);
 
+  view_change_notifier = new Plugin_gcs_view_modification_notifier();
   gcs_module = new Gcs_operations();
 
   initialize_asynchronous_channels_observer();
@@ -1184,6 +1298,18 @@ int plugin_group_replication_deinit(void *p) {
     compatibility_mgr = NULL;
   }
 
+  if (group_action_coordinator) {
+    group_action_coordinator->stop_coordinator_process(true, true);
+    group_action_coordinator->unregister_coordinator_observers();
+    delete group_action_coordinator;
+    group_action_coordinator = NULL;
+  }
+
+  if (group_events_observation_manager != NULL) {
+    delete group_events_observation_manager;
+    group_events_observation_manager = NULL;
+  }
+
   terminate_asynchronous_channels_observer();
 
   if (unregister_server_state_observer(&server_state_observer, p)) {
@@ -1212,13 +1338,29 @@ int plugin_group_replication_deinit(void *p) {
     channel_observation_manager_list = NULL;
   }
 
+  // Deleted after un-registration
+  if (group_transaction_observation_manager != NULL) {
+    delete group_transaction_observation_manager;
+    group_transaction_observation_manager = NULL;
+  }
+
   delete gcs_module;
   gcs_module = NULL;
+  delete view_change_notifier;
+  view_change_notifier = NULL;
 
   if (auto_increment_handler != NULL) {
     delete auto_increment_handler;
     auto_increment_handler = NULL;
   }
+
+  unregister_udfs();
+
+  if (hold_transactions) delete hold_transactions;
+  delete transaction_consistency_manager;
+  transaction_consistency_manager = NULL;
+  delete transactions_latch;
+  transactions_latch = NULL;
 
   mysql_mutex_destroy(&plugin_running_mutex);
   mysql_mutex_destroy(&force_members_running_mutex);
@@ -1230,9 +1372,6 @@ int plugin_group_replication_deinit(void *p) {
 
   delete online_wait_mutex;
   online_wait_mutex = NULL;
-
-  // Terminate transactions observer structures
-  observer_trans_terminate();
 
   plugin_info_ptr = NULL;
 
@@ -1346,9 +1485,13 @@ void initialize_group_partition_handler() {
       shared_plugin_stop_lock, timeout_on_unreachable_var);
 }
 
-void set_auto_increment_handler() {
+void set_auto_increment_handler_values() {
   auto_increment_handler->set_auto_increment_variables(
       auto_increment_increment_var, get_server_id());
+}
+
+void reset_auto_increment_handler_values(bool force_reset) {
+  auto_increment_handler->reset_auto_increment_variables(force_reset);
 }
 
 int terminate_applier_module() {
@@ -1386,6 +1529,10 @@ int configure_group_communication(st_server_ssl_variables *ssl_variables) {
   poll_spin_loops_stream_buffer << poll_spin_loops_var;
   gcs_module_parameters.add_parameter("poll_spin_loops",
                                       poll_spin_loops_stream_buffer.str());
+  std::stringstream member_expel_timeout_stream_buffer;
+  member_expel_timeout_stream_buffer << member_expel_timeout_var;
+  gcs_module_parameters.add_parameter("member_expel_timeout",
+                                      member_expel_timeout_stream_buffer.str());
 
   // Compression parameter
   if (compression_threshold_var > 0) {
@@ -1503,7 +1650,7 @@ int configure_group_communication(st_server_ssl_variables *ssl_variables) {
                group_name_var, local_address_var, group_seeds_var,
                bootstrap_group_var ? "true" : "false", poll_spin_loops_var,
                compression_threshold_var, ip_whitelist_var,
-               communication_debug_options_var);
+               communication_debug_options_var, member_expel_timeout_var);
 
   DBUG_RETURN(0);
 }
@@ -1511,14 +1658,13 @@ int configure_group_communication(st_server_ssl_variables *ssl_variables) {
 int start_group_communication() {
   DBUG_ENTER("start_group_communication");
 
-  view_change_notifier = new Plugin_gcs_view_modification_notifier();
   events_handler = new Plugin_gcs_events_handler(
-      applier_module, recovery_module, view_change_notifier, compatibility_mgr,
+      applier_module, recovery_module, compatibility_mgr,
       components_stop_timeout_var);
 
   view_change_notifier->start_view_modification();
 
-  if (gcs_module->join(*events_handler, *events_handler))
+  if (gcs_module->join(*events_handler, *events_handler, view_change_notifier))
     DBUG_RETURN(GROUP_REPLICATION_COMMUNICATION_LAYER_JOIN_ERROR);
 
   DBUG_RETURN(0);
@@ -1614,6 +1760,16 @@ bool is_plugin_waiting_to_set_server_read_mode() {
   DBUG_ENTER("is_plugin_waiting_to_set_server_read_mode");
   DBUG_RETURN(plugin_is_waiting_to_set_server_read_mode);
 }
+
+void set_enforce_update_everywhere_checks(bool option) {
+  enforce_update_everywhere_checks_var = option;
+}
+
+void set_single_primary_mode_var(bool option) {
+  single_primary_mode_var = option;
+}
+
+SERVICE_TYPE(registry) * get_plugin_registry() { return reg_srv; }
 
 /*
   This method is used to accomplish the startup validations of the plugin
@@ -1711,6 +1867,11 @@ static int check_if_server_properly_configured() {
 
   gr_lower_case_table_names = startup_pre_reqs.lower_case_table_names;
   DBUG_ASSERT(gr_lower_case_table_names <= 2);
+#ifndef DBUG_OFF
+  DBUG_EXECUTE_IF("group_replication_skip_encode_lower_case_table_names", {
+    gr_lower_case_table_names = SKIP_ENCODING_LOWER_CASE_TABLE_NAMES;
+  });
+#endif
 
   DBUG_RETURN(0);
 }
@@ -1762,9 +1923,7 @@ static int check_group_name_string(const char *str, bool is_var_update) {
 
   if (!binary_log::Uuid::is_valid(str, length)) {
     if (!is_var_update) {
-      /* purecov: begin inspected */
-      LogPluginErr(ERROR_LEVEL, ER_GRP_RPL_GRP_NAME_IS_NOT_VALID_UUID);
-      /* purecov: end */
+      LogPluginErr(ERROR_LEVEL, ER_GRP_RPL_GRP_NAME_IS_NOT_VALID_UUID, str);
     } else
       my_message(ER_WRONG_VALUE_FOR_VAR, "The group name is not a valid UUID",
                  MYF(0));
@@ -1931,6 +2090,11 @@ static int check_flow_control_max_quota(MYSQL_THD, SYS_VAR *, void *save,
 
   DBUG_RETURN(0);
 }
+
+const char *exit_state_actions[] = {"READ_ONLY", "ABORT_SERVER", (char *)0};
+TYPELIB exit_state_actions_typelib_t = {array_elements(exit_state_actions) - 1,
+                                        "exit_state_actions_typelib_t",
+                                        exit_state_actions, NULL};
 
 /*
  Recovery module's module variable update/validate methods
@@ -2227,6 +2391,12 @@ static void update_component_timeout(MYSQL_THD, SYS_VAR *, void *var_ptr,
   }
   if (events_handler != NULL) {
     events_handler->set_stop_wait_timeout(in_val);
+  }
+  if (group_action_coordinator != NULL) {
+    group_action_coordinator->set_stop_wait_timeout(in_val);
+  }
+  if (primary_election_handler != NULL) {
+    primary_election_handler->set_stop_wait_timeout(in_val);
   }
 
   mysql_mutex_unlock(&plugin_running_mutex);
@@ -2616,6 +2786,16 @@ static int check_member_weight(MYSQL_THD, SYS_VAR *, void *save,
   longlong in_val;
   value->val_int(value, &in_val);
 
+  if (plugin_is_group_replication_running() &&
+      group_action_coordinator->is_group_action_running()) {
+    mysql_mutex_unlock(&plugin_running_mutex);
+    my_message(ER_WRONG_VALUE_FOR_VAR,
+               "The member weight for primary elections cannot be changed "
+               "during group configuration changes.",
+               MYF(0));
+    DBUG_RETURN(1);
+  }
+
   *(uint *)save =
       (in_val < MIN_MEMBER_WEIGHT)
           ? MIN_MEMBER_WEIGHT
@@ -2636,6 +2816,59 @@ static void update_member_weight(MYSQL_THD, SYS_VAR *, void *var_ptr,
 
   if (local_member_info != NULL) {
     local_member_info->set_member_weight(in_val);
+  }
+
+  mysql_mutex_unlock(&plugin_running_mutex);
+  DBUG_VOID_RETURN;
+}
+
+static int check_member_expel_timeout(MYSQL_THD, SYS_VAR *, void *save,
+                                      struct st_mysql_value *value) {
+  DBUG_ENTER("check_member_expel_timeout");
+
+  if (plugin_running_mutex_trylock()) DBUG_RETURN(1);
+
+  longlong in_val;
+  value->val_int(value, &in_val);
+
+  if ((in_val < MIN_MEMBER_EXPEL_TIMEOUT) ||
+      (in_val > MAX_MEMBER_EXPEL_TIMEOUT)) {
+    mysql_mutex_unlock(&plugin_running_mutex);
+    DBUG_RETURN(1);
+  }
+
+  *(longlong *)save = in_val;
+
+  mysql_mutex_unlock(&plugin_running_mutex);
+  DBUG_RETURN(0);
+}
+
+static void update_member_expel_timeout(MYSQL_THD, SYS_VAR *, void *var_ptr,
+                                        const void *save) {
+  DBUG_ENTER("update_member_expel_timeout");
+
+  if (plugin_running_mutex_trylock()) DBUG_VOID_RETURN;
+
+  (*(ulong *)var_ptr) = (*(ulong *)save);
+  ulong in_val = *static_cast<const ulong *>(save);
+  Gcs_interface_parameters gcs_module_parameters;
+
+  if (group_name_var == NULL) {
+    mysql_mutex_unlock(&plugin_running_mutex);
+    DBUG_VOID_RETURN;
+  }
+
+  gcs_module_parameters.add_parameter("group_name",
+                                      std::string(group_name_var));
+
+  std::stringstream member_expel_timeout_stream_buffer;
+  member_expel_timeout_stream_buffer << in_val;
+  gcs_module_parameters.add_parameter("member_expel_timeout",
+                                      member_expel_timeout_stream_buffer.str());
+  gcs_module_parameters.add_parameter("reconfigure_ip_whitelist", "false");
+
+  if (gcs_module != NULL) {
+    gcs_module->reconfigure(gcs_module_parameters);
   }
 
   mysql_mutex_unlock(&plugin_running_mutex);
@@ -2722,6 +2955,20 @@ static MYSQL_SYSVAR_ULONG(
     0,    /* min */
     ~0UL, /* max */
     0     /* block */
+);
+
+static MYSQL_SYSVAR_ULONG(
+    member_expel_timeout,                                  /* name */
+    member_expel_timeout_var,                              /* var */
+    PLUGIN_VAR_OPCMDARG | PLUGIN_VAR_PERSIST_AS_READ_ONLY, /* optional var */
+    "The period of time, in seconds, that a member waits before "
+    "expelling any member suspected of failing from the group.",
+    check_member_expel_timeout,   /* check func. */
+    update_member_expel_timeout,  /* update func. */
+    DEFAULT_MEMBER_EXPEL_TIMEOUT, /* default */
+    MIN_MEMBER_EXPEL_TIMEOUT,     /* min */
+    MAX_MEMBER_EXPEL_TIMEOUT,     /* max */
+    0                             /* block */
 );
 
 // Recovery module variables
@@ -3116,6 +3363,19 @@ static MYSQL_SYSVAR_STR(
     "GCS_DEBUG_NONE"                   /* default */
 );
 
+static MYSQL_SYSVAR_ENUM(exit_state_action,     /* name */
+                         exit_state_action_var, /* var */
+                         PLUGIN_VAR_OPCMDARG |
+                             PLUGIN_VAR_PERSIST_AS_READ_ONLY, /* optional var */
+                         "The action that is taken when the server "
+                         "leaves the group. "
+                         "Possible values are READ_ONLY or "
+                         "ABORT_SERVER.",                /* values */
+                         NULL,                           /* check func. */
+                         NULL,                           /* update func. */
+                         EXIT_STATE_ACTION_ABORT_SERVER, /* default */
+                         &exit_state_actions_typelib_t); /* type lib */
+
 static MYSQL_SYSVAR_ULONG(
     unreachable_majority_timeout,                          /* name */
     timeout_on_unreachable_var,                            /* var */
@@ -3281,6 +3541,7 @@ static SYS_VAR *group_replication_system_vars[] = {
     MYSQL_SYSVAR(flow_control_applier_threshold),
     MYSQL_SYSVAR(transaction_size_limit),
     MYSQL_SYSVAR(communication_debug_options),
+    MYSQL_SYSVAR(exit_state_action),
     MYSQL_SYSVAR(unreachable_majority_timeout),
     MYSQL_SYSVAR(member_weight),
     MYSQL_SYSVAR(flow_control_min_quota),
@@ -3290,6 +3551,7 @@ static SYS_VAR *group_replication_system_vars[] = {
     MYSQL_SYSVAR(flow_control_period),
     MYSQL_SYSVAR(flow_control_hold_percent),
     MYSQL_SYSVAR(flow_control_release_percent),
+    MYSQL_SYSVAR(member_expel_timeout),
     NULL,
 };
 

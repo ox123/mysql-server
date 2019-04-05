@@ -48,6 +48,7 @@
 #include <time.h>
 
 #include "errmsg.h"
+#include "my_byteorder.h"
 #include "my_compiler.h"
 #include "my_dbug.h"
 #include "my_double2ulonglong.h"
@@ -1966,8 +1967,22 @@ static bool execute(MYSQL_STMT *stmt, char *packet, ulong length) {
         DBUG_ASSERT(stmt->result.rows == 0);
         prev_ptr = &stmt->result.data;
         if (add_binary_row(net, stmt, pkt_len, &prev_ptr)) DBUG_RETURN(1);
-      } else
+      } else {
         read_ok_ex(mysql, pkt_len);
+        /*
+          If the result set was empty and the server did not open a cursor,
+          then the response from the server would have been <metadata><OK>.
+          This means the OK packet read above was the last OK packet of the
+          sequence. Hence, we set the status to indicate that the client is
+          now ready for next command. The stmt->read_row_func is set so as
+          to ensure that the next call to C API mysql_stmt_fetch() will not
+          read on the network. Instead, it will return NO_MORE_DATA.
+        */
+        if (!(mysql->server_status & SERVER_STATUS_CURSOR_EXISTS)) {
+          mysql->status = MYSQL_STATUS_READY;
+          stmt->read_row_func = stmt_read_row_no_data;
+        }
+      }
     }
   }
 
@@ -2321,8 +2336,13 @@ static void prepare_to_fetch_result(MYSQL_STMT *stmt) {
       cursors framework in the server and writes rows directly to the
       network or b) is more efficient if all (few) result set rows are
       precached on client and server's resources are freed.
+      The below check for mysql->status is required because we could
+      have already read the last packet sent by the server in execute()
+      and set the status to MYSQL_STATUS_READY. In such cases, we need
+      not call mysql_stmt_store_result().
     */
-    mysql_stmt_store_result(stmt);
+    if (stmt->mysql->status != MYSQL_STATUS_READY)
+      mysql_stmt_store_result(stmt);
   } else {
     stmt->mysql->unbuffered_fetch_owner = &stmt->unbuffered_fetch_cancelled;
     stmt->unbuffered_fetch_cancelled = false;
@@ -3098,7 +3118,8 @@ static void fetch_long_with_conversion(MYSQL_BIND *param, MYSQL_FIELD *field,
       volatile double data;
       if (is_unsigned) {
         data = ulonglong2double(value);
-        *param->error = ((ulonglong)value) != ((ulonglong)data);
+        *param->error =
+            data >= ULLONG_MAX || ((ulonglong)value) != ((ulonglong)data);
       } else {
         data = (double)value;
         *param->error = value != ((longlong)data);
@@ -3163,15 +3184,24 @@ static void fetch_float_with_conversion(MYSQL_BIND *param, MYSQL_FIELD *field,
         (See http://gcc.gnu.org/bugzilla/show_bug.cgi?id=323 for details)
         Sic: AFAIU it does not guarantee to work.
       */
-      if (param->is_unsigned)
+      if (param->is_unsigned) {
+        if (value < 0.0) {
+          *param->error = true;
+          break;
+        }
         *buffer = (uint8)value;
-      else
+      } else {
         *buffer = (int8)value;
+      }
       *param->error = val64 != (param->is_unsigned ? (double)((uint8)*buffer)
                                                    : (double)((int8)*buffer));
       break;
     case MYSQL_TYPE_SHORT:
       if (param->is_unsigned) {
+        if (value < 0.0) {
+          *param->error = true;
+          break;
+        }
         ushort data = (ushort)value;
         shortstore(buffer, data);
       } else {
@@ -3184,6 +3214,10 @@ static void fetch_float_with_conversion(MYSQL_BIND *param, MYSQL_FIELD *field,
       break;
     case MYSQL_TYPE_LONG:
       if (param->is_unsigned) {
+        if (value < 0.0) {
+          *param->error = true;
+          break;
+        }
         uint32 data = (uint32)value;
         longstore(buffer, data);
       } else {
@@ -3196,6 +3230,10 @@ static void fetch_float_with_conversion(MYSQL_BIND *param, MYSQL_FIELD *field,
       break;
     case MYSQL_TYPE_LONGLONG:
       if (param->is_unsigned) {
+        if (value < 0.0) {
+          *param->error = true;
+          break;
+        }
         ulonglong data = (ulonglong)value;
         longlongstore(buffer, data);
       } else {

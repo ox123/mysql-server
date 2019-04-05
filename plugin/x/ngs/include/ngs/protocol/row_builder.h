@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0,
@@ -22,8 +22,8 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
-#ifndef _NGS_ROW_BUILDER_H_
-#define _NGS_ROW_BUILDER_H_
+#ifndef PLUGIN_X_NGS_INCLUDE_NGS_PROTOCOL_ROW_BUILDER_H_
+#define PLUGIN_X_NGS_INCLUDE_NGS_PROTOCOL_ROW_BUILDER_H_
 
 #include <sys/types.h>
 #include <set>
@@ -47,7 +47,7 @@ class Row_builder : public Message_builder {
   Row_builder();
   ~Row_builder();
 
-  void start_row(Output_buffer *out_buffer);
+  void start_row(Page_output_stream *out_buffer);
   void abort_row();
   void end_row();
 
@@ -60,12 +60,9 @@ class Row_builder : public Message_builder {
   void add_date_field(const MYSQL_TIME *value);
   void add_time_field(const MYSQL_TIME *value, uint decimals);
   void add_datetime_field(const MYSQL_TIME *value, uint decimals);
-  void add_string_field(const char *const value, size_t length,
-                        const CHARSET_INFO *const valuecs);
-  void add_set_field(const char *const value, size_t length,
-                     const CHARSET_INFO *const valuecs);
-  void add_bit_field(const char *const value, size_t length,
-                     const CHARSET_INFO *const valuecs);
+  void add_string_field(const char *const value, size_t length);
+  void add_set_field(const char *const value, size_t length);
+  void add_bit_field(const char *const value, size_t length);
 
   inline size_t get_num_fields() const {
     return m_row_processing ? m_num_fields : 0;
@@ -85,4 +82,4 @@ class Row_builder : public Message_builder {
 };
 }  // namespace ngs
 
-#endif  //  _NGS_ROW_BUILDER_H_
+#endif  // PLUGIN_X_NGS_INCLUDE_NGS_PROTOCOL_ROW_BUILDER_H_

@@ -33,6 +33,12 @@ INCLUDE_DIRECTORIES(
   ${CMAKE_SOURCE_DIR}/sql/auth
 )
 
+# Conflicting YYSTYPE, because we have multiple Bison grammars.
+# WL#11100 Migrate to Bison 3.x should fix this.
+#
+# STRING(REPLACE "-flto" "" CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
+# STRING(REPLACE "-flto" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+
 SET(INNOBASE_ZIP_DECOMPRESS_SOURCES
 	buf/buf.cc
 	buf/checksum.cc
@@ -121,6 +127,7 @@ SET(INNOBASE_SOURCES
         lob/lob0impl.cc
 	lob/lob0lob.cc
 	lob/lob0del.cc
+	lob/lob0undo.cc
 	lob/lob0util.cc
         lob/zlob0index.cc
         lob/zlob0ins.cc
@@ -163,7 +170,9 @@ SET(INNOBASE_SOURCES
 	row/row0merge.cc
 	row/row0mysql.cc
 	row/row0log.cc
+	row/row0pread.cc
 	row/row0purge.cc
+	row/row0pread-adapter.cc
 	row/row0row.cc
 	row/row0sel.cc
 	row/row0uins.cc
@@ -176,6 +185,7 @@ SET(INNOBASE_SOURCES
 	srv/srv0mon.cc
 	srv/srv0srv.cc
 	srv/srv0start.cc
+	srv/srv0tmp.cc
 	sync/sync0arr.cc
 	sync/sync0rw.cc
 	sync/sync0debug.cc

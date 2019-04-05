@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2018, Oracle and/or its affiliates. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0,
@@ -22,12 +22,15 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
-#ifndef NGS_LISTENER_INTERFACE_H_
-#define NGS_LISTENER_INTERFACE_H_
+#ifndef PLUGIN_X_NGS_INCLUDE_NGS_INTERFACE_LISTENER_INTERFACE_H_
+#define PLUGIN_X_NGS_INCLUDE_NGS_INTERFACE_LISTENER_INTERFACE_H_
 
 #include <vector>
 
+#include "plugin/x/ngs/include/ngs/server_properties.h"
 #include "plugin/x/ngs/include/ngs/thread.h"
+#include "plugin/x/ngs/include/ngs_common/bind.h"
+#include "plugin/x/src/helper/multithread/sync_variable.h"
 #include "violite.h"
 
 namespace ngs {
@@ -43,16 +46,18 @@ enum State_listener {
 
 class Listener_interface {
  public:
-  typedef Sync_variable<State_listener> Sync_variable_state;
-  typedef ngs::function<void(Connection_acceptor_interface &)> On_connection;
+  using Sync_variable_state = xpl::Sync_variable<State_listener>;
+  using On_connection = ngs::function<void(Connection_acceptor_interface &)>;
+  using On_report_properties = ngs::function<void(
+      const Server_property_ids status_id, const std::string &status_value)>;
 
-  virtual ~Listener_interface(){};
+  virtual ~Listener_interface() = default;
 
   virtual Sync_variable_state &get_state() = 0;
   virtual std::string get_last_error() = 0;
   virtual std::string get_name_and_configuration() const = 0;
   virtual std::vector<std::string> get_configuration_variables() const = 0;
-  virtual bool is_handled_by_socket_event() = 0;
+  virtual void report_properties(On_report_properties on_status) = 0;
 
   virtual bool setup_listener(On_connection) = 0;
   virtual void close_listener() = 0;
@@ -62,4 +67,4 @@ class Listener_interface {
 
 }  // namespace ngs
 
-#endif  // NGS_LISTENER_INTERFACE_H_
+#endif  // PLUGIN_X_NGS_INCLUDE_NGS_INTERFACE_LISTENER_INTERFACE_H_

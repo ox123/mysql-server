@@ -59,11 +59,14 @@
 #include "mysql_version.h"
 #include "mysqld_error.h"
 #include "prealloced_array.h"
+#include "sql/auth/auth_acls.h"
+#include "sql/auth/auth_internal.h"
 #include "sql/auth/sql_security_ctx.h"
 #include "sql/current_thd.h"
 #include "sql/debug_sync.h"  // DEBUG_SYNC
 #include "sql/derror.h"      // ER_THD
 #include "sql/item.h"
+#include "sql/json_dom.h"
 #include "sql/log.h"
 #include "sql/mysqld.h"
 #include "sql/set_var.h"
@@ -162,6 +165,7 @@ st_persist_var::st_persist_var() {
     timestamp = tv.tv_sec * 1000000ULL + tv.tv_usec;
   } else
     timestamp = my_micro_time();
+  is_null = false;
 }
 
 st_persist_var::st_persist_var(THD *thd) {
@@ -169,24 +173,19 @@ st_persist_var::st_persist_var(THD *thd) {
   timestamp = tv.tv_sec * 1000000ULL + tv.tv_usec;
   user = thd->security_context()->user().str;
   host = thd->security_context()->host().str;
-}
-
-st_persist_var::st_persist_var(const st_persist_var &var) {
-  this->key = var.key;
-  this->value = var.value;
-  this->timestamp = var.timestamp;
-  this->user = var.user;
-  this->host = var.host;
+  is_null = false;
 }
 
 st_persist_var::st_persist_var(const std::string key, const std::string value,
                                const ulonglong timestamp,
-                               const std::string user, const std::string host) {
+                               const std::string user, const std::string host,
+                               const bool is_null) {
   this->key = key;
   this->value = value;
   this->timestamp = timestamp;
   this->user = user;
   this->host = host;
+  this->is_null = is_null;
 }
 
 /**
@@ -247,11 +246,11 @@ int Persisted_variables_cache::init(int *argc, char ***argv) {
   */
   dirs = ((datadir) ? datadir : mysql_real_data_home);
   unpack_dirname(dir, dirs);
-  if (fn_format(datadir_buffer, MYSQL_PERSIST_CONFIG_NAME, dir, ".cnf",
+  my_realpath(datadir_buffer, dir, MYF(0));
+  unpack_dirname(datadir_buffer, datadir_buffer);
+  if (fn_format(dir, MYSQL_PERSIST_CONFIG_NAME, datadir_buffer, ".cnf",
                 MY_UNPACK_FILENAME | MY_SAFE_PATH) == NULL)
     return 1;
-  my_realpath(dir, datadir_buffer, MYF(0));
-  unpack_dirname(datadir_buffer, dir);
   m_persist_filename = string(dir);
 
   mysql_mutex_init(key_persist_variables, &m_LOCK_persist_variables,
@@ -285,6 +284,7 @@ void Persisted_variables_cache::set_variable(THD *thd, set_var *setvar) {
   char val_buf[1024] = {0};
   String str(val_buf, sizeof(val_buf), system_charset_info), *res;
   String utf8_str;
+  bool is_null = false;
 
   struct st_persist_var tmp_var(thd);
   sys_var *system_var = setvar->var;
@@ -292,21 +292,30 @@ void Persisted_variables_cache::set_variable(THD *thd, set_var *setvar) {
   const char *var_name =
       Persisted_variables_cache::get_variable_name(system_var);
   const char *var_value = val_buf;
-  if (setvar->type == OPT_PERSIST_ONLY && setvar->value) {
-    res = setvar->value->val_str(&str);
-    if (res && res->length()) {
-      /*
-        value held by Item class can be of different charset,
-        so convert to utf8mb4
-      */
-      const CHARSET_INFO *tocs = &my_charset_utf8mb4_bin;
-      uint dummy_err;
-      utf8_str.copy(res->ptr(), res->length(), res->charset(), tocs,
-                    &dummy_err);
+  if (setvar->type == OPT_PERSIST_ONLY) {
+    const CHARSET_INFO *tocs = &my_charset_utf8mb4_bin;
+    uint dummy_err;
+    if (setvar->value) {
+      res = setvar->value->val_str(&str);
+      if (res && res->length()) {
+        /*
+          value held by Item class can be of different charset,
+          so convert to utf8mb4
+        */
+        utf8_str.copy(res->ptr(), res->length(), res->charset(), tocs,
+                      &dummy_err);
+        var_value = utf8_str.c_ptr_quick();
+      }
+    } else {
+      /* persist default value */
+      setvar->var->save_default(thd, setvar);
+      setvar->var->saved_value_to_string(thd, setvar, (char *)str.ptr());
+      utf8_str.copy(str.ptr(), str.length(), str.charset(), tocs, &dummy_err);
       var_value = utf8_str.c_ptr_quick();
     }
   } else {
-    Persisted_variables_cache::get_variable_value(thd, system_var, &utf8_str);
+    Persisted_variables_cache::get_variable_value(thd, system_var, &utf8_str,
+                                                  &is_null);
     var_value = utf8_str.c_ptr_quick();
   }
 
@@ -315,6 +324,7 @@ void Persisted_variables_cache::set_variable(THD *thd, set_var *setvar) {
       (setvar->base.str ? string(setvar->base.str).append(".").append(var_name)
                         : string(var_name));
   tmp_var.value = var_value;
+  tmp_var.is_null = is_null;
 
   /* modification to in-memory must be thread safe */
   lock();
@@ -334,6 +344,15 @@ void Persisted_variables_cache::set_variable(THD *thd, set_var *setvar) {
                      [str](st_persist_var const &s) { return s.key == str; });
     if (it != m_persist_variables.end()) m_persist_variables.erase(it);
     m_persist_variables.push_back(tmp_var);
+    /* for plugin variables update m_persist_plugin_variables */
+    if (setvar->var->cast_pluginvar()) {
+      auto it = std::find_if(
+          m_persist_plugin_variables.begin(), m_persist_plugin_variables.end(),
+          [str](st_persist_var const &s) { return s.key == str; });
+      if (it != m_persist_plugin_variables.end())
+        m_persist_plugin_variables.erase(it);
+      m_persist_plugin_variables.push_back(tmp_var);
+    }
   }
   unlock();
 }
@@ -345,13 +364,15 @@ void Persisted_variables_cache::set_variable(THD *thd, set_var *setvar) {
    @param [in] system_var    Pointer to sys_var which is being SET
    @param [in] str           Pointer to String instance into which value
                              is copied
+   @param [out] is_null      Is value NULL or not.
 
    @return
      Pointer to String instance holding the value
 */
 String *Persisted_variables_cache::get_variable_value(THD *thd,
                                                       sys_var *system_var,
-                                                      String *str) {
+                                                      String *str,
+                                                      bool *is_null) {
   const char *value;
   char val_buf[1024];
   size_t val_length;
@@ -367,7 +388,7 @@ String *Persisted_variables_cache::get_variable_value(THD *thd,
 
   mysql_mutex_lock(&LOCK_global_system_variables);
   value = get_one_variable(thd, show, OPT_GLOBAL, show->type, NULL, &fromcs,
-                           val_buf, &val_length);
+                           val_buf, &val_length, is_null);
   mysql_mutex_unlock(&LOCK_global_system_variables);
 
   /* convert the retrieved value to utf8mb4 */
@@ -405,6 +426,7 @@ const char *Persisted_variables_cache::get_variable_name(sys_var *system_var) {
    @param [in]  timestamp          Timestamp value when this variable was set
    @param [in]  user               User who set this variable
    @param [in]  host               Host on which this variable was set
+   @param [in]  is_null            Is variable value NULL or not.
    @param [out] dest               String object where json formatted string
                                    is stored
 
@@ -414,8 +436,9 @@ const char *Persisted_variables_cache::get_variable_name(sys_var *system_var) {
 */
 String *Persisted_variables_cache::construct_json_string(
     std::string name, std::string value, ulonglong timestamp, std::string user,
-    std::string host, String *dest) {
+    std::string host, bool is_null, String *dest) {
   String str;
+  Json_wrapper vv;
   std::unique_ptr<Json_string> var_name(new (std::nothrow) Json_string(name));
   Json_wrapper vn(var_name.release());
   vn.to_string(&str, true, String().ptr());
@@ -424,8 +447,13 @@ String *Persisted_variables_cache::construct_json_string(
 
   /* reset str */
   str = String();
-  std::unique_ptr<Json_string> var_val(new (std::nothrow) Json_string(value));
-  Json_wrapper vv(var_val.release());
+  if (is_null) {
+    std::unique_ptr<Json_null> var_null_val(new (std::nothrow) Json_null());
+    vv = Json_wrapper(std::move(var_null_val));
+  } else {
+    std::unique_ptr<Json_string> var_val(new (std::nothrow) Json_string(value));
+    vv = Json_wrapper(std::move(var_val));
+  }
   vv.to_string(&str, true, String().ptr());
   dest->append(str);
   dest->append(comma.c_str());
@@ -482,7 +510,7 @@ bool Persisted_variables_cache::flush_to_file() {
     String json_formatted_string;
     Persisted_variables_cache::construct_json_string(
         iter->key, iter->value, iter->timestamp, iter->user, iter->host,
-        &json_formatted_string);
+        iter->is_null, &json_formatted_string);
     dest.append(json_formatted_string.c_ptr_quick());
   }
 
@@ -495,7 +523,8 @@ bool Persisted_variables_cache::flush_to_file() {
     String json_formatted_string;
     Persisted_variables_cache::construct_json_string(
         iter->second.key, iter->second.value, iter->second.timestamp,
-        iter->second.user, iter->second.host, &json_formatted_string);
+        iter->second.user, iter->second.host, iter->second.is_null,
+        &json_formatted_string);
     dest.append(json_formatted_string.c_ptr_quick());
   }
 
@@ -588,15 +617,16 @@ bool Persisted_variables_cache::set_persist_options(bool plugin_options) {
   LEX lex_tmp, *sav_lex = NULL;
   List<set_var_base> tmp_var_list;
   vector<st_persist_var> *persist_variables = NULL;
-  ulong access = 0;
   bool result = 0, new_thd = 0;
-
+  const std::vector<std::string> priv_list = {
+      "ENCRYPTION_KEY_ADMIN", "ROLE_ADMIN", "SYSTEM_VARIABLES_ADMIN"};
+  const ulong static_priv_list = (SUPER_ACL | FILE_ACL);
+  Sctx_ptr<Security_context> ctx;
   /*
     if persisted_globals_load is set to false or --no-defaults is set
     then do not set persistent options
   */
   if (no_defaults || !persisted_globals_load) return 0;
-
   /*
     This function is called in only 2 places
       1. During server startup.
@@ -619,9 +649,15 @@ bool Persisted_variables_cache::set_persist_options(bool plugin_options) {
     thd->set_new_thread_id();
     thd->store_globals();
     lex_start(thd);
-    /* save access privileges */
-    access = thd->security_context()->master_access();
-    thd->security_context()->set_master_access(~(ulong)0);
+    /* create security context for bootstrap auth id */
+    Security_context_factory default_factory(
+        thd, "bootstrap", "localhost", Default_local_authid(thd),
+        Grant_temporary_dynamic_privileges(thd, priv_list),
+        Grant_temporary_static_privileges(thd, static_priv_list),
+        Drop_temporary_dynamic_privileges(priv_list));
+    ctx = default_factory.create();
+    /* attach this auth id to current security_context */
+    thd->set_security_context(ctx.get());
     thd->real_id = my_thread_self();
     new_thd = 1;
   }
@@ -661,10 +697,8 @@ bool Persisted_variables_cache::set_persist_options(bool plugin_options) {
         is loaded and continue with remaining persisted variables
       */
       m_persist_plugin_variables.push_back(*iter);
-      my_message_local(WARNING_LEVEL,
-                       "Currently unknown variable '%s' "
-                       "was read from the persisted config file",
-                       var_name.c_str());
+      LogErr(WARNING_LEVEL, ER_UNKNOWN_VARIABLE_IN_PERSISTED_CONFIG_FILE,
+             var_name.c_str());
       continue;
     }
     switch (sysvar->show_type()) {
@@ -675,17 +709,26 @@ bool Persisted_variables_cache::set_persist_options(bool plugin_options) {
         res = new (thd->mem_root)
             Item_uint(iter->value.c_str(), (uint)iter->value.length());
         break;
+      case SHOW_SIGNED_INT:
       case SHOW_SIGNED_LONG:
+      case SHOW_SIGNED_LONGLONG:
         res = new (thd->mem_root)
             Item_int(iter->value.c_str(), (uint)iter->value.length());
         break;
       case SHOW_CHAR:
-      case SHOW_CHAR_PTR:
       case SHOW_LEX_STRING:
       case SHOW_BOOL:
       case SHOW_MY_BOOL:
         res = new (thd->mem_root) Item_string(
             iter->value.c_str(), iter->value.length(), &my_charset_utf8mb4_bin);
+        break;
+      case SHOW_CHAR_PTR:
+        if (iter->is_null)
+          res = new (thd->mem_root) Item_null();
+        else
+          res = new (thd->mem_root)
+              Item_string(iter->value.c_str(), iter->value.length(),
+                          &my_charset_utf8mb4_bin);
         break;
       case SHOW_DOUBLE:
         res = new (thd->mem_root)
@@ -741,10 +784,10 @@ bool Persisted_variables_cache::set_persist_options(bool plugin_options) {
 
 err:
   if (new_thd) {
-    /* restore access privileges */
-    thd->security_context()->set_master_access(access);
+    thd->free_items();
     lex_end(thd->lex);
     thd->release_resources();
+    ctx.reset(nullptr);
     delete thd;
   } else {
     thd->lex = sav_lex;
@@ -788,27 +831,28 @@ err:
   @return 0 Success
   @return 1 Failure
 */
-bool Persisted_variables_cache::extract_variables_from_json(Json_dom *dom,
+bool Persisted_variables_cache::extract_variables_from_json(const Json_dom *dom,
                                                             bool is_read_only) {
-  Json_wrapper_object_iterator var_iter(down_cast<Json_object *>(dom));
-  while (!var_iter.empty()) {
-    string var_name, var_value, var_user, var_host;
+  if (dom->json_type() != enum_json_type::J_OBJECT) goto err;
+  for (auto &var_iter : *down_cast<const Json_object *>(dom)) {
+    string var_value, var_user, var_host;
     ulonglong timestamp = 0;
-    Json_dom *dom_obj;
+    bool is_null = false;
 
-    var_name = var_iter.elt().first;
+    const string &var_name = var_iter.first;
+    if (var_iter.second->json_type() != enum_json_type::J_OBJECT) goto err;
+    const Json_object *dom_obj =
+        down_cast<const Json_object *>(var_iter.second.get());
 
     /**
       Static variables by themselves is represented as a json object with key
       "mysql_server_static_options" as parent element.
     */
     if (var_name == "mysql_server_static_options") {
-      if (extract_variables_from_json(var_iter.elt().second.to_dom(NULL), true))
-        return 1;
-      var_iter.next();
+      if (extract_variables_from_json(dom_obj, true)) return 1;
       continue;
     }
-    dom_obj = var_iter.elt().second.to_dom(NULL);
+
     /**
       Every Json object which represents Variable information must have only
       2 elements which is
@@ -821,68 +865,59 @@ bool Persisted_variables_cache::extract_variables_from_json(Json_dom *dom,
         }
       }
     */
-    if (dom_obj->depth() != 3 && ((Json_object *)dom_obj)->cardinality() != 2)
-      goto err;
+    if (dom_obj->depth() != 3 && dom_obj->cardinality() != 2) goto err;
 
-    Json_wrapper_object_iterator var_properties_iter(
-        down_cast<Json_object *>(dom_obj));
+    Json_object::const_iterator var_properties_iter = dom_obj->begin();
     /* extract variable value */
-    if (var_properties_iter.elt().second.is_dom()) {
-      if (var_properties_iter.elt().first != "Value") goto err;
+    if (var_properties_iter->first != "Value") goto err;
 
-      dom_obj = var_properties_iter.elt().second.to_dom(NULL);
-      if (dom_obj->depth() != 1 && ((Json_object *)dom_obj)->cardinality() != 1)
-        goto err;
-
-      /* if value is not in string form throw error. */
-      if (dom_obj->json_type() != enum_json_type::J_STRING) goto err;
-      Json_string *value = down_cast<Json_string *>(dom_obj);
-      var_value = value->value();
+    const Json_dom *value = var_properties_iter->second.get();
+    /* if value is not in string form or null throw error. */
+    if (value->json_type() == enum_json_type::J_STRING) {
+      var_value = down_cast<const Json_string *>(value)->value();
+    } else if (value->json_type() == enum_json_type::J_NULL) {
+      var_value = "";
+      is_null = true;
+    } else {
+      goto err;
     }
-    var_properties_iter.next();
+
+    ++var_properties_iter;
     /* extract metadata */
-    if (var_properties_iter.elt().second.is_dom()) {
-      if (var_properties_iter.elt().first != "Metadata") goto err;
+    if (var_properties_iter->first != "Metadata") goto err;
 
-      dom_obj = var_properties_iter.elt().second.to_dom(NULL);
-      if (dom_obj->depth() != 1 && ((Json_object *)dom_obj)->cardinality() != 3)
+    if (var_properties_iter->second->json_type() != enum_json_type::J_OBJECT)
+      goto err;
+    dom_obj = down_cast<const Json_object *>(var_properties_iter->second.get());
+    if (dom_obj->depth() != 1 && dom_obj->cardinality() != 3) goto err;
+
+    for (auto &metadata_iter : *dom_obj) {
+      const string &metadata_type = metadata_iter.first;
+      const Json_dom *metadata_value = metadata_iter.second.get();
+      if (metadata_type == "Timestamp") {
+        if (metadata_value->json_type() != enum_json_type::J_UINT) goto err;
+        const Json_uint *i = down_cast<const Json_uint *>(metadata_value);
+        timestamp = i->value();
+      } else if (metadata_type == "User" || metadata_type == "Host") {
+        if (metadata_value->json_type() != enum_json_type::J_STRING) goto err;
+        const Json_string *i = down_cast<const Json_string *>(metadata_value);
+        if (metadata_type == "User")
+          var_user = i->value();
+        else
+          var_host = i->value();
+      } else {
         goto err;
-
-      Json_wrapper_object_iterator metadata_iter(
-          down_cast<Json_object *>(dom_obj));
-      while (!metadata_iter.empty()) {
-        string metadata_type = metadata_iter.elt().first;
-        if (metadata_iter.elt().second.is_dom()) {
-          dom_obj = metadata_iter.elt().second.to_dom(NULL);
-          if (metadata_type == "Timestamp") {
-            if (dom_obj->json_type() != enum_json_type::J_UINT) goto err;
-
-            Json_uint *i = down_cast<Json_uint *>(dom_obj);
-            timestamp = i->value();
-          } else if (metadata_type == "User" || metadata_type == "Host") {
-            if (dom_obj->json_type() != enum_json_type::J_STRING) goto err;
-
-            Json_string *i = down_cast<Json_string *>(dom_obj);
-            if (metadata_type == "User")
-              var_user = i->value();
-            else
-              var_host = i->value();
-          } else
-            goto err;
-        }
-        metadata_iter.next();
       }
-      st_persist_var persist_var(var_name, var_value, timestamp, var_user,
-                                 var_host);
-      lock();
-      assert_lock_owner();
-      if (is_read_only)
-        m_persist_ro_variables[var_name] = persist_var;
-      else
-        m_persist_variables.push_back(persist_var);
-      unlock();
     }
-    var_iter.next();
+    st_persist_var persist_var(var_name, var_value, timestamp, var_user,
+                               var_host, is_null);
+    lock();
+    assert_lock_owner();
+    if (is_read_only)
+      m_persist_ro_variables[var_name] = persist_var;
+    else
+      m_persist_variables.push_back(persist_var);
+    unlock();
   }
   return 0;
 
@@ -932,14 +967,14 @@ int Persisted_variables_cache::read_persist_file() {
     return 1;
   }
   Json_object *json_obj = down_cast<Json_object *>(json.get());
-  Json_wrapper_object_iterator iter(down_cast<Json_object *>(json_obj));
-  if (iter.elt().first != "Version") {
+  Json_object::const_iterator iter = json_obj->begin();
+  if (iter->first != "Version") {
     LogErr(ERROR_LEVEL, ER_PERSIST_OPTION_STATUS,
            "Persisted config file corrupted.");
     return 1;
   }
   /* Check file version */
-  Json_dom *dom_obj = iter.elt().second.to_dom(NULL);
+  Json_dom *dom_obj = iter->second.get();
   if (dom_obj->json_type() != enum_json_type::J_INT) {
     LogErr(ERROR_LEVEL, ER_PERSIST_OPTION_STATUS,
            "Persisted config file version invalid.");
@@ -951,13 +986,13 @@ int Persisted_variables_cache::read_persist_file() {
            "Persisted config file version invalid.");
     return 1;
   }
-  iter.next();
-  if (iter.elt().first != "mysql_server") {
+  ++iter;
+  if (iter->first != "mysql_server") {
     LogErr(ERROR_LEVEL, ER_CONFIG_OPTION_WITHOUT_GROUP);
     return 1;
   }
   /* Extract key/value pair and populate in a global hash map */
-  if (extract_variables_from_json(iter.elt().second.to_dom(NULL))) return 1;
+  if (extract_variables_from_json(iter->second.get())) return 1;
   return 0;
 }
 
@@ -1032,8 +1067,7 @@ bool Persisted_variables_cache::append_read_only_variables(
   return 0;
 
 err:
-  my_message_local(ERROR_LEVEL,
-                   "Fatal error in defaults handling. Program aborted!");
+  LogErr(ERROR_LEVEL, ER_FAILED_TO_HANDLE_DEFAULTS_FILE);
   exit(1);
 }
 
@@ -1063,6 +1097,10 @@ bool Persisted_variables_cache::reset_persisted_variables(THD *thd,
   auto it_ro = m_persist_ro_variables.find(var_name);
 
   if (reset_all) {
+    /* check for necessary privileges */
+    if (!m_persist_variables.empty() && check_priv(thd, false)) goto end;
+    if (!m_persist_ro_variables.empty() && check_priv(thd, true)) goto end;
+
     if (!m_persist_variables.empty()) {
       m_persist_variables.clear();
       flush = 1;
@@ -1071,19 +1109,38 @@ bool Persisted_variables_cache::reset_persisted_variables(THD *thd,
       m_persist_ro_variables.clear();
       flush = 1;
     }
+    /* remove plugin variables if any */
+    if (!m_persist_plugin_variables.empty()) {
+      m_persist_plugin_variables.clear();
+      flush = 1;
+    }
   } else {
+    auto checkvariable = [&var_name](st_persist_var const &s) -> bool {
+      return s.key == var_name;
+    };
     if (m_persist_variables.size()) {
-      auto it = std::find_if(
-          m_persist_variables.begin(), m_persist_variables.end(),
-          [var_name](st_persist_var const &s) { return s.key == var_name; });
+      auto it = std::find_if(m_persist_variables.begin(),
+                             m_persist_variables.end(), checkvariable);
       if (it != m_persist_variables.end()) {
         /* if variable is present in config file remove it */
+        if (check_priv(thd, false)) goto end;
         m_persist_variables.erase(it);
         flush = 1;
         not_present = 0;
       }
     }
+    if (m_persist_plugin_variables.size()) {
+      auto it = std::find_if(m_persist_plugin_variables.begin(),
+                             m_persist_plugin_variables.end(), checkvariable);
+      if (it != m_persist_plugin_variables.end()) {
+        if (check_priv(thd, false)) goto end;
+        m_persist_plugin_variables.erase(it);
+        flush = 1;
+        not_present = 0;
+      }
+    }
     if (it_ro != m_persist_ro_variables.end()) {
+      if (check_priv(thd, true)) goto end;
       /* if static variable is present in config file remove it */
       m_persist_ro_variables.erase(it_ro);
       flush = 1;
@@ -1106,6 +1163,10 @@ bool Persisted_variables_cache::reset_persisted_variables(THD *thd,
   if (flush) flush_to_file();
 
   return result;
+
+end:
+  unlock();
+  return 1;
 }
 
 /**

@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1995, 2017, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1995, 2018, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
@@ -202,6 +202,16 @@ bool fsp_flags_is_valid(ulint flags) MY_ATTRIBUTE((warn_unused_result, const));
 @return true if tablespace is system temporary. */
 bool fsp_is_system_temporary(space_id_t space_id);
 
+/** Check if a space_id is the system temporary space ID.
+@param[in]	space_id	tablespace ID
+@return true if tablespace is system temporary. */
+bool fsp_is_session_temporary(space_id_t space_id);
+
+/** Check if a space_id is the system temporary space ID.
+@param[in]	space_id	tablespace ID
+@return true if tablespace is system temporary. */
+bool fsp_is_global_temporary(space_id_t space_id);
+
 /** Check if checksum is disabled for the given space.
 @param[in]	space_id	verify is checksum is enabled for given space.
 @return true if checksum is disabled for given space. */
@@ -341,22 +351,36 @@ tablespace dictionary.*/
 /** Return the contents of the UNUSED bits */
 #define FSP_FLAGS_GET_UNUSED(flags) (flags >> FSP_FLAGS_POS_UNUSED)
 
+/** Set ENCRYPTION bit in tablespace flags */
+#define FSP_FLAGS_SET_ENCRYPTION(flags) \
+  { flags |= FSP_FLAGS_MASK_ENCRYPTION; }
+/** Set ENCRYPTION bit in tablespace flags */
+#define FSP_FLAGS_UNSET_ENCRYPTION(flags) \
+  { flags &= ~FSP_FLAGS_MASK_ENCRYPTION; }
+
 /** Set SDI Index bit in tablespace flags */
-#define FSP_FLAGS_SET_SDI(flags) (flags | (1 << FSP_FLAGS_POS_SDI))
+#define FSP_FLAGS_SET_SDI(flags) \
+  { flags |= FSP_FLAGS_MASK_SDI; }
+/** Set SDI Index bit in tablespace flags */
+#define FSP_FLAGS_UNSET_SDI(flags) \
+  { flags &= ~FSP_FLAGS_MASK_SDI; }
 
 /** Use an alias in the code for FSP_FLAGS_GET_SHARED() */
 #define fsp_is_shared_tablespace FSP_FLAGS_GET_SHARED
 /* @} */
 
-/* Max number of rollback segments: the number of segment specification slots
+/** Max number of rollback segments: the number of segment specification slots
 in the transaction system array; rollback segment id must fit in one (signed)
 byte, therefore 128; each slot is currently 8 bytes in size. If you want
 to raise the level to 256 then you will need to fix some assertions that
 impose the 7 bit restriction. e.g., mach_write_to_3() */
 #define TRX_SYS_N_RSEGS 128
 
+/** Minimum and Maximum number of implicit undo tablespaces.  This kind
+of undo tablespace is always created and found in --innodb-undo-directory. */
 #define FSP_MIN_UNDO_TABLESPACES 2
 #define FSP_MAX_UNDO_TABLESPACES (TRX_SYS_N_RSEGS - 1)
+#define FSP_IMPLICIT_UNDO_TABLESPACES 2
 #define FSP_MAX_ROLLBACK_SEGMENTS (TRX_SYS_N_RSEGS)
 
 #endif /* fsp0types_h */

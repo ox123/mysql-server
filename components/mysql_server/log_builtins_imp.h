@@ -1,4 +1,4 @@
-/* Copyright (c) 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License, version 2.0,
@@ -41,6 +41,28 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 */
 
 #include <mysql/components/services/log_shared.h>
+
+enum log_sink_buffer_flush_mode {
+  LOG_BUFFER_DISCARD_ONLY,
+  LOG_BUFFER_PROCESS_AND_DISCARD,
+  LOG_BUFFER_REPORT_AND_KEEP
+};
+
+/**
+  Release all buffered log-events (discard_error_log_messages()),
+  optionally after running them through the error log stack first
+  (flush_error_log_messages()). Safe to call repeatedly (though
+  subsequent calls will only output anything if further events
+  occurred after the previous flush).
+
+  @param  mode  LOG_BUFFER_DISCARD_ONLY (to just
+                throw away the buffered events), or
+                LOG_BUFFER_PROCESS_AND_DISCARD to
+                filter/print them first, or
+                LOG_BUFFER_REPORT_AND_KEEP to print
+                an intermediate report on time-out
+*/
+void log_sink_buffer_flush(enum log_sink_buffer_flush_mode mode);
 
 /**
   Maximum number of key/value pairs in a log event.
@@ -173,7 +195,6 @@ class log_builtins_string_imp {
 */
 class log_builtins_tmp_imp {
  public: /* Service Implementations */
-  static DEFINE_METHOD(bool, connection_loop_aborted, (void));
   static DEFINE_METHOD(size_t, notify_client,
                        (void *thd, uint severity, uint code, char *to, size_t n,
                         const char *format, ...))

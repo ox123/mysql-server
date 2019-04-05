@@ -2,6 +2,10 @@
 # Test syntax of foreign keys
 #
 
+--disable_query_log
+call mtr.add_suppression(" In RENAME TABLE table `test`.`parent` is referenced in foreign key constraints which are not compatible with the new table definition.");
+--enable_query_log
+
 # Use MyISAM for this table since we are only interested in checking syntax.
 --error ER_WRONG_FK_DEF
 create table t1 (
@@ -122,18 +126,18 @@ DROP TABLE t1;
 DROP TABLE t2;
 
 SET @@foreign_key_checks= 1;
---error ER_CANNOT_ADD_FOREIGN
+--error ER_FK_CANNOT_OPEN_PARENT
 CREATE TABLE t1(a INT PRIMARY KEY, b INT, FOREIGN KEY (b) REFERENCES non(a));
 # Works, but no FK created
 CREATE TABLE t1(a INT PRIMARY KEY, b INT REFERENCES non(a));
 SHOW CREATE TABLE t1;
---error ER_CANNOT_ADD_FOREIGN
+--error ER_FK_CANNOT_OPEN_PARENT
 ALTER TABLE t1 ADD FOREIGN KEY (b) REFERENCES non(a);
 DROP TABLE t1;
 
 CREATE TABLE t1(a INT PRIMARY KEY);
 CREATE TABLE t2(a INT PRIMARY KEY, b INT, FOREIGN KEY (b) REFERENCES t1(a));
---error ER_ROW_IS_REFERENCED
+--error ER_FK_CANNOT_DROP_PARENT
 DROP TABLE t1;
 DROP TABLE t2, t1;
 
@@ -393,10 +397,10 @@ DROP TABLE t1;
 --echo # FK Referencing virtual column
 CREATE TABLE t1(a INT PRIMARY KEY,
                 b INT GENERATED ALWAYS AS (a+1) VIRTUAL UNIQUE);
---error ER_CANNOT_ADD_FOREIGN
+--error ER_FK_CANNOT_USE_VIRTUAL_COLUMN
 CREATE TABLE t2(a INT, FOREIGN KEY (a) REFERENCES t1(b));
 CREATE TABLE t2(a INT);
---error ER_CANNOT_ADD_FOREIGN
+--error ER_FK_CANNOT_USE_VIRTUAL_COLUMN
 ALTER TABLE t2 ADD FOREIGN KEY(a) REFERENCES t1(b);
 DROP TABLE t1, t2;
 
@@ -458,12 +462,12 @@ DROP TABLE t2, t1;
 --echo # FK on virtual column not supported.
 CREATE TABLE t1(a INT PRIMARY KEY);
 
---error ER_CANNOT_ADD_FOREIGN
+--error ER_FK_CANNOT_USE_VIRTUAL_COLUMN
 CREATE TABLE t2(a INT, b INT GENERATED ALWAYS AS (a+1) VIRTUAL UNIQUE,
                 FOREIGN KEY(b) REFERENCES t1(a));
 
 CREATE TABLE t2(a INT, b INT GENERATED ALWAYS AS (a+1) VIRTUAL UNIQUE);
---error ER_CANNOT_ADD_FOREIGN
+--error ER_FK_CANNOT_USE_VIRTUAL_COLUMN
 ALTER TABLE t2 ADD FOREIGN KEY (b) REFERENCES t1(a);
 DROP TABLE t2;
 
@@ -542,7 +546,7 @@ CREATE TABLE t2 (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100), fname VAR
 SHOW CREATE TABLE t1;
 SHOW CREATE TABLE t2;
 
---error ER_FK_COLUMN_CANNOT_CHANGE
+--error ER_FK_INCOMPATIBLE_COLUMNS
 ALTER TABLE t2 CONVERT TO CHARACTER SET latin1;
 
 SET foreign_key_checks= OFF;
@@ -1157,7 +1161,7 @@ COMMIT;
 
 connection default;
 --echo # Reap DROP TABLES
---error ER_ROW_IS_REFERENCED
+--error ER_FK_CANNOT_DROP_PARENT
 --reap
 
 --echo # 4.4) DROP TABLES which acquires lock on child table and fails
@@ -2333,7 +2337,7 @@ CREATE TABLE child(pk INTEGER PRIMARY KEY, fk_i INTEGER,
 SET @@session.foreign_key_checks= 1;
 --echo # Drop only parent with FKC == 0.
 LOCK TABLE parent WRITE;
---error ER_ROW_IS_REFERENCED
+--error ER_FK_CANNOT_DROP_PARENT
 DROP TABLES parent;
 UNLOCK TABLE;
 
@@ -2847,15 +2851,15 @@ ALTER TABLE t3 ADD FOREIGN KEY (fk) REFERENCES t1 (pk),
 --echo # application of RENAME clause early.
 DROP TABLE t4;
 --error ER_FK_DUP_NAME
-ALTER TABLE t3 ADD CONSTRAINT d FOREIGN KEY (fk) REFERENCES t1 (pk),
+ALTER TABLE t3 ADD CONSTRAINT d FOREIGN KEY (fk) REFERENCES test.t1 (pk),
                ADD UNIQUE KEY (u), RENAME TO mysqltest.t3,
                ALGORITHM=COPY;
 --error ER_FK_DUP_NAME
-ALTER TABLE t3 ADD FOREIGN KEY (fk) REFERENCES t1 (pk),
+ALTER TABLE t3 ADD FOREIGN KEY (fk) REFERENCES test.t1 (pk),
                ADD UNIQUE KEY (u), RENAME TO t8,
                ALGORITHM=COPY;
 --error ER_FK_DUP_NAME
-ALTER TABLE t3 ADD FOREIGN KEY (fk) REFERENCES t1 (pk),
+ALTER TABLE t3 ADD FOREIGN KEY (fk) REFERENCES test.t1 (pk),
                ADD UNIQUE KEY (u), RENAME TO mysqltest.t8,
                ALGORITHM=COPY;
 
@@ -2870,3 +2874,1637 @@ CREATE TABLE T2 (fk INT);
 ALTER TABLE T2 ADD FOREIGN KEY (fk) REFERENCES t1 (pk);
 RENAME TABLE T2 TO T3;
 DROP TABLES T3, t1;
+
+
+--echo #
+--echo # Bug #27821060 "NEWDD FK: DROP TABLES/DATABASE SHOULD CHECK FOR FKS".
+--echo #
+
+--echo #
+--echo # 1) Attempt to DROP TABLE which serves as parent in FK without dropping
+--echo #    child should fail with nice error message.
+CREATE TABLE t1 (pk INT PRIMARY KEY);
+CREATE TABLE t2 (fk INT, FOREIGN KEY (fk) REFERENCES t1 (pk));
+--error ER_FK_CANNOT_DROP_PARENT
+DROP TABLE t1;
+
+--echo #
+--echo # 2) However, same should be allowed in FOREIGN_KEY_CHECKS=0 mode.
+SET FOREIGN_KEY_CHECKS=0;
+DROP TABLE t1;
+SET FOREIGN_KEY_CHECKS=1;
+
+--echo #
+--echo # 3) Dropping of parent table along with child table should be allowed.
+--echo #    Even if parent precedes child in table list.
+CREATE TABLE t1 (pk INT PRIMARY KEY);
+DROP TABLES t1, t2;
+
+--echo #
+--echo # 4) Even if FKs form circular dependencies.
+CREATE TABLE t1 (pk INT PRIMARY KEY, fk INT);
+CREATE TABLE t2 (pk INT PRIMARY KEY, fk INT,
+                 FOREIGN KEY(fk) REFERENCES t1 (pk));
+ALTER TABLE t1 ADD FOREIGN KEY (fk) REFERENCES t2 (pk);
+DROP TABLES t1, t2;
+
+--echo #
+--echo # 5) Attempt to DROP SCHEMA which will remove parent without
+--echo #    removing child should fail with nice error message.
+CREATE SCHEMA mysqltest;
+CREATE TABLE mysqltest.t1 (pk INT PRIMARY KEY);
+CREATE TABLE t2 (fk INT, FOREIGN KEY(fk) REFERENCES mysqltest.t1 (pk));
+--error ER_FK_CANNOT_DROP_PARENT
+DROP SCHEMA mysqltest;
+
+--echo #
+--echo # 6) But the same should be allowed in FOREIGN_KEY_CHECKS=0 mode.
+SET FOREIGN_KEY_CHECKS=0;
+DROP SCHEMA mysqltest;
+SET FOREIGN_KEY_CHECKS=1;
+DROP TABLE t2;
+
+--echo #
+--echo # 7) Also dropping schema which drops both parent and child
+--echo #    should be OK.
+CREATE SCHEMA mysqltest;
+USE mysqltest;
+CREATE TABLE t1 (pk INT PRIMARY KEY, fk INT);
+CREATE TABLE t2 (pk INT PRIMARY KEY, fk INT,
+                 FOREIGN KEY(fk) REFERENCES t1 (pk));
+ALTER TABLE t1 ADD FOREIGN KEY (fk) REFERENCES t2 (pk);
+USE test;
+DROP SCHEMA mysqltest;
+
+
+--echo #
+--echo # Bug#27506922 "DROPPING OF PARENT KEY FOR FOREIGN KEY IS ALLOWED".
+--echo #
+
+--echo #
+--echo # 1) CREATE TABLE with FK and no parent key.
+--echo #
+CREATE TABLE parent(pk INT PRIMARY KEY, a INT);
+--error ER_FK_NO_INDEX_PARENT
+CREATE TABLE child (fk INT, FOREIGN KEY (fk) REFERENCES parent(a));
+SET FOREIGN_KEY_CHECKS = 0;
+--error ER_FK_NO_INDEX_PARENT
+CREATE TABLE child (fk INT, FOREIGN KEY (fk) REFERENCES parent(a));
+SET FOREIGN_KEY_CHECKS = 1;
+--error ER_FK_NO_INDEX_PARENT
+CREATE TABLE self (pk INT PRIMARY KEY, a INT, fk INT,
+                   FOREIGN KEY (fk) REFERENCES self(a));
+SET FOREIGN_KEY_CHECKS = 0;
+--error ER_FK_NO_INDEX_PARENT
+CREATE TABLE self (pk INT PRIMARY KEY, a INT, fk INT,
+                   FOREIGN KEY (fk) REFERENCES self(a));
+--echo # Missing parent table case.
+SET FOREIGN_KEY_CHECKS = 1;
+--error ER_FK_CANNOT_OPEN_PARENT,
+CREATE TABLE child (fk INT, FOREIGN KEY (fk) REFERENCES no_such_parent(pk));
+--echo # We allow creation of orphan FKs in FOREIGN_KEY_CHECKS = 0 mode.
+SET FOREIGN_KEY_CHECKS = 0;
+CREATE TABLE child (fk INT, FOREIGN KEY (fk) REFERENCES no_such_parent(pk));
+SET FOREIGN_KEY_CHECKS = 1;
+DROP TABLE child;
+
+--echo #
+--echo # 2) ALTER TABLE which adds FK without parent key.
+--echo #
+CREATE TABLE child (fk INT, fk2 INT);
+--error ER_FK_NO_INDEX_PARENT
+ALTER TABLE child ADD FOREIGN KEY (fk) REFERENCES parent(a), ALGORITHM=COPY;
+--error ER_FK_NO_INDEX_PARENT
+ALTER TABLE child ADD FOREIGN KEY (fk) REFERENCES parent(a), ALGORITHM=INPLACE;
+SET FOREIGN_KEY_CHECKS = 0;
+--error ER_FK_NO_INDEX_PARENT
+ALTER TABLE child ADD FOREIGN KEY (fk) REFERENCES parent(a), ALGORITHM=COPY;
+--error ER_FK_NO_INDEX_PARENT
+ALTER TABLE child ADD FOREIGN KEY (fk) REFERENCES parent(a), ALGORITHM=INPLACE;
+SET FOREIGN_KEY_CHECKS = 1;
+CREATE TABLE self (pk INT PRIMARY KEY, a INT, fk INT);
+--error ER_FK_NO_INDEX_PARENT
+ALTER TABLE self ADD FOREIGN KEY (fk) REFERENCES self(a), ALGORITHM=COPY;
+--error ER_FK_NO_INDEX_PARENT
+ALTER TABLE self ADD FOREIGN KEY (fk) REFERENCES self(a), ALGORITHM=INPLACE;
+SET FOREIGN_KEY_CHECKS = 0;
+--error ER_FK_NO_INDEX_PARENT
+ALTER TABLE self ADD FOREIGN KEY (fk) REFERENCES self(a), ALGORITHM=COPY;
+--error ER_FK_NO_INDEX_PARENT
+ALTER TABLE self ADD FOREIGN KEY (fk) REFERENCES self(a), ALGORITHM=INPLACE;
+--echo # Missing parent table case.
+SET FOREIGN_KEY_CHECKS = 1;
+--error ER_FK_CANNOT_OPEN_PARENT,
+ALTER TABLE child ADD FOREIGN KEY (fk) REFERENCES no_such_parent(pk), ALGORITHM=COPY;
+--error ER_FK_CANNOT_OPEN_PARENT,
+ALTER TABLE child ADD FOREIGN KEY (fk) REFERENCES no_such_parent(pk), ALGORITHM=INPLACE;
+--echo # We allow creation of orphan FKs in FOREIGN_KEY_CHECKS = 0 mode.
+SET FOREIGN_KEY_CHECKS = 0;
+ALTER TABLE child ADD FOREIGN KEY (fk) REFERENCES no_such_parent(pk), ALGORITHM=COPY;
+ALTER TABLE child ADD FOREIGN KEY (fk2) REFERENCES no_such_parent(pk), ALGORITHM=INPLACE;
+SET FOREIGN_KEY_CHECKS = 1;
+DROP TABLE child, self, parent;
+
+--echo #
+--echo # 3) ALTER TABLE which drops parent key.
+--echo #
+CREATE TABLE parent (pk INT PRIMARY KEY, u INT NOT NULL, UNIQUE(u));
+CREATE TABLE child (fk INT, FOREIGN KEY (fk) REFERENCES parent(u));
+--error ER_DROP_INDEX_FK
+ALTER TABLE parent DROP KEY u, ALGORITHM=COPY;
+--error ER_DROP_INDEX_FK
+ALTER TABLE parent DROP KEY u, ALGORITHM=INPLACE;
+SET FOREIGN_KEY_CHECKS = 0;
+--error ER_DROP_INDEX_FK
+ALTER TABLE parent DROP KEY u, ALGORITHM=COPY;
+--error ER_DROP_INDEX_FK
+ALTER TABLE parent DROP KEY u, ALGORITHM=INPLACE;
+SET FOREIGN_KEY_CHECKS = 1;
+CREATE TABLE self (pk INT PRIMARY KEY, u INT NOT NULL, fk INT, UNIQUE(u),
+                   FOREIGN KEY (fk) REFERENCES self(u));
+--error ER_DROP_INDEX_FK
+ALTER TABLE self DROP KEY u, ALGORITHM=COPY;
+--error ER_DROP_INDEX_FK
+ALTER TABLE self DROP KEY u, ALGORITHM=INPLACE;
+SET FOREIGN_KEY_CHECKS = 0;
+--error ER_DROP_INDEX_FK
+ALTER TABLE self DROP KEY u, ALGORITHM=COPY;
+--error ER_DROP_INDEX_FK
+ALTER TABLE self DROP KEY u, ALGORITHM=INPLACE;
+SET FOREIGN_KEY_CHECKS = 1;
+--echo # Check case which requires additional handling during error-reporting.
+--echo # Attempt to drop non-unique parent key.
+ALTER TABLE parent DROP KEY u, ADD KEY nu(u);
+--error ER_DROP_INDEX_FK
+ALTER TABLE parent DROP KEY nu, ALGORITHM=COPY;
+--error ER_DROP_INDEX_FK
+ALTER TABLE parent DROP KEY nu, ALGORITHM=INPLACE;
+SET FOREIGN_KEY_CHECKS = 0;
+--error ER_DROP_INDEX_FK
+ALTER TABLE parent DROP KEY nu, ALGORITHM=COPY;
+--error ER_DROP_INDEX_FK
+ALTER TABLE parent DROP KEY nu, ALGORITHM=INPLACE;
+SET FOREIGN_KEY_CHECKS = 1;
+ALTER TABLE self DROP KEY u, ADD KEY nu(u);
+--error ER_DROP_INDEX_FK
+ALTER TABLE self DROP KEY nu, ALGORITHM=COPY;
+--error ER_DROP_INDEX_FK
+ALTER TABLE self DROP KEY nu, ALGORITHM=INPLACE;
+SET FOREIGN_KEY_CHECKS = 0;
+--error ER_DROP_INDEX_FK
+ALTER TABLE self DROP KEY nu, ALGORITHM=COPY;
+--error ER_DROP_INDEX_FK
+ALTER TABLE self DROP KEY nu, ALGORITHM=INPLACE;
+SET FOREIGN_KEY_CHECKS = 1;
+DROP TABLES self, child, parent;
+
+--echo #
+--echo # 4) CREATE, RENAME and ALTER TABLE RENAME which create new
+--echo #    parent for previously orphan child table.
+--echo #
+SET FOREIGN_KEY_CHECKS = 0;
+CREATE TABLE child (fk INT, FOREIGN KEY (fk) REFERENCES parent(a));
+SET FOREIGN_KEY_CHECKS = 1;
+# We get more generic error message here because SE check kicks in
+# before SQL-layer check.
+--error ER_FK_NO_INDEX_PARENT
+CREATE TABLE parent (pk INT PRIMARY KEY, a INT);
+SET FOREIGN_KEY_CHECKS = 0;
+--error ER_FK_NO_INDEX_PARENT
+CREATE TABLE parent (pk INT PRIMARY KEY, a INT);
+SET FOREIGN_KEY_CHECKS = 1;
+CREATE TABLE parent1 (pk INT PRIMARY KEY, a INT);
+--error ER_ERROR_ON_RENAME
+RENAME TABLE parent1 TO parent;
+SET FOREIGN_KEY_CHECKS = 0;
+--error ER_FK_NO_INDEX_PARENT
+RENAME TABLE parent1 TO parent;
+SET FOREIGN_KEY_CHECKS = 1;
+--error ER_FK_NO_INDEX_PARENT
+ALTER TABLE parent1 RENAME TO parent;
+SET FOREIGN_KEY_CHECKS = 0;
+--error ER_FK_NO_INDEX_PARENT
+ALTER TABLE parent1 RENAME TO parent;
+SET FOREIGN_KEY_CHECKS = 1;
+--error ER_FK_NO_INDEX_PARENT
+ALTER TABLE parent1 ADD COLUMN b INT, RENAME TO parent, ALGORITHM=INPLACE;
+SET FOREIGN_KEY_CHECKS = 0;
+--error ER_FK_NO_INDEX_PARENT
+ALTER TABLE parent1 RENAME TO parent;
+SET FOREIGN_KEY_CHECKS = 1;
+--error ER_FK_NO_INDEX_PARENT
+ALTER TABLE parent1 ADD COLUMN b INT, RENAME TO parent, ALGORITHM=COPY;
+SET FOREIGN_KEY_CHECKS = 0;
+--error ER_FK_NO_INDEX_PARENT
+ALTER TABLE parent1 RENAME TO parent;
+SET FOREIGN_KEY_CHECKS = 1;
+DROP TABLE parent1, child;
+
+--echo #
+--echo # 5) Special case. ALTER TABLE which replaces parent key with another
+--echo #    one due to new key creation. Old key is generated so it is
+--echo #    automagically replaced with a new explicit key or more universal
+--echo #    generated key.
+--echo #
+CREATE TABLE grandparent (pk INT PRIMARY KEY);
+CREATE TABLE parent (pkfk INT, FOREIGN KEY (pkfk) REFERENCES grandparent(pk));
+SHOW CREATE TABLE parent;
+CREATE TABLE child (fk INT, FOREIGN KEY (fk) REFERENCES parent(pkfk));
+SELECT referenced_table_name, unique_constraint_name FROM
+  information_schema.referential_constraints WHERE table_name = 'child';
+ALTER TABLE parent ADD UNIQUE KEY u (pkfk);
+SHOW CREATE TABLE parent;
+SELECT referenced_table_name, unique_constraint_name FROM
+  information_schema.referential_constraints WHERE table_name = 'child';
+DROP TABLE child, parent;
+
+CREATE TABLE self (fk INT, pkfk INT,
+                   FOREIGN KEY (fk) REFERENCES self (pkfk),
+                   FOREIGN KEY (pkfk) REFERENCES grandparent(pk));
+SHOW CREATE TABLE self;
+SELECT referenced_table_name, unique_constraint_name FROM
+  information_schema.referential_constraints WHERE table_name = 'self'
+  ORDER BY referenced_table_name;
+ALTER TABLE self ADD UNIQUE KEY u (pkfk);
+SHOW CREATE TABLE self;
+SELECT referenced_table_name, unique_constraint_name FROM
+  information_schema.referential_constraints WHERE table_name = 'self'
+  ORDER BY referenced_table_name;
+DROP TABLE self, grandparent;
+
+CREATE TABLE grandparent1 (pk INT PRIMARY KEY);
+CREATE TABLE grandparent2 (pk1 INT , pk2 INT, PRIMARY KEY(pk1, pk2));
+CREATE TABLE parent (pkfk1 INT, pkfk2 INT, FOREIGN KEY (pkfk1) REFERENCES grandparent1(pk));
+SHOW CREATE TABLE parent;
+CREATE TABLE child (fk INT, FOREIGN KEY (fk) REFERENCES parent(pkfk1));
+SELECT referenced_table_name, unique_constraint_name FROM
+  information_schema.referential_constraints WHERE table_name = 'child';
+ALTER TABLE parent ADD FOREIGN KEY (pkfk1, pkfk2) REFERENCES grandparent2(pk1, pk2);
+SHOW CREATE TABLE parent;
+SELECT referenced_table_name, unique_constraint_name FROM
+  information_schema.referential_constraints WHERE table_name = 'child';
+DROP TABLE child, parent;
+
+CREATE TABLE self (fk INT, pkfk1 INT, pkfk2 INT,
+                   FOREIGN KEY (fk) REFERENCES self (pkfk1),
+                   FOREIGN KEY (pkfk1) REFERENCES grandparent1(pk));
+SHOW CREATE TABLE self;
+SELECT referenced_table_name, unique_constraint_name FROM
+  information_schema.referential_constraints WHERE table_name = 'self'
+  ORDER BY referenced_table_name;
+ALTER TABLE self ADD FOREIGN KEY (pkfk1, pkfk2) REFERENCES grandparent2(pk1, pk2);
+SHOW CREATE TABLE self;
+SELECT referenced_table_name, unique_constraint_name FROM
+  information_schema.referential_constraints WHERE table_name = 'self'
+  ORDER BY referenced_table_name;
+DROP TABLE self, grandparent1, grandparent2;
+
+
+--echo #
+--echo # Bug#25722927 "NEWDD FK: ALTER TABLE CHANGE COLUMN TYPE SHOULD CHECK FK CONSTRAINT"
+--echo #
+
+--echo #
+--echo # 1) Check how missing/dropped referencing and referenced columns
+--echo #    are handled.
+--echo #
+
+--echo #
+--echo # 1.a) Missing referencing column. This problem is detected
+--echo #      during generated supported index processing.
+CREATE TABLE parent (pk INT PRIMARY KEY, j INT);
+--error ER_KEY_COLUMN_DOES_NOT_EXITS
+CREATE TABLE child (fk INT, FOREIGN KEY (nocol) REFERENCES parent(pk));
+--error ER_KEY_COLUMN_DOES_NOT_EXITS
+CREATE TABLE self (pk INT PRIMARY KEY, FOREIGN KEY (nocol) REFERENCES self(pk));
+CREATE TABLE child (fk INT, j INT);
+CREATE TABLE self (pk INT PRIMARY KEY, fk INT);
+--error ER_KEY_COLUMN_DOES_NOT_EXITS
+ALTER TABLE child ADD FOREIGN KEY (nocol) REFERENCES parent(pk);
+--error ER_KEY_COLUMN_DOES_NOT_EXITS
+ALTER TABLE self ADD FOREIGN KEY (nocol) REFERENCES self(pk);
+
+--echo #
+--echo # 1.b) Dropped referencing column.
+ALTER TABLE child ADD FOREIGN KEY (fk) REFERENCES parent(pk);
+--error ER_FK_COLUMN_CANNOT_DROP
+ALTER TABLE child DROP COLUMN fk;
+--echo # Adding column with the same name at the same time should not help.
+--error ER_FK_COLUMN_CANNOT_DROP
+ALTER TABLE child DROP COLUMN fk, ADD COLUMN fk INT;
+ALTER TABLE self ADD FOREIGN KEY (fk) REFERENCES self(pk);
+--error ER_FK_COLUMN_CANNOT_DROP
+ALTER TABLE self DROP COLUMN fk;
+--error ER_FK_COLUMN_CANNOT_DROP
+ALTER TABLE self DROP COLUMN fk, ADD COLUMN fk INT;
+
+--echo #
+--echo # 1.c) Missing referenced column.
+DROP TABLE child;
+--error ER_FK_NO_COLUMN_PARENT
+CREATE TABLE child (fk INT, FOREIGN KEY (fk) REFERENCES parent(nocol));
+DROP TABLE self;
+--error ER_FK_NO_COLUMN_PARENT
+CREATE TABLE self (pk INT PRIMARY KEY, fk INT, FOREIGN KEY (fk) REFERENCES self(nocol));
+CREATE TABLE child (fk INT);
+--error ER_FK_NO_COLUMN_PARENT
+ALTER TABLE child ADD FOREIGN KEY (fk) REFERENCES parent(nocol);
+CREATE TABLE self (pk INT PRIMARY KEY, fk INT);
+--error ER_FK_NO_COLUMN_PARENT
+ALTER TABLE self ADD FOREIGN KEY (fk) REFERENCES self(nocol);
+
+--echo #
+--echo # 1.d) Dropped referenced column.
+ALTER TABLE child ADD FOREIGN KEY (fk) REFERENCES parent(pk);
+--error ER_FK_COLUMN_CANNOT_DROP_CHILD
+ALTER TABLE parent DROP COLUMN pk;
+--echo # Adding column with the same name at the same time should not help.
+--error ER_FK_COLUMN_CANNOT_DROP_CHILD
+ALTER TABLE parent DROP COLUMN pk, ADD COLUMN pk INT;
+ALTER TABLE self ADD FOREIGN KEY (fk) REFERENCES self(pk);
+--error ER_FK_COLUMN_CANNOT_DROP_CHILD
+ALTER TABLE self DROP COLUMN pk;
+--error ER_FK_COLUMN_CANNOT_DROP_CHILD
+ALTER TABLE self DROP COLUMN pk, ADD COLUMN pk INT;
+
+--echo #
+--echo # 1.e) Special case. Attempt to create parent for orphan
+--echo #      foreign key which doesn't have matching column.
+DROP TABLES child, parent;
+SET FOREIGN_KEY_CHECKS=0;
+CREATE TABLE child (fk INT, FOREIGN KEY (fk) REFERENCES parent(nocol));
+--error ER_FK_NO_COLUMN_PARENT
+CREATE TABLE parent (pk INT PRIMARY KEY);
+CREATE TABLE parent0 (pk INT PRIMARY KEY);
+--error ER_FK_NO_COLUMN_PARENT
+RENAME TABLE parent0 TO parent;
+--error ER_FK_NO_COLUMN_PARENT
+ALTER TABLE parent0 RENAME TO parent;
+SET FOREIGN_KEY_CHECKS=1;
+DROP TABLES child, parent0, self;
+
+--echo #
+--echo # 2) Handling of virtual columns in referencing and referenced
+--echo #    columns lists.
+--echo #
+
+--echo #
+--echo # 2.a) Virtual columns in referencing columns list are not
+--echo #      supported.
+CREATE TABLE parent (pk INT PRIMARY KEY);
+--error ER_FK_CANNOT_USE_VIRTUAL_COLUMN
+CREATE TABLE child (base INT, fk INT GENERATED ALWAYS AS (base+1) VIRTUAL,
+                    FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_CANNOT_USE_VIRTUAL_COLUMN
+CREATE TABLE self (pk INT PRIMARY KEY, base INT,
+                   fk INT GENERATED ALWAYS AS (base+1) VIRTUAL,
+                   FOREIGN KEY (fk) REFERENCES self(pk));
+CREATE TABLE child (base INT, fk INT GENERATED ALWAYS AS (base+1) VIRTUAL);
+--error ER_FK_CANNOT_USE_VIRTUAL_COLUMN
+ALTER TABLE child ADD FOREIGN KEY (fk) REFERENCES parent(pk);
+CREATE TABLE self (pk INT PRIMARY KEY, base INT,
+                   fk INT GENERATED ALWAYS AS (base+1) VIRTUAL);
+--error ER_FK_CANNOT_USE_VIRTUAL_COLUMN
+ALTER TABLE self ADD FOREIGN KEY (fk) REFERENCES self(pk);
+
+--echo #
+--echo # 2.b) One should not be able to get virtual column in referencing
+--echo #      columns list by ALTERing column.
+DROP TABLE child, self;
+CREATE TABLE child (base INT, fk INT GENERATED ALWAYS AS (base+1) STORED,
+                    FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_UNSUPPORTED_ACTION_ON_GENERATED_COLUMN
+ALTER TABLE child MODIFY fk INT GENERATED ALWAYS AS (base+1) VIRTUAL;
+CREATE TABLE self (pk INT PRIMARY KEY, base INT,
+                   fk INT GENERATED ALWAYS AS (base+1) STORED,
+                   FOREIGN KEY (fk) REFERENCES self(pk));
+--error ER_UNSUPPORTED_ACTION_ON_GENERATED_COLUMN
+ALTER TABLE self MODIFY fk INT GENERATED ALWAYS AS (base+1) VIRTUAL;
+
+--echo #
+--echo # 2.c) Virtual columns in referenced columns list are not
+--echo #      supported.
+DROP TABLE child, parent, self;
+CREATE TABLE parent (base INT, pk INT GENERATED ALWAYS AS (base+1) VIRTUAL, UNIQUE KEY(pk));
+--error ER_FK_CANNOT_USE_VIRTUAL_COLUMN
+CREATE TABLE child (fk INT, FOREIGN KEY (fk) REFERENCES parent(pk));
+CREATE TABLE child (fk INT);
+--error ER_FK_CANNOT_USE_VIRTUAL_COLUMN
+ALTER TABLE child ADD FOREIGN KEY (fk) REFERENCES parent(pk);
+--error ER_FK_CANNOT_USE_VIRTUAL_COLUMN
+CREATE TABLE self (base INT, pk INT GENERATED ALWAYS AS (base+1) VIRTUAL, fk INT,
+                   UNIQUE KEY(pk), FOREIGN KEY (fk) REFERENCES self(pk));
+CREATE TABLE self (base INT, pk INT GENERATED ALWAYS AS (base+1) VIRTUAL, fk INT,
+                   UNIQUE KEY(pk));
+--error ER_FK_CANNOT_USE_VIRTUAL_COLUMN
+ALTER TABLE self ADD FOREIGN KEY (fk) REFERENCES self(pk);
+
+--echo #
+--echo # 2.d) Again, one should not be able to get referenced virtual
+--echo #      column by ALTERing it.
+DROP TABLE child, parent, self;
+CREATE TABLE parent (base INT, pk INT GENERATED ALWAYS AS (base+1) STORED, UNIQUE KEY(pk));
+CREATE TABLE child (fk INT, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_UNSUPPORTED_ACTION_ON_GENERATED_COLUMN
+ALTER TABLE parent MODIFY pk INT GENERATED ALWAYS AS (base+1) VIRTUAL;
+CREATE TABLE self (base INT, pk INT GENERATED ALWAYS AS (base+1) STORED, fk INT,
+                   UNIQUE KEY(pk), FOREIGN KEY (fk) REFERENCES self(pk));
+--error ER_UNSUPPORTED_ACTION_ON_GENERATED_COLUMN
+ALTER TABLE self MODIFY pk INT GENERATED ALWAYS AS (base+1) VIRTUAL;
+
+--echo #
+--echo # 2.e) Special case. Attempt to create parent for orphan
+--echo #      foreign key which has virtual column.
+DROP TABLES child, parent, self;
+SET FOREIGN_KEY_CHECKS=0;
+CREATE TABLE child (fk INT, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_CANNOT_USE_VIRTUAL_COLUMN
+CREATE TABLE parent (base INT, pk INT GENERATED ALWAYS AS (base+1) VIRTUAL, UNIQUE KEY(pk));
+CREATE TABLE parent0 (base INT, pk INT GENERATED ALWAYS AS (base+1) VIRTUAL, UNIQUE KEY(pk));
+--error ER_FK_CANNOT_USE_VIRTUAL_COLUMN
+RENAME TABLE parent0 TO parent;
+--error ER_FK_CANNOT_USE_VIRTUAL_COLUMN
+ALTER TABLE parent0 RENAME TO parent;
+SET FOREIGN_KEY_CHECKS=1;
+DROP TABLES child, parent0;
+
+--echo #
+--echo # 3) Check how missing/dropped supporting index on referencing table
+--echo #    is handled.
+--echo #
+
+--echo #
+--echo # 3.a) Normally, generated supporting index is automatically added
+--echo #      along with foreign key, so it can be missing only in some rare
+--echo #      corner case, for example, when generated index is automatically
+--echo #      converted to spatial index.
+CREATE TABLE parent (pk POINT SRID 0 NOT NULL, KEY(pk));
+--error ER_FK_NO_INDEX_CHILD
+CREATE TABLE child (fk POINT SRID 0 NOT NULL, FOREIGN KEY(fk) REFERENCES parent(pk));
+CREATE TABLE child (fk POINT SRID 0 NOT NULL);
+--error ER_FK_NO_INDEX_CHILD
+ALTER TABLE child ADD FOREIGN KEY(fk) REFERENCES parent(pk);
+--error ER_FK_NO_INDEX_CHILD
+CREATE TABLE self (pk POINT SRID 0 NOT NULL, fk POINT SRID 0 NOT NULL,
+                   KEY(pk), FOREIGN KEY(fk) REFERENCES self(pk));
+CREATE TABLE self (pk POINT SRID 0 NOT NULL, fk POINT SRID 0 NOT NULL, KEY(pk));
+--error ER_FK_NO_INDEX_CHILD
+ALTER TABLE self ADD FOREIGN KEY(fk) REFERENCES self(pk);
+
+--echo #
+--echo # 3.b) Attempt to drop supporting index should be prohibited.
+DROP TABLES self, child, parent;
+CREATE TABLE parent (pk INT PRIMARY KEY);
+CREATE TABLE child (fk INT, FOREIGN KEY(fk) REFERENCES parent(pk));
+--error ER_DROP_INDEX_FK
+ALTER TABLE child DROP KEY fk;
+CREATE TABLE self (pk INT PRIMARY KEY, fk INT, FOREIGN KEY(fk) REFERENCES self(pk));
+--error ER_DROP_INDEX_FK
+ALTER TABLE self DROP KEY fk;
+--echo # However, we allow automatic dropping of generated index when new
+--echo # explicit supporting index is added.
+ALTER TABLE child ADD KEY fk_s(fk);
+SHOW CREATE TABLE child;
+ALTER TABLE self ADD KEY fk_s(fk);
+SHOW CREATE TABLE self;
+--echo # Also dropping supporting index and providing replacement is fine.
+ALTER TABLE child DROP KEY fk_s, ADD COLUMN j INT, ADD KEY (fk, j);
+ALTER TABLE self DROP KEY fk_s, ADD COLUMN j INT, ADD KEY(fk, j);
+DROP TABLES self, child, parent;
+
+--echo #
+--echo # 4) Check how foreign keys involving partitioned tables are handled.
+--echo #
+
+--echo #
+--echo # 4.a) Creation of partitioned child table, addition of foreign key to
+--echo #      partitioned table and attempt to partition child table in a
+--echo #      foreign key should all lead to errors (since InnoDB doesn't
+--echo #      support foreign keys involving partitioned tables yet).
+CREATE TABLE parent (pk INT PRIMARY KEY);
+--error ER_FOREIGN_KEY_ON_PARTITIONED
+CREATE TABLE child (pk INT PRIMARY KEY, fk INT, FOREIGN KEY (fk) REFERENCES parent(pk))
+  PARTITION BY KEY (pk) PARTITIONS 20;
+
+CREATE TABLE child (pk INT PRIMARY KEY, fk INT) PARTITION BY KEY (pk) PARTITIONS 20;
+--error ER_FOREIGN_KEY_ON_PARTITIONED
+ALTER TABLE child ADD FOREIGN KEY (fk) REFERENCES parent(pk);
+DROP TABLE child;
+
+CREATE TABLE child (pk INT PRIMARY KEY, fk INT, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FOREIGN_KEY_ON_PARTITIONED
+ALTER TABLE child PARTITION BY KEY (pk) PARTITIONS 20;
+
+--echo #
+--echo # 4.b) Attempt to partition parent table in a foreign key,
+--echo #      attempt to create table with foreign key referencing
+--echo #      partitioned table and addition of foreign key with
+--echo #      partitioned parent should all lead to errors as well.
+--error ER_FOREIGN_KEY_ON_PARTITIONED
+ALTER TABLE parent PARTITION BY KEY (pk) PARTITIONS 20;
+DROP TABLES child, parent;
+
+CREATE TABLE parent (pk INT PRIMARY KEY) PARTITION BY KEY (pk) PARTITIONS 20;
+--error ER_FOREIGN_KEY_ON_PARTITIONED
+CREATE TABLE child (fk INT, FOREIGN KEY (fk) REFERENCES parent(pk));
+
+CREATE TABLE child (fk INT);
+--error ER_FOREIGN_KEY_ON_PARTITIONED
+ALTER TABLE child ADD FOREIGN KEY (fk) REFERENCES parent(pk);
+DROP TABLES child, parent;
+
+--echo #
+--echo # 4.c) Addition of partitioned parent for previously orphan foreign key
+--echo #      should result in error as well.
+SET FOREIGN_KEY_CHECKS=0;
+CREATE TABLE orphan (fk INT, FOREIGN KEY (fk) REFERENCES parent(pk));
+SET FOREIGN_KEY_CHECKS=1;
+--error ER_FOREIGN_KEY_ON_PARTITIONED
+CREATE TABLE parent (pk INT PRIMARY KEY) PARTITION BY KEY (pk) PARTITIONS 20;
+
+CREATE TABLE parent0 (pk INT PRIMARY KEY) PARTITION BY KEY (pk) PARTITIONS 20;
+--error ER_FOREIGN_KEY_ON_PARTITIONED
+RENAME TABLE parent0 TO parent;
+
+--error ER_FOREIGN_KEY_ON_PARTITIONED
+ALTER TABLE parent0 RENAME TO parent;
+--error ER_FOREIGN_KEY_ON_PARTITIONED
+ALTER TABLE parent0 RENAME TO parent, ADD COLUMN j INT, ALGORITHM=COPY;
+--error ER_FOREIGN_KEY_ON_PARTITIONED
+ALTER TABLE parent0 RENAME TO parent, ADD COLUMN j INT, ALGORITHM=INPLACE;
+DROP TABLES orphan, parent0;
+
+--echo #
+--echo # 4.d) ALTER TABLE which ADD/DROP FOREIGN KEY and change table's
+--echo #      partitioning status at the same time.
+CREATE TABLE parent (pk INT PRIMARY KEY);
+CREATE TABLE child (pk INT PRIMARY KEY, fk INT,
+                    CONSTRAINT c FOREIGN KEY (fk) REFERENCES parent(pk));
+--echo # Dropping foreign key and adding partitioning is OK.
+ALTER TABLE child DROP FOREIGN KEY c PARTITION BY KEY (pk) PARTITIONS 20;
+--echo # Adding foreign key and removing partitioning is OK.
+ALTER TABLE child ADD FOREIGN KEY (fk) REFERENCES parent(pk) REMOVE PARTITIONING;
+DROP TABLES child, parent;
+CREATE TABLE self (pk INT PRIMARY KEY, fk INT,
+                   CONSTRAINT c FOREIGN KEY (fk) REFERENCES self(pk));
+--echo # Dropping foreign key and adding partitioning is OK.
+ALTER TABLE self DROP FOREIGN KEY c PARTITION BY KEY (pk) PARTITIONS 20;
+--echo # Adding foreign key and removing partitioning should be OK.
+--echo # However, the below statement fails due to bug#28486106 in InnoDB code.
+--error ER_CANNOT_ADD_FOREIGN
+ALTER TABLE self ADD FOREIGN KEY (fk) REFERENCES self(pk) REMOVE PARTITIONING;
+DROP TABLES self;
+
+--echo #
+--echo # 5) Check how parent table in different storage engine is handled.
+--echo #
+--echo # We handle it in the same way as if table was missing to be compatible
+--echo # with pre-8.0 versions.
+
+--echo #
+--echo # 5.a) Attempt to create table with a foreign key or to add foreign key
+--echo #      to already xisting table which reference parent in different SE
+--echo #      should fail in FOREIGN_KEY_CHECKS=1 mode.
+CREATE TABLE bad_parent (pk INT PRIMARY KEY) ENGINE=MyISAM;
+--error ER_FK_CANNOT_OPEN_PARENT
+CREATE TABLE child (fk INT, FOREIGN KEY (fk) REFERENCES bad_parent(pk));
+
+CREATE TABLE child (fk INT);
+--error ER_FK_CANNOT_OPEN_PARENT
+ALTER TABLE child ADD FOREIGN KEY (fk) REFERENCES bad_parent(pk);
+
+--echo #
+--echo # 5.b) However, in FOREIGN_KEY_CHECKS=0 mode this is allowed.
+--echo #      Referenced table is considered missing and existing table
+--echo #      in a wrong SE is not considered as real parent.
+SET FOREIGN_KEY_CHECKS = 0;
+ALTER TABLE child ADD FOREIGN KEY (fk) REFERENCES bad_parent(pk);
+DROP TABLE child;
+CREATE TABLE child (fk INT, FOREIGN KEY (fk) REFERENCES bad_parent(pk));
+SET FOREIGN_KEY_CHECKS = 1;
+--echo # Bad parent can be dropped just fine even in FOREIGN_KEY_CHECKS=1 mode.
+DROP TABLE bad_parent;
+DROP TABLE child;
+
+--echo #
+--echo # 5.c) Attempt to change SE for table participating in foreign key
+--echo #      should lead to error.
+CREATE TABLE parent (pk INT PRIMARY KEY);
+CREATE TABLE child (fk INT, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_CANNOT_CHANGE_ENGINE
+ALTER TABLE child ENGINE=MyISAM;
+--error ER_FK_CANNOT_CHANGE_ENGINE
+ALTER TABLE parent ENGINE=MyISAM;
+DROP TABLES child, parent;
+
+--echo #
+--echo # 5.d) It is possible to add "parent" in wrong SE to orphan foreign key.
+--echo #      However, it won't be considered as real parent.
+SET FOREIGN_KEY_CHECKS = 0;
+CREATE TABLE child (fk INT, FOREIGN KEY (fk) REFERENCES bad_parent(pk));
+SET FOREIGN_KEY_CHECKS = 1;
+CREATE TABLE bad_parent (pk INT PRIMARY KEY) ENGINE=MyISAM;
+--echo # It is possible to break bad parent even in FOREIGN_KEY_CHECKS=1 mode.
+ALTER TABLE bad_parent DROP COLUMN pk, ADD COLUMN i INT;
+DROP TABLE bad_parent;
+DROP TABLE child;
+
+--echo #
+--echo # 6) Check that we prohibit foreign keys with SET NULL action with
+--echo #    non-nullable referencing columns.
+--echo #
+
+--echo #
+--echo # 6.1) Attempt to add foreign key with SET NULL action and
+--echo #      non-nullable column should lead to error.
+CREATE TABLE parent (pk INT PRIMARY KEY);
+--error ER_FK_COLUMN_NOT_NULL
+CREATE TABLE child (fk INT NOT NULL, CONSTRAINT c FOREIGN KEY (fk) REFERENCES parent(pk) ON DELETE SET NULL);
+--error ER_FK_COLUMN_NOT_NULL
+CREATE TABLE child (fk INT NOT NULL, CONSTRAINT c FOREIGN KEY (fk) REFERENCES parent(pk) ON UPDATE SET NULL);
+CREATE TABLE child (fk INT NOT NULL);
+--error ER_FK_COLUMN_NOT_NULL
+ALTER TABLE child ADD FOREIGN KEY (fk) REFERENCES parent(pk) ON DELETE SET NULL;
+--error ER_FK_COLUMN_NOT_NULL
+ALTER TABLE child ADD FOREIGN KEY (fk) REFERENCES parent(pk) ON UPDATE SET NULL;
+DROP TABLE child;
+
+--echo # Case of when column is implicitly made non-nullable due to PRIMARY
+--echo # KEY should be handled in the same way.
+--error ER_FK_COLUMN_NOT_NULL
+CREATE TABLE child (fk INT, PRIMARY KEY(fk), CONSTRAINT c FOREIGN KEY (fk) REFERENCES parent(pk) ON DELETE SET NULL);
+--error ER_FK_COLUMN_NOT_NULL
+CREATE TABLE child (fk INT, PRIMARY KEY(fk), CONSTRAINT c FOREIGN KEY (fk) REFERENCES parent(pk) ON UPDATE SET NULL);
+CREATE TABLE child (fk INT);
+--error ER_FK_COLUMN_NOT_NULL
+ALTER TABLE child ADD PRIMARY KEY (fk), ADD FOREIGN KEY (fk) REFERENCES parent(pk) ON DELETE SET NULL;
+--error ER_FK_COLUMN_NOT_NULL
+ALTER TABLE child ADD PRIMARY KEY (fk), ADD FOREIGN KEY (fk) REFERENCES parent(pk) ON UPDATE SET NULL;
+DROP TABLE child;
+
+--echo #
+--echo # 6.2) Attempt to make referencing column non-nullable in existing
+--echo #      foreign key with SET NULL action should lead to error as well.
+CREATE TABLE child_one (fk INT, CONSTRAINT c FOREIGN KEY (fk) REFERENCES parent(pk) ON DELETE SET NULL);
+CREATE TABLE child_two (fk INT, FOREIGN KEY (fk) REFERENCES parent(pk) ON DELETE SET NULL);
+--error ER_FK_COLUMN_NOT_NULL
+ALTER TABLE child_one MODIFY COLUMN fk INT NOT NULL;
+--error ER_FK_COLUMN_NOT_NULL
+ALTER TABLE child_two CHANGE COLUMN fk fk1 INT NOT NULL;
+
+--echo # Case of when column is implicitly made non-nullable due addition
+--echo # of PRIMARY KEY should be handled in the same way.
+--error ER_FK_COLUMN_NOT_NULL
+ALTER TABLE child_one ADD PRIMARY KEY(fk);
+--error ER_FK_COLUMN_NOT_NULL
+ALTER TABLE child_two ADD PRIMARY KEY(fk);
+DROP TABLES child_one, child_two, parent;
+
+--echo #
+--echo # 7) Test that we check that referencing and referenced column types are
+--echo #    compatible. Such check should be performed for newly created foreign
+--echo #    keys and when we change types of columns in existing foreign keys.
+--echo #
+
+--echo #
+--echo # 7.a) Attempt to create new foreign key between columns of incompatible
+--echo #      types should lead to error. This should happen even in
+--echo #      FOREIGN_KEY_CHECKS=0 mode.
+CREATE TABLE parent (pk INT PRIMARY KEY);
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk CHAR(10), FOREIGN KEY (fk) REFERENCES parent(pk));
+SET FOREIGN_KEY_CHECKS=0;
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk CHAR(10), FOREIGN KEY (fk) REFERENCES parent(pk));
+SET FOREIGN_KEY_CHECKS=1;
+
+CREATE TABLE child (fk CHAR(10));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+ALTER TABLE child ADD FOREIGN KEY (fk) REFERENCES parent(pk);
+SET FOREIGN_KEY_CHECKS=0;
+--error ER_FK_INCOMPATIBLE_COLUMNS
+ALTER TABLE child ADD FOREIGN KEY (fk) REFERENCES parent(pk);
+
+SET FOREIGN_KEY_CHECKS=1;
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE self (pk INT PRIMARY KEY, fk CHAR(10), FOREIGN KEY (fk) REFERENCES self(pk));
+SET FOREIGN_KEY_CHECKS=0;
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE self (pk INT PRIMARY KEY, fk CHAR(10), FOREIGN KEY (fk) REFERENCES self(pk));
+SET FOREIGN_KEY_CHECKS=1;
+
+CREATE TABLE self (pk INT PRIMARY KEY, fk CHAR(10));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+ALTER TABLE self ADD FOREIGN KEY (fk) REFERENCES self(pk);
+SET FOREIGN_KEY_CHECKS=0;
+--error ER_FK_INCOMPATIBLE_COLUMNS
+ALTER TABLE self ADD FOREIGN KEY (fk) REFERENCES self(pk);
+SET FOREIGN_KEY_CHECKS=1;
+DROP TABLES self, child;
+
+--echo #
+--echo # 7.b) Attempt to change referencing or referenced column in existing
+--echo #      foreign key to incompatible type should lead to error. This
+--echo #      should also happen in FOREIGN_KEY_CHECKS=0 mode in general case
+--echo #      (there is exception for charset changes which we test below).
+CREATE TABLE child (fk INT, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+ALTER TABLE child MODIFY fk CHAR(10);
+--error ER_FK_INCOMPATIBLE_COLUMNS
+ALTER TABLE parent MODIFY pk CHAR(10);
+SET FOREIGN_KEY_CHECKS=0;
+--error ER_FK_INCOMPATIBLE_COLUMNS
+ALTER TABLE child MODIFY fk CHAR(10);
+--error ER_FK_INCOMPATIBLE_COLUMNS
+ALTER TABLE parent MODIFY pk CHAR(10);
+SET FOREIGN_KEY_CHECKS=1;
+
+CREATE TABLE self (pk INT PRIMARY KEY, fk INT, FOREIGN KEY (fk) REFERENCES self(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+ALTER TABLE self MODIFY fk CHAR(10);
+--error ER_FK_INCOMPATIBLE_COLUMNS
+ALTER TABLE self MODIFY pk CHAR(10);
+SET FOREIGN_KEY_CHECKS=0;
+--error ER_FK_INCOMPATIBLE_COLUMNS
+ALTER TABLE self MODIFY fk CHAR(10);
+--error ER_FK_INCOMPATIBLE_COLUMNS
+ALTER TABLE self MODIFY pk CHAR(10);
+SET FOREIGN_KEY_CHECKS=1;
+
+--echo # Modifying types of both referencing and referenced columns to
+--echo # to compatible types is OK. However FOREIGN_KEY_CHECKS=0 is needed
+--echo # to avoid error about possible FK violation due to data conversion.
+SET FOREIGN_KEY_CHECKS=0;
+ALTER TABLE self MODIFY pk CHAR(10), MODIFY fk CHAR(10);
+SET FOREIGN_KEY_CHECKS=1;
+DROP TABLES child, parent, self;
+
+--echo #
+--echo # 7.c) Test compatibility checks for multi-column foreign keys.
+CREATE TABLE parent (pk1 INT, pk2 INT, PRIMARY KEY (pk1, pk2));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk1 INT, fk2 CHAR(10), FOREIGN KEY (fk1, fk2) REFERENCES parent(pk1, pk2));
+CREATE TABLE child (fk1 INT, fk2 CHAR(10));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+ALTER TABLE child ADD FOREIGN KEY (fk1, fk2) REFERENCES parent(pk1, pk2);
+DROP TABLE child;
+
+CREATE TABLE child (fk1 INT, fk2 INT, FOREIGN KEY (fk1, fk2) REFERENCES parent(pk1, pk2));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+ALTER TABLE child MODIFY fk2 CHAR(10);
+--error ER_FK_INCOMPATIBLE_COLUMNS
+ALTER TABLE parent MODIFY pk2 CHAR(10);
+DROP TABLE child, parent;
+
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE self (pk1 INT, pk2 INT, fk1 INT, fk2 CHAR(10), PRIMARY KEY (pk1, pk2),
+                   FOREIGN KEY (fk1, fk2) REFERENCES self(pk1, pk2));
+CREATE TABLE self (pk1 INT, pk2 INT, fk1 INT, fk2 CHAR(10), PRIMARY KEY (pk1, pk2));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+ALTER TABLE self ADD FOREIGN KEY (fk1, fk2) REFERENCES self(pk1, pk2);
+DROP TABLE self;
+
+CREATE TABLE self (pk1 INT, pk2 INT, fk1 INT, fk2 INT, PRIMARY KEY (pk1, pk2),
+                   FOREIGN KEY (fk1, fk2) REFERENCES self(pk1, pk2));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+ALTER TABLE self MODIFY fk2 CHAR(10);
+--error ER_FK_INCOMPATIBLE_COLUMNS
+ALTER TABLE self MODIFY pk2 CHAR(10);
+DROP TABLE self;
+
+--echo #
+--echo # 7.d) It should be impossible to create foreign keys with incompatible
+--echo #      column types by adding parent to previously orphan foreign key.
+SET FOREIGN_KEY_CHECKS=0;
+CREATE TABLE child (fk CHAR(10), FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE parent (pk INT PRIMARY KEY);
+CREATE TABLE parent0 (pk INT PRIMARY KEY);
+--error ER_FK_INCOMPATIBLE_COLUMNS
+ALTER TABLE parent0 RENAME TO parent;
+--error ER_FK_INCOMPATIBLE_COLUMNS
+ALTER TABLE parent0 RENAME TO parent, ADD COLUMN j INT;
+--error ER_FK_INCOMPATIBLE_COLUMNS
+RENAME TABLE parent0 TO parent;
+--disable_testcase Bug#28608460
+CREATE TABLE parent (pk INT PRIMARY KEY) ENGINE=MyISAM;
+ALTER TABLE parent ENGINE=InnoDB;
+--enable_testcase
+DROP TABLES child, parent0;
+SET FOREIGN_KEY_CHECKS=1;
+
+--echo #
+--echo # 7.e) Test how compatibility rules work for various types.
+--echo #      Different engines have different rules, so the below
+--echo #      part of test is specific to InnoDB.
+--echo #
+--echo # We don't check compatibility for BLOB based types as they only
+--echo # support prefix indexes which are not usable for foreign keys.
+--echo # Also we don't provide coverage for legacy types.
+
+--echo #
+--echo # 7.e.I) For integer types both type size and signedness should match.
+CREATE TABLE parent (pk INT PRIMARY KEY);
+--echo # Foreign keys over integer types are supported.
+CREATE TABLE child (fk INT, FOREIGN KEY (fk) REFERENCES parent(pk));
+DROP TABLE child;
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk TINYINT, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk BIGINT, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk INT UNSIGNED, FOREIGN KEY (fk) REFERENCES parent(pk));
+ALTER TABLE parent MODIFY pk INT UNSIGNED;
+CREATE TABLE child (fk INT UNSIGNED, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+ALTER TABLE child MODIFY fk INT;
+DROP TABLE child, parent;
+--echo # Integer types are not compatible with most of other types
+--echo # (we check types with same storage requirements as INT below).
+CREATE TABLE parent (pk INT PRIMARY KEY);
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk BINARY(4), FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk VARBINARY(3), FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk FLOAT, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk DECIMAL(8,0), FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk TIMESTAMP, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk BIT(32), FOREIGN KEY (fk) REFERENCES parent(pk));
+--echo # Oddly enough, some integer types are compatible with some temporal
+--echo # types, enums and sets. However, this is probably a bug and not a
+--echo # feature, so we don't test it here.
+DROP TABLE parent;
+
+--echo #
+--echo # 7.e.II) For floating point types only the exact type matters.
+CREATE TABLE parent (pk DOUBLE PRIMARY KEY);
+--echo # Though using such types in foreign key is EXTREMELY bad idea they
+--echo # are supported.
+CREATE TABLE child (fk DOUBLE, FOREIGN KEY (fk) REFERENCES parent(pk));
+DROP TABLE child;
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk FLOAT, FOREIGN KEY (fk) REFERENCES parent(pk));
+--echo # Signedness doesn't matter.
+CREATE TABLE child (fk DOUBLE UNSIGNED, FOREIGN KEY (fk) REFERENCES parent(pk));
+DROP TABLES child, parent;
+--echo # Floating point types are not compatible with other types.
+--echo # (we check types with same storage requirements as FLOAT below).
+CREATE TABLE parent (pk FLOAT PRIMARY KEY);
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk INT, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk BINARY(4), FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk VARBINARY(3), FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk DECIMAL(8,0), FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk TIMESTAMP, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk TIME(2), FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk BIT(32), FOREIGN KEY (fk) REFERENCES parent(pk));
+DROP TABLE parent;
+
+--echo #
+--echo # 7.e.III) Compatibility rules for DECIMAL type are broken.
+--echo #
+--echo #          InnoDB considers this type to be binary string type.
+--echo #          So it doesn't take into account precision and scale.
+--echo #          And it is hard to imagine that comparing binary strings
+--echo #          representing DECIMAL(10,9) and DECIMAL(10,1) can work
+--echo #          correctly. Making this type compatible with other binary
+--echo #          string types, some temporals and BIT type is probably a
+--echo #          bad idea too.
+CREATE TABLE parent (pk DECIMAL(6,2) PRIMARY KEY);
+--echo # Foreign keys over DECIMAL columns are supported.
+CREATE TABLE child (fk DECIMAL(6,2), FOREIGN KEY (fk) REFERENCES parent(pk));
+DROP TABLE child;
+--echo # Signedness doesn't matter.
+CREATE TABLE child (fk DECIMAL(6,2) UNSIGNED, FOREIGN KEY (fk) REFERENCES parent(pk));
+DROP TABLE child;
+--echo # DECIMAL type is not compatible with many other types.
+--echo # (we check types with same storage requirements as DECIMAL(6,2) below).
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk INT, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk CHAR(4) CHARACTER SET latin1, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk VARCHAR(3) CHARACTER SET latin1, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk FLOAT, FOREIGN KEY (fk) REFERENCES parent(pk));
+DROP TABLE parent;
+
+--echo #
+--echo # 7.e.IV) All string types are compatible with each other provided
+--echo #         that charset matches (there are exceptions to the latter
+--echo #         rule, see below).
+CREATE TABLE parent (pk CHAR(10) PRIMARY KEY);
+--echo # Difference in size doesn't matter.
+CREATE TABLE child (fk CHAR(100), FOREIGN KEY (fk) REFERENCES parent(pk));
+--echo # Difference in type doesn't matter
+DROP TABLE child;
+CREATE TABLE child (fk VARCHAR(100), FOREIGN KEY (fk) REFERENCES parent(pk));
+DROP TABLES child, parent;
+--echo # Even VARCHARs which use different number of bytes to store length
+--echo # are compatible.
+CREATE TABLE parent (pk VARCHAR(10) PRIMARY KEY);
+CREATE TABLE child (fk VARCHAR(100), FOREIGN KEY (fk) REFERENCES parent(pk));
+DROP TABLE child, parent;
+--echo # However both columns must use the same collation.
+CREATE TABLE parent (pk VARCHAR(10) CHARACTER SET utf8mb4 PRIMARY KEY);
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk VARCHAR(100) CHARACTER SET latin1, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk VARCHAR(100) COLLATE utf8mb4_bin, FOREIGN KEY (fk) REFERENCES parent(pk));
+--echo # Binary strings are not compatible with non-binary strings.
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk VARBINARY(40), FOREIGN KEY (fk) REFERENCES parent(pk));
+DROP TABLE parent;
+--echo # But all binary string types are compatible.
+CREATE TABLE parent (pk VARBINARY(10) PRIMARY KEY);
+CREATE TABLE child (fk BINARY(100), FOREIGN KEY (fk) REFERENCES parent(pk));
+DROP TABLES child, parent;
+--echo # Non-binary string types are incompatible with non-string types.
+CREATE TABLE parent (pk CHAR(4) CHARACTER SET latin1 PRIMARY KEY);
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk INT, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk FLOAT, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk DECIMAL(8,0), FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk TIMESTAMP, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk TIME(2), FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk BIT(32), FOREIGN KEY (fk) REFERENCES parent(pk));
+ALTER TABLE parent MODIFY pk CHAR(1) CHARACTER SET latin1;
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk YEAR, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk ENUM('a') CHARACTER SET latin1, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk SET('a') CHARACTER SET latin1, FOREIGN KEY (fk) REFERENCES parent(pk));
+DROP TABLE parent;
+--echo # Binary string types are incompatible with many non-string types.
+CREATE TABLE parent (pk BINARY(4) PRIMARY KEY);
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk INT, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk FLOAT, FOREIGN KEY (fk) REFERENCES parent(pk));
+ALTER TABLE parent MODIFY pk BINARY(1);
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk YEAR, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk ENUM('a') CHARACTER SET binary, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk SET('a') CHARACTER SET binary, FOREIGN KEY (fk) REFERENCES parent(pk));
+--echo # Since we think that binary string compatibility with DECIMAL and some temporal types
+--echo # is probably a bug, we don't cover it here.
+DROP TABLE parent;
+
+--echo #
+--echo # 7.e.V) Compatibility rules for some of temporal types are broken.
+--echo #
+--echo #        InnoDB considers TIME, TIMESTAMP and DATETIME types to be
+--echo #        binary strings. As result they are compatible with each other
+--echo #        (no matter what scale is used), binary string, DECIMAL and BIT
+--echo #        types, which makes little sense.
+--echo #        YEAR and DATE types are considered to be integer types which
+--echo #        makes them compatible with some other integer types, enums and
+--echo #        sets, which is probably bad idea too.
+--echo #
+--echo #        YEAR and DATE are only compatible with itself (and integer types,
+--echo #        enums and sets with the same storage size which is probably a bug);
+CREATE TABLE parent(pk DATE PRIMARY KEY);
+CREATE TABLE child (fk DATE, FOREIGN KEY (fk) REFERENCES parent(pk));
+DROP TABLE child;
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk YEAR, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk BINARY(3), FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk VARBINARY(2), FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk FLOAT, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk DECIMAL(6,0), FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk TIME(0), FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk TIMESTAMP, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk BIT(24), FOREIGN KEY (fk) REFERENCES parent(pk));
+DROP TABLE parent;
+--echo #        TIME, TIMESTAMP and DATETIME types are compatible only
+--echo #        with other types which InnoDB considers binary strings.
+--echo #        Their scale doesn't matter (which is probably a bug).
+CREATE TABLE parent (pk TIMESTAMP PRIMARY KEY);
+CREATE TABLE child (fk TIMESTAMP, FOREIGN KEY (fk) REFERENCES parent(pk));
+DROP TABLE child;
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk INT, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk CHAR(4) CHARACTER SET latin1, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk VARCHAR(3) CHARACTER SET latin1, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk FLOAT, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk DATE, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk ENUM('a'), FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk SET('a'), FOREIGN KEY (fk) REFERENCES parent(pk));
+DROP TABLE parent;
+
+--echo #
+--echo # 7.e.VI) Columns of ENUM type are compatible if storage size is
+--echo #         the same.
+--echo #
+--echo # They are also compatible with some integer types, but it is not
+--echo # clear if it is a bug or feature.
+--echo #
+CREATE TABLE parent(pk ENUM('a') PRIMARY KEY);
+--echo # Foreign key over ENUMs are supported, element names and count do
+--echo # not matter provided that storage size is the same.
+CREATE TABLE child (fk ENUM('b','c'), FOREIGN KEY (fk) REFERENCES parent(pk));
+DROP TABLE child;
+--echo # Storage size should match.
+--let $x100enum =`WITH RECURSIVE gen (num, el) AS (SELECT 1, CAST('\'a1\'' AS CHAR(2048)) UNION SELECT num+1, CONCAT(el,',\'a',num+1,'\'') FROM gen WHERE num <= 256) SELECT el FROM gen WHERE num = 256`
+--error ER_FK_INCOMPATIBLE_COLUMNS
+--eval CREATE TABLE child (fk ENUM($x100enum), FOREIGN KEY (fk) REFERENCES parent(pk))
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk DATE, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk BINARY(1), FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk VARBINARY(1), FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk FLOAT, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk DECIMAL(2,0), FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk TIME, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk TIMESTAMP, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk BIT(8), FOREIGN KEY (fk) REFERENCES parent(pk));
+DROP TABLE parent;
+
+--echo #
+--echo # 7.e.VII) Columns of SET type are compatible if storage size is
+--echo #          the same.
+--echo #
+--echo # They are also compatible with some integer types, but it is not
+--echo # clear if it is a bug or feature.
+--echo #
+CREATE TABLE parent(pk SET('a') PRIMARY KEY);
+--echo # Foreign key over SETs are supported, element names and count do
+--echo # not matter provided that storage size is the same.
+CREATE TABLE child (fk SET('b','c'), FOREIGN KEY (fk) REFERENCES parent(pk));
+DROP TABLE child;
+--echo # Storage size should match.
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk SET('a1','a2','a3','a4','a5','a6','a7','a8','a9'), FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk DATE, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk BINARY(1), FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk VARBINARY(1), FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk FLOAT, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk DECIMAL(2,0), FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk TIME, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk TIMESTAMP, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk BIT(8), FOREIGN KEY (fk) REFERENCES parent(pk));
+DROP TABLE parent;
+
+--echo #
+--echo # 7.e.VIII) Columns of BIT type are compatible with each other
+--echo #           independently of size.
+--echo #
+--echo # They are considered binary strings so compatible with other
+--echo # binary string types (which might make sense). They are also
+--echo # compatible with some temporals and DECIMAL type, which makes
+--echo # little sense.
+CREATE TABLE parent(pk BIT(32) PRIMARY KEY);
+--echo # Column size doesn't matter.
+CREATE TABLE child (fk BIT(10), FOREIGN KEY (fk) REFERENCES parent(pk));
+DROP TABLE child;
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk INT, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk DATE, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk CHAR(4) CHARACTER SET latin1, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk VARCHAR(3) CHARACTER SET latin1, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk FLOAT, FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk ENUM('a'), FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk SET('a'), FOREIGN KEY (fk) REFERENCES parent(pk));
+DROP TABLE parent;
+
+--echo #
+--echo # 7.e.IX) In FOREIGN_KEY_CHECKS=0 mode InnoDB allows to change charsets
+--echo #         of string columns in existing foreign keys. Allowing such
+--echo #         temporary discrepancies is necessary as in general case there
+--echo #         is no way to change charset of both child and parent columns
+--echo #         simultaneously. Such discrepancies are still prohibited
+--echo #         in newly created foreign keys.
+CREATE TABLE parent (pk VARCHAR(10) CHARACTER SET latin1 PRIMARY KEY);
+CREATE TABLE child (fk VARCHAR(20) CHARACTER SET latin1,
+                    FOREIGN KEY (fk) REFERENCES parent(pk));
+SET FOREIGN_KEY_CHECKS=0;
+ALTER TABLE parent MODIFY pk VARCHAR(10) CHARACTER SET utf8mb4;
+ALTER TABLE child MODIFY fk VARCHAR(20) CHARACTER SET utf8mb4;
+ALTER TABLE child MODIFY fk VARCHAR(20) CHARACTER SET latin1;
+ALTER TABLE parent MODIFY pk VARCHAR(10) CHARACTER SET latin1;
+DROP TABLE child;
+--echo # Adding new foreign key with discrepancies is not allowed
+--echo # even in FOREIGN_KEY_CHECKS=0 mode.
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE child (fk VARCHAR(20) CHARACTER SET utf8mb4,
+                    FOREIGN KEY (fk) REFERENCES parent(pk));
+CREATE TABLE child (fk VARCHAR(20) CHARACTER SET utf8mb4);
+--error ER_FK_INCOMPATIBLE_COLUMNS
+ALTER TABLE child ADD FOREIGN KEY (fk) REFERENCES parent(pk);
+DROP TABLE child, parent;
+--echo # One cannot create such discrepancy when adding parent to
+--echo # orphan foreign key.
+CREATE TABLE child (fk VARCHAR(20) CHARACTER SET latin1,
+                    FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+CREATE TABLE parent (pk VARCHAR(10) CHARACTER SET utf8mb4 PRIMARY KEY);
+CREATE TABLE parent0 (pk VARCHAR(10) CHARACTER SET utf8mb4 PRIMARY KEY);
+--error ER_FK_INCOMPATIBLE_COLUMNS
+RENAME TABLE parent0 TO parent;
+DROP TABLES child, parent0;
+--echo # This exception doesn't apply to binary strings though.
+CREATE TABLE parent (pk VARCHAR(10) CHARACTER SET binary PRIMARY KEY);
+CREATE TABLE child (fk VARCHAR(20) CHARACTER SET binary,
+                    FOREIGN KEY (fk) REFERENCES parent(pk));
+--error ER_FK_INCOMPATIBLE_COLUMNS
+ALTER TABLE parent MODIFY pk VARCHAR(10) CHARACTER SET utf8mb4;
+--error ER_FK_INCOMPATIBLE_COLUMNS
+ALTER TABLE child MODIFY fk VARCHAR(20) CHARACTER SET utf8mb4;
+SET FOREIGN_KEY_CHECKS=1;
+DROP TABLES child, parent;
+
+
+--echo #
+--echo # WL#8910: Ensure foreign key error does not reveal information about
+--echo #          parent table for which user has no access privileges.
+--echo #
+
+--echo #Set up tables.
+CREATE TABLE t1(fld1 INT PRIMARY KEY, fld2 INT) ENGINE=INNODB;
+CREATE TABLE t2(fld1 INT PRIMARY KEY, fld2 INT, CONSTRAINT fk2
+FOREIGN KEY (fld1) REFERENCES t1 (fld1)) ENGINE=InnoDB;
+CREATE TABLE t3(fld1 INT PRIMARY KEY, fld2 INT) ENGINE=InnoDB;
+
+--echo # Set up stored routines
+CREATE PROCEDURE p1() SQL SECURITY INVOKER INSERT INTO t2 (fld1, fld2) VALUES (1, 2);
+CREATE PROCEDURE p2() SQL SECURITY DEFINER INSERT INTO t2 (fld1, fld2) VALUES (1, 2);
+DELIMITER |;
+CREATE FUNCTION f1() RETURNS INT SQL SECURITY INVOKER
+BEGIN
+  INSERT INTO t2 (fld1, fld2) VALUES (1, 2);
+  RETURN 0;
+END|
+
+CREATE FUNCTION f2() RETURNS INT SQL SECURITY DEFINER
+BEGIN
+  INSERT INTO t2 (fld1, fld2) VALUES (1, 2);
+  RETURN 0;
+END|
+
+DELIMITER ;|
+
+--echo # Set up views.
+CREATE SQL SECURITY INVOKER VIEW v1 AS SELECT * FROM t2;
+CREATE SQL SECURITY DEFINER VIEW v2 AS SELECT * FROM t2;
+
+--echo # Set up users and permissions.
+CREATE USER user1@localhost;
+CREATE USER user2@localhost;
+CREATE USER user3@localhost;
+GRANT INSERT (fld1, fld2) ON t2 TO user1@localhost;
+GRANT INSERT ON v1 TO user2@localhost;
+GRANT INSERT ON v2 TO user2@localhost;
+GRANT SET_USER_ID ON *.* TO user2@localhost;
+GRANT EXECUTE ON PROCEDURE p1 TO user2@localhost;
+GRANT EXECUTE ON PROCEDURE p2 TO user2@localhost;
+GRANT EXECUTE ON FUNCTION f1 TO user2@localhost;
+GRANT EXECUTE ON FUNCTION f2 TO user2@localhost;
+
+--enable_connect_log
+
+connect (con1, localhost, user1,,test);
+--echo # Without patch, reveals parent table's information.
+--error ER_NO_REFERENCED_ROW
+INSERT INTO t2 (fld1, fld2) VALUES (1, 2);
+
+--echo # Warning displayed does not reveal parent table information.
+INSERT IGNORE INTO t2 (fld1, fld2) VALUES (1, 2);
+SHOW WARNINGS;
+
+connection default;
+GRANT SELECT ON t1 TO user1@localhost;
+
+connection con1;
+--error ER_NO_REFERENCED_ROW_2
+INSERT INTO t2 (fld1, fld2) VALUES (1, 2);
+
+connection default;
+ALTER TABLE t2 ADD CONSTRAINT fk3 FOREIGN KEY (fld2) REFERENCES t3(fld1);
+
+connection con1;
+--echo # Without patch, reveals parent table's information.
+--error ER_NO_REFERENCED_ROW
+INSERT INTO t2 (fld1, fld2) VALUES (1, 2);
+
+--echo # Warning displayed does not reveal parent table information.
+INSERT IGNORE INTO t2 (fld1, fld2) VALUES (1, 2);
+SHOW WARNINGS;
+
+connection default;
+GRANT SELECT ON t3 TO user1@localhost;
+
+connection con1;
+--error ER_NO_REFERENCED_ROW_2
+INSERT INTO t2 (fld1, fld2) VALUES (1, 2);
+
+connection default;
+GRANT INSERT (fld1, fld2) ON t2 TO user2@localhost;
+GRANT CREATE ROUTINE ON test.* TO user2@localhost;
+GRANT CREATE VIEW ON test.* TO user2@localhost;
+
+--echo # Tests where DML reports FK constraint failure within Stored Routines.
+connect (con2, localhost, user2,,test);
+
+--echo # The SQL security for p1 is invoker where invoker lacks permission
+--echo # to parent table, hence parent table information is not displayed.
+--error ER_NO_REFERENCED_ROW
+CALL p1();
+
+--echo # The SQL security p2 is definer, where the definer has access privilege
+--echo # to the parent table, hence parent table information is displayed.
+--error ER_NO_REFERENCED_ROW_2
+CALL p2();
+
+--echo # The SQL security for f1 is invoker where invoker lacks permission
+--echo # to parent table, hence parent table information is not displayed.
+--error ER_NO_REFERENCED_ROW
+SELECT f1();
+
+--echo # The SQL security f2 is definer, where the definer has access privilege
+--echo # to the parent table, hence parent table information is displayed.
+--error ER_NO_REFERENCED_ROW_2
+SELECT f2();
+
+--echo # Test for DMLs on VIEWS.
+
+--echo # The invoker does not have access to the parent table, hence the parent
+--echo # table information is not displayed.
+--error ER_NO_REFERENCED_ROW
+INSERT INTO v1 VALUES (1, 2);
+
+--echo # DML on view executed within the definer context where the invoker does
+--echo # not have access to the parent table, hence the parent table information
+--echo # is not displayed.
+--error ER_NO_REFERENCED_ROW
+INSERT INTO v2 VALUES (1, 2);
+
+connection default;
+GRANT SELECT ON t1 TO user2@localhost;
+GRANT SELECT ON t3 TO user2@localhost;
+
+connection con2;
+--echo # DML on view executed within the definer context where the invoker
+--echo # has access to the parent table, hence the parent table information
+--echo # is displayed.
+--error ER_NO_REFERENCED_ROW_2
+INSERT INTO v2 VALUES (1, 2);
+
+--echo # Tests with SET_USER_ID
+
+--echo # Set up stored routines and views by user with SET_USER_ID
+--echo # privilege.
+
+CREATE DEFINER=root@localhost PROCEDURE p3() SQL SECURITY DEFINER
+INSERT INTO t2 (fld1, fld2) VALUES (1, 2);
+
+DELIMITER |;
+CREATE DEFINER=root@localhost FUNCTION f3() RETURNS
+INT SQL SECURITY DEFINER
+BEGIN
+  INSERT INTO t2 (fld1, fld2) VALUES (1, 2);
+  RETURN 0;
+END|
+
+DELIMITER ;|
+
+CREATE DEFINER=root@localhost SQL SECURITY DEFINER VIEW v3 AS
+SELECT * FROM t2;
+
+--echo # Grant privileges for user3.
+connection default;
+GRANT EXECUTE ON PROCEDURE p3 TO user3@localhost;
+GRANT EXECUTE ON FUNCTION f3 TO user3@localhost;
+GRANT INSERT ON v3 TO user3@localhost;
+GRANT SELECT ON t1 TO user3@localhost;
+GRANT SELECT ON t3 TO user3@localhost;
+
+connect (con3, localhost, user3,,test);
+
+--echo # Since the execution happens in the definer 'root' user
+--echo # context, the parent table informaton is exposed.
+--error ER_NO_REFERENCED_ROW_2
+CALL p3();
+
+--error ER_NO_REFERENCED_ROW_2
+SELECT f3();
+
+--error ER_NO_REFERENCED_ROW_2
+INSERT INTO v3 VALUES(4, 5);
+
+--echo # Cleanup
+connection default;
+disconnect con1;
+disconnect con2;
+disconnect con3;
+DROP VIEW v1, v2, v3;
+DROP TABLE t2, t3, t1;
+DROP USER user1@localhost;
+DROP USER user2@localhost;
+DROP USER user3@localhost;
+DROP PROCEDURE p1;
+DROP PROCEDURE p2;
+DROP PROCEDURE p3;
+DROP FUNCTION f1;
+DROP FUNCTION f2;
+DROP FUNCTION f3;
+
+--disable_connect_log
+--echo #
+--echo # Bug #28122781  FOREIGN KEY REFERENCE OPTION RESTRICT IGNORED AFTER MYSQLDUMP AND RELOAD.
+--echo #
+
+CREATE TABLE t1 (
+  id INT NOT NULL AUTO_INCREMENT PRIMARY KEY
+);
+
+CREATE TABLE t2 (
+  t1_id INT NOT NULL,
+  FOREIGN KEY t2_fk(t1_id)
+  REFERENCES t1(id) ON UPDATE RESTRICT
+);
+
+CREATE TABLE t3 (
+  t1_id INT NOT NULL,
+  FOREIGN KEY t3_fk(t1_id)
+  REFERENCES t1(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE t4 (
+  t1_id INT NOT NULL,
+  FOREIGN KEY t4_fk(t1_id)
+  REFERENCES t1(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+
+SHOW CREATE TABLE t1;
+SHOW CREATE TABLE t2;
+SHOW CREATE TABLE t3;
+SHOW CREATE TABLE t4;
+
+SELECT *  FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS WHERE
+TABLE_NAME IN ('t1', 't2', 't3', 't4');
+
+--echo # dump tables t1, t2, t3, t3
+--exec $MYSQL_DUMP test t1 t2 t3 t4 > $MYSQLTEST_VARDIR/tmp/testing.sql
+
+DROP TABLE t1, t2, t3, t4;
+
+--echo # reload dump
+--exec $MYSQL test < $MYSQLTEST_VARDIR/tmp/testing.sql
+
+SHOW CREATE TABLE t1;
+SHOW CREATE TABLE t2;
+SHOW CREATE TABLE t3;
+SHOW CREATE TABLE t4;
+
+SELECT *  FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS WHERE
+TABLE_NAME IN ('t1', 't2', 't3', 't4');
+
+DROP TABLE t1, t2, t3, t4;
+--remove_file $MYSQLTEST_VARDIR/tmp/testing.sql
+
+
+--echo #
+--echo # Bug #27353767 "FOREIGN KEY IS ALWAYS IN LOWER CASE".
+--echo #
+--echo # Check that the way in which referencing and referenced column names in
+--echo # foreign key definition are stored and shown in SHOW CREATE TABLE output
+--echo # and I_S tables is with 5.7 and earlier versions.
+
+--echo #
+--echo # We always use version of name of referencing column which comes from
+--echo # the definition of referencing table and not version from FOREIGN KEY
+--echo # clause.
+--echo # If referenced table exists than we use version of referenced column
+--echo # name which comes from its definition, and not version from FOREIGN KEY
+--echo # clause.
+CREATE TABLE parent (Pk VARCHAR(10) PRIMARY KEY);
+CREATE TABLE child (Fk VARCHAR(10), FOREIGN KEY (fK) REFERENCES parent(pK));
+SHOW CREATE TABLE child;
+SELECT column_name, referenced_column_name FROM information_schema.key_column_usage
+  WHERE referenced_table_schema='test' AND referenced_table_name='parent';
+DROP TABLE child;
+CREATE TABLE child (Fk VARCHAR(10));
+ALTER TABLE child ADD FOREIGN KEY (fK) REFERENCES parent(pK);
+SHOW CREATE TABLE child;
+SELECT column_name, referenced_column_name FROM information_schema.key_column_usage
+  WHERE referenced_table_schema='test' AND referenced_table_name='parent';
+
+--echo # Ditto for self-referencing tables.
+CREATE TABLE self (Pk VARCHAR(10) PRIMARY KEY, Fk VARCHAR(10),
+                   FOREIGN KEY (fK) REFERENCES self(pK));
+SHOW CREATE TABLE self;
+SELECT column_name, referenced_column_name FROM information_schema.key_column_usage
+  WHERE referenced_table_schema='test' AND referenced_table_name='self';
+DROP TABLE self;
+CREATE TABLE self (Pk VARCHAR(10) PRIMARY KEY, Fk VARCHAR(10));
+ALTER TABLE self ADD FOREIGN KEY (fK) REFERENCES self(pK);
+SHOW CREATE TABLE self;
+SELECT column_name, referenced_column_name FROM information_schema.key_column_usage
+  WHERE referenced_table_schema='test' AND referenced_table_name='self';
+
+--echo #
+--echo # If column name is changed (even to equivalent one) then the name shown
+--echo # in foreign key definition is updated too.
+ALTER TABLE parent CHANGE COLUMN Pk PK VARCHAR(20);
+SHOW CREATE TABLE child;
+SELECT column_name, referenced_column_name FROM information_schema.key_column_usage
+  WHERE referenced_table_schema='test' AND referenced_table_name='parent';
+ALTER TABLE child CHANGE COLUMN Fk FK VARCHAR(20);
+SHOW CREATE TABLE child;
+SELECT column_name, referenced_column_name FROM information_schema.key_column_usage
+  WHERE referenced_table_schema='test' AND referenced_table_name='parent';
+
+--echo # Ditto for self-referencing tables.
+ALTER TABLE self CHANGE COLUMN Pk PK VARCHAR(20);
+SHOW CREATE TABLE self;
+SELECT column_name, referenced_column_name FROM information_schema.key_column_usage
+  WHERE referenced_table_schema='test' AND referenced_table_name='self';
+ALTER TABLE self CHANGE COLUMN Fk FK VARCHAR(20);
+SHOW CREATE TABLE self;
+SELECT column_name, referenced_column_name FROM information_schema.key_column_usage
+  WHERE referenced_table_schema='test' AND referenced_table_name='self';
+DROP TABLE self;
+
+--echo #
+--echo # Referenced column names are preserved when referenced table is dropped
+--echo # (which is possible in FOREIGN_KEY_CHECKS = 0 mode).
+SET FOREIGN_KEY_CHECKS=0;
+DROP TABLE parent;
+SHOW CREATE TABLE child;
+SELECT column_name, referenced_column_name FROM information_schema.key_column_usage
+  WHERE referenced_table_schema='test' AND referenced_table_name='parent';
+
+--echo #
+--echo # Addition of parent doesn't change the referenced column names.
+CREATE TABLE parent (pk VARCHAR(10) PRIMARY KEY);
+SHOW CREATE TABLE child;
+SELECT column_name, referenced_column_name FROM information_schema.key_column_usage
+  WHERE referenced_table_schema='test' AND referenced_table_name='parent';
+DROP TABLES child, parent;
+
+--echo #
+--echo # We use version of referenced column name coming from FOREIGN KEY clause
+--echo # when orphan foreign key is created (as referenced table doesn't exist).
+--echo #
+--echo # Oddly, 5.7 uses version of referencing column name coming from FOREIGN
+--echo # KEY clause when orphan FK is added via ALTER TABLE (but not CREATE
+--echo # TABLE). This means that in 5.7 there is discrepancy between CREATE and
+--echo # ALTER TABLE behavior in this case.
+--echo # In 8.0 we are consistent and stick to CREATE TABLE behavior in such
+--echo # cases.
+CREATE TABLE child (Fk VARCHAR(10), FOREIGN KEY (fK) REFERENCES parent(pK));
+SHOW CREATE TABLE child;
+SELECT column_name, referenced_column_name FROM information_schema.key_column_usage
+  WHERE referenced_table_schema='test' AND referenced_table_name='parent';
+DROP TABLE child;
+CREATE TABLE child (Fk VARCHAR(10));
+ALTER TABLE child ADD FOREIGN KEY (fK) REFERENCES parent(pK);
+SHOW CREATE TABLE child;
+SELECT column_name, referenced_column_name FROM information_schema.key_column_usage
+  WHERE referenced_table_schema='test' AND referenced_table_name='parent';
+
+--echo #
+--echo # Addition of parent doesn't change the referenced column names.
+CREATE TABLE parent (pk VARCHAR(10) PRIMARY KEY);
+SHOW CREATE TABLE child;
+SELECT column_name, referenced_column_name FROM information_schema.key_column_usage
+  WHERE referenced_table_schema='test' AND referenced_table_name='parent';
+DROP TABLES child, parent;
+
+
+--echo #
+--echo # Tests for bug#28608460 "POSSIBLE TO ADD INCONSISTENT PARENT TO ORPHAN
+--echo #                         FOREIGN KEY IF SE CHANGED".
+--echo #
+
+--echo #
+--echo # Check that consistency checks are performed when we add parent
+--echo # table to previously orphan foreign key by changing table storage
+--echo # engine.
+SET FOREIGN_KEY_CHECKS=0;
+CREATE TABLE child (fk INT, FOREIGN KEY(fk) REFERENCES parent (pk));
+CREATE TABLE parent (pk INT) ENGINE=MyISAM;
+--error ER_FK_NO_INDEX_PARENT
+ALTER TABLE parent ENGINE=InnoDB;
+DROP TABLE parent;
+CREATE TABLE parent (a INT) ENGINE=MyISAM;
+--error ER_FK_NO_COLUMN_PARENT
+ALTER TABLE parent ENGINE=InnoDB;
+DROP TABLE parent;
+CREATE TABLE parent (pk BIGINT PRIMARY KEY) ENGINE=MyISAM;
+--error ER_FK_INCOMPATIBLE_COLUMNS
+ALTER TABLE parent ENGINE=InnoDB;
+DROP TABLE parent;
+
+--echo #
+--echo # This should work for ALTER TABLE that combines change of SE
+--echo # with renaming of table.
+CREATE TABLE parent0 (pk INT) ENGINE=MyISAM;
+--error ER_FK_NO_INDEX_PARENT
+ALTER TABLE parent0 ENGINE=InnoDB, RENAME TO parent;
+DROP TABLE parent0;
+
+--echo #
+--echo # ALTER TABLE which combines change of SE and renaming of the
+--echo # table is executed as if we separately did change of SE and
+--echo # renamed table after that. I.e. consistency checks are also
+--echo # performed for orphan foreign keys which are associated with
+--echo # old table name.
+CREATE TABLE parent (pk INT) ENGINE=MyISAM;
+--error ER_FK_NO_INDEX_PARENT
+ALTER TABLE parent ENGINE=InnoDB, RENAME TO parent0;
+DROP TABLE parent;
+
+--echo #
+--echo # Check that unique constraint name is correctly updated when parent
+--echo # table is added to orphan foreign key by changing table SE.
+CREATE TABLE parent (pk INT, UNIQUE u(pk)) ENGINE=MyISAM;
+SELECT referenced_table_name, unique_constraint_name FROM
+  information_schema.referential_constraints WHERE table_name = 'child';
+ALTER TABLE parent ENGINE=InnoDB;
+SELECT referenced_table_name, unique_constraint_name FROM
+  information_schema.referential_constraints WHERE table_name = 'child';
+DROP TABLE parent;
+
+--echo #
+--echo # Since ALTER TABLE which combines change of SE and renaming of the
+--echo # table is executed as if we separately did change of SE and
+--echo # renamed table after that, the referenced table name should
+--echo # be updated too.
+CREATE TABLE parent (pk INT PRIMARY KEY) ENGINE=MyISAM;
+SELECT referenced_table_name, unique_constraint_name FROM
+  information_schema.referential_constraints WHERE table_name = 'child';
+ALTER TABLE parent ENGINE=InnoDB, RENAME TO parent0;
+SELECT referenced_table_name, unique_constraint_name FROM
+  information_schema.referential_constraints WHERE table_name = 'child';
+RENAME TABLE parent0 TO parent;
+DROP TABLES parent;
+
+--echo #
+--echo # Check that under LOCK TABLES, when adding parent for previously orphan
+--echo # foreign key by SE change, we check locks on child tables.
+CREATE TABLE parent (pk INT PRIMARY KEY) ENGINE=MyISAM;
+LOCK TABLES parent WRITE;
+--error ER_TABLE_NOT_LOCKED
+ALTER TABLE parent ENGINE=InnoDB;
+UNLOCK TABLES;
+LOCK TABLES child READ, parent WRITE;
+--error ER_TABLE_NOT_LOCKED_FOR_WRITE
+ALTER TABLE parent ENGINE=InnoDB;
+UNLOCK TABLES;
+LOCK TABLES child WRITE, parent WRITE;
+ALTER TABLE parent ENGINE=InnoDB;
+UNLOCK TABLES;
+DROP TABLES child, parent;
+SET FOREIGN_KEY_CHECKS=1;

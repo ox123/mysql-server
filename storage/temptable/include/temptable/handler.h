@@ -152,7 +152,7 @@ class Handler : public ::handler {
       TABLE_SHARE *table_share);
 
   /** Destructor. */
-  ~Handler();
+  ~Handler() override;
 
   /** Create an in-memory table.
    * @return 0 on success or HA_ERR_* error code */
@@ -389,7 +389,8 @@ class Handler : public ::handler {
 
   /** Get the maximum supported indexed columns length.
    * @return max length */
-  uint max_supported_key_part_length() const override;
+  uint max_supported_key_part_length(
+      HA_CREATE_INFO *create_info) const override;
 
 #if 0
   /* This is disabled in order to mimic ha_heap's implementation which relies on
@@ -534,7 +535,11 @@ class Handler : public ::handler {
  private:
   void opened_table_validate();
 
-  bool is_field_type_supported(const Field &mysql_field) const;
+  /** Checks if field has a fixed size.
+   * @return true if field has fixed size, false otherwise */
+  bool is_field_type_fixed_size(
+      /** [in] Field descriptor. */
+      const Field &mysql_field) const;
 
   /** Currently opened table, or `nullptr` if none is opened. */
   Table *m_opened_table;
@@ -592,7 +597,7 @@ inline void Handler::opened_table_validate() {
   DBUG_ASSERT(m_opened_table->mysql_table_share() == handler::table->s);
 }
 
-inline bool Handler::is_field_type_supported(const Field &mysql_field) const {
+inline bool Handler::is_field_type_fixed_size(const Field &mysql_field) const {
   switch (mysql_field.type()) {
     case MYSQL_TYPE_BLOB:
     case MYSQL_TYPE_GEOMETRY:
@@ -600,6 +605,7 @@ inline bool Handler::is_field_type_supported(const Field &mysql_field) const {
     case MYSQL_TYPE_LONG_BLOB:
     case MYSQL_TYPE_MEDIUM_BLOB:
     case MYSQL_TYPE_TINY_BLOB:
+    case MYSQL_TYPE_VARCHAR:
       return false;
     default:
       return true;

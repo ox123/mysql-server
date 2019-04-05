@@ -1,7 +1,7 @@
 #ifndef SQL_ITEM_REGEXP_FUNC_H_
 #define SQL_ITEM_REGEXP_FUNC_H_
 
-/* Copyright (c) 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -62,7 +62,8 @@
 
 #include <string>
 
-#include "my_dbug.h"  // DBUG_ASSERT
+#include "my_dbug.h"      // DBUG_ASSERT
+#include "my_inttypes.h"  // MY_INT32_NUM_DECIMAL_DIGITS
 #include "sql/item_cmpfunc.h"
 #include "sql/item_strfunc.h"
 #include "sql/mysqld.h"  // make_unique_destroy_only
@@ -209,7 +210,8 @@ class Item_func_regexp : public Item_func {
   /// The position in the argument list of match_parameter.
   virtual int match_arg_pos() const = 0;
 
- protected:
+  bool set_pattern();
+
   unique_ptr_destroy_only<regexp::Regexp_facade> m_facade;
 
  private:
@@ -227,6 +229,8 @@ class Item_func_regexp_instr : public Item_func_regexp {
       : Item_func_regexp(pos, args) {
     set_data_type_longlong();
   }
+
+  Item_result result_type() const override { return INT_RESULT; }
 
   bool fix_fields(THD *thd, Item **arguments) override;
 
@@ -277,8 +281,10 @@ class Item_func_regexp_like : public Item_func_regexp {
  public:
   Item_func_regexp_like(const POS &pos, PT_item_list *args)
       : Item_func_regexp(pos, args) {
-    set_data_type_longlong();
+    set_data_type_bool();
   }
+
+  Item_result result_type() const override { return INT_RESULT; }
 
   String *val_str(String *str) override { return convert_int_to_str(str); }
 
@@ -316,6 +322,8 @@ class Item_func_regexp_replace : public Item_func_regexp {
       : Item_func_regexp(pos, args) {
     set_data_type_string_init();
   }
+
+  Item_result result_type() const override { return STRING_RESULT; }
 
   bool resolve_type(THD *) final;
 
@@ -355,6 +363,8 @@ class Item_func_regexp_substr : public Item_func_regexp {
       : Item_func_regexp(pos, args) {
     set_data_type_string_init();
   }
+
+  Item_result result_type() const override { return STRING_RESULT; }
 
   bool resolve_type(THD *) final;
 

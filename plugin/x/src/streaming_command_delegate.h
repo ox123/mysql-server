@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0,
@@ -22,14 +22,18 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
-#ifndef _XPL_STREAMING_COMMAND_DELEGATE_H_
-#define _XPL_STREAMING_COMMAND_DELEGATE_H_
+#ifndef PLUGIN_X_SRC_STREAMING_COMMAND_DELEGATE_H_
+#define PLUGIN_X_SRC_STREAMING_COMMAND_DELEGATE_H_
+
+#include <vector>
 
 #include <sys/types.h>
 
 #include "my_inttypes.h"
 #include "plugin/x/ngs/include/ngs/command_delegate.h"
+#include "plugin/x/ngs/include/ngs/interface/notice_output_queue_interface.h"
 #include "plugin/x/ngs/include/ngs/protocol/message.h"
+#include "plugin/x/ngs/include/ngs/protocol/metadata_builder.h"
 
 namespace ngs {
 
@@ -41,7 +45,9 @@ namespace xpl {
 
 class Streaming_command_delegate : public ngs::Command_delegate {
  public:
-  Streaming_command_delegate(ngs::Protocol_encoder_interface *proto);
+  Streaming_command_delegate(ngs::Protocol_encoder_interface *proto,
+                             ngs::Notice_output_queue_interface *notice_queue);
+  Streaming_command_delegate(const Streaming_command_delegate &) = default;
   virtual ~Streaming_command_delegate();
 
   void set_compact_metadata(bool flag) { m_compact_metadata = flag; }
@@ -49,7 +55,7 @@ class Streaming_command_delegate : public ngs::Command_delegate {
 
   virtual void reset();
 
- private:
+ protected:
   virtual int start_result_metadata(uint num_cols, uint flags,
                                     const CHARSET_INFO *resultcs);
   virtual int field_metadata(struct st_send_field *field,
@@ -73,17 +79,21 @@ class Streaming_command_delegate : public ngs::Command_delegate {
   virtual void handle_ok(uint server_status, uint statement_warn_count,
                          ulonglong affected_rows, ulonglong last_insert_id,
                          const char *const message);
+  void handle_error(uint sql_errno, const char *const err_msg,
+                    const char *const sqlstate);
 
   virtual enum cs_text_or_binary representation() const {
     return CS_BINARY_REPRESENTATION;
   }
 
   ngs::Protocol_encoder_interface *m_proto;
-  const CHARSET_INFO *m_resultcs;
-  bool m_sent_result;
-  bool m_compact_metadata;
+  const CHARSET_INFO *m_resultcs = nullptr;
+  ngs::Notice_output_queue_interface *m_notice_queue = nullptr;
+  bool m_sent_result = false;
+  bool m_compact_metadata = false;
+  bool m_handle_ok_received = false;
 };
 
 }  // namespace xpl
 
-#endif  //  _XPL_STREAMING_COMMAND_DELEGATE_H_
+#endif  //  PLUGIN_X_SRC_STREAMING_COMMAND_DELEGATE_H_

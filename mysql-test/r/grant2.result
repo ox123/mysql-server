@@ -119,9 +119,9 @@ create database mysqltest_1;
 create user mysqltest_1@localhost;
 grant select, insert, update on `mysqltest\_1`.* to mysqltest_1@localhost;
 set sql_log_off = 1;
-ERROR 42000: Access denied; you need (at least one of) the SUPER or SYSTEM_VARIABLES_ADMIN privilege(s) for this operation
+ERROR 42000: Access denied; you need (at least one of) the SUPER, SYSTEM_VARIABLES_ADMIN or SESSION_VARIABLES_ADMIN privilege(s) for this operation
 set sql_log_bin = 0;
-ERROR 42000: Access denied; you need (at least one of) the SUPER or SYSTEM_VARIABLES_ADMIN privilege(s) for this operation
+ERROR 42000: Access denied; you need (at least one of) the SUPER, SYSTEM_VARIABLES_ADMIN or SESSION_VARIABLES_ADMIN privilege(s) for this operation
 delete from mysql.user where user like 'mysqltest\_1';
 delete from mysql.db where user like 'mysqltest\_1';
 drop database mysqltest_1;
@@ -625,8 +625,8 @@ a
 SHOW COLUMNS FROM t1;
 Field	Type	Null	Key	Default	Extra
 SHOW KEYS FROM t3;
-Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible
-t3	0	PRIMARY	1	a	A	0	NULL	NULL		BTREE			YES
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t3	0	PRIMARY	1	a	A	0	NULL	NULL		BTREE			YES	NULL
 #
 # SHOW CREATE TABLE.
 #

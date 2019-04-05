@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0,
@@ -22,8 +22,8 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
-#ifndef XPLUGIN_XCL_MESSAGE_HELPERS_H_
-#define XPLUGIN_XCL_MESSAGE_HELPERS_H_
+#ifndef UNITTEST_GUNIT_XPLUGIN_XCL_MESSAGE_HELPERS_H_
+#define UNITTEST_GUNIT_XPLUGIN_XCL_MESSAGE_HELPERS_H_
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -338,6 +338,89 @@ struct Client_message<::Mysqlx::Connection::Close> {
   static ::Mysqlx::Connection::Close make_required() { return {}; }
 };
 
+template <>
+struct Client_message<::Mysqlx::Prepare::Prepare> {
+  enum { id = ::Mysqlx::ClientMessages::PREPARE_PREPARE };
+
+  static ::Mysqlx::ClientMessages::Type get_id() {
+    return static_cast<::Mysqlx::ClientMessages::Type>(id);
+  }
+
+  static ::Mysqlx::Prepare::Prepare make_required() {
+    ::Mysqlx::Prepare::Prepare msg;
+    msg.set_stmt_id(1);
+    auto stmt = msg.mutable_stmt();
+    stmt->set_type(Mysqlx::Prepare::Prepare_OneOfMessage::FIND);
+    *stmt->mutable_find() =
+        Client_message<Mysqlx::Crud::Find>().make_required();
+    return msg;
+  }
+};
+
+template <>
+struct Client_message<::Mysqlx::Prepare::Execute> {
+  enum { id = ::Mysqlx::ClientMessages::PREPARE_EXECUTE };
+
+  static ::Mysqlx::ClientMessages::Type get_id() {
+    return static_cast<::Mysqlx::ClientMessages::Type>(id);
+  }
+
+  static ::Mysqlx::Prepare::Execute make_required() {
+    ::Mysqlx::Prepare::Execute msg;
+    msg.set_stmt_id(1);
+    return msg;
+  }
+};
+
+template <>
+struct Client_message<::Mysqlx::Prepare::Deallocate> {
+  enum { id = ::Mysqlx::ClientMessages::PREPARE_DEALLOCATE };
+
+  static ::Mysqlx::ClientMessages::Type get_id() {
+    return static_cast<::Mysqlx::ClientMessages::Type>(id);
+  }
+
+  static ::Mysqlx::Prepare::Deallocate make_required() {
+    ::Mysqlx::Prepare::Deallocate msg;
+    msg.set_stmt_id(1);
+    return msg;
+  }
+};
+
+template <>
+struct Client_message<::Mysqlx::Cursor::Open> {
+  enum { id = ::Mysqlx::ClientMessages::CURSOR_OPEN };
+
+  static ::Mysqlx::ClientMessages::Type get_id() {
+    return static_cast<::Mysqlx::ClientMessages::Type>(id);
+  }
+
+  static ::Mysqlx::Cursor::Open make_required() {
+    ::Mysqlx::Cursor::Open msg;
+    msg.set_cursor_id(1);
+    auto statement = msg.mutable_stmt();
+    statement->set_type(Mysqlx::Cursor::Open::OneOfMessage::PREPARE_EXECUTE);
+    *statement->mutable_prepare_execute() =
+        Client_message<Mysqlx::Prepare::Execute>().make_required();
+    return msg;
+  }
+};
+
+template <>
+struct Client_message<::Mysqlx::Cursor::Fetch> {
+  enum { id = ::Mysqlx::ClientMessages::CURSOR_FETCH };
+
+  static ::Mysqlx::ClientMessages::Type get_id() {
+    return static_cast<::Mysqlx::ClientMessages::Type>(id);
+  }
+
+  static ::Mysqlx::Cursor::Fetch make_required() {
+    ::Mysqlx::Cursor::Fetch msg;
+    msg.set_cursor_id(1);
+    return msg;
+  }
+};
+
 template <typename Msg>
 struct Server_message {};
 
@@ -459,6 +542,17 @@ struct Server_message<::Mysqlx::Resultset::FetchDone> {
 };
 
 template <>
+struct Server_message<::Mysqlx::Resultset::FetchSuspended> {
+  enum { id = ::Mysqlx::ServerMessages::RESULTSET_FETCH_SUSPENDED };
+
+  static ::Mysqlx::ServerMessages::Type get_id() {
+    return static_cast<::Mysqlx::ServerMessages::Type>(id);
+  }
+
+  static ::Mysqlx::Resultset::FetchSuspended make_required() { return {}; }
+};
+
+template <>
 struct Server_message<::Mysqlx::Resultset::FetchDoneMoreResultsets> {
   enum { id = ::Mysqlx::ServerMessages::RESULTSET_FETCH_DONE_MORE_RESULTSETS };
 
@@ -510,4 +604,4 @@ MATCHER_P(Cmp_msg, n, "") {
 }  // namespace test
 }  // namespace xcl
 
-#endif  // XPLUGIN_XCL_MESSAGE_HELPERS_H_
+#endif  // UNITTEST_GUNIT_XPLUGIN_XCL_MESSAGE_HELPERS_H_

@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2017, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -26,6 +26,7 @@
 #include <ndb_global.h>
 #include <kernel_types.h>
 
+#include "m_ctype.h"
 #include "API.hpp"
 #include <NdbOut.hpp>
 
@@ -198,14 +199,14 @@ NdbEventOperationImpl::~NdbEventOperationImpl()
   DBUG_ENTER("NdbEventOperationImpl::~NdbEventOperationImpl");
   m_magic_number= 0;
 
-#ifndef NDEBUG
-  m_state = (NdbEventOperation::State)0xDead;
-#endif
-
   if (m_oid == ~(Uint32)0)
     DBUG_VOID_RETURN;
 
   stop();
+
+#ifndef NDEBUG
+  m_state = (NdbEventOperation::State)0xDead;
+#endif
   
   if (theMainOp == NULL)
   {
@@ -1423,9 +1424,7 @@ NdbEventBuffer::~NdbEventBuffer()
     const Uint32 unmap_sz = mem_block->alloced_size();
     m_total_alloc -= unmap_sz;
     m_mem_block_head = mem_block->m_next;
-#ifndef NDEBUG
-    memset(mem_block, 0x11, unmap_sz);
-#endif
+    mem_block->destruct();
 
 #if defined(USE_MMAP)
     require(my_munmap(mem_block, unmap_sz) == 0);
@@ -1439,9 +1438,7 @@ NdbEventBuffer::~NdbEventBuffer()
     m_total_alloc -= unmap_sz;
     m_mem_block_free = mem_block->m_next;
     m_mem_block_free_sz -= mem_block->get_size();
-#ifndef NDEBUG
-    memset(mem_block, 0x11, unmap_sz);
-#endif
+    mem_block->destruct();
 
 #if defined(USE_MMAP)
     require(my_munmap(mem_block, unmap_sz) == 0);
@@ -3572,9 +3569,7 @@ void NdbEventBuffer::remove_consumed_memory(MonotonicEpoch consumed_epoch)  //Ne
       const Uint32 alloced_sz = mem_block->alloced_size();
       assert(m_total_alloc >= alloced_sz);
       m_total_alloc -= alloced_sz;
-#ifndef NDEBUG
-      memset(mem_block, 0x11, alloced_sz);
-#endif
+      mem_block->destruct();
 
 #if defined(USE_MMAP)
       require(my_munmap(mem_block, alloced_sz) == 0);
@@ -3607,9 +3602,12 @@ NdbEventBuffer::copy_data(const SubTableData * const sdata, Uint32 len,
     data->sdata->transId2 = ~Uint32(0);
   }
 
-  int i;
-  for (i = 0; i <= 2; i++)
-    memcpy(data->ptr[i].p, ptr[i].p, ptr[i].sz << 2);
+  for (int i = 0; i <= 2; i++) {
+    if (ptr[i].sz > 0) {
+      memcpy(data->ptr[i].p, ptr[i].p, ptr[i].sz << 2);
+    }
+  }
+
   DBUG_RETURN_EVENT(0);
 }
 

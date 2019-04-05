@@ -354,6 +354,15 @@ TRACE
                     "chosen": false,
                     "cause": "not_group_by_or_distinct"
                   } /* group_index_range */,
+                  "skip_scan_range": {
+                    "potential_skip_scan_indexes": [
+                      {
+                        "index": "a",
+                        "usable": false,
+                        "cause": "prefix_not_const_equality"
+                      }
+                    ] /* potential_skip_scan_indexes */
+                  } /* skip_scan_range */,
                   "analyzing_range_alternatives": {
                     "range_scan_alternatives": [
                       {
@@ -416,6 +425,15 @@ TRACE
                 }
               ] /* attached_conditions_summary */
             } /* attaching_conditions_to_tables */
+          },
+          {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t1`",
+                "original_table_condition": "(`t1`.`a` > 0x0c)",
+                "final_table_condition   ": "(`t1`.`a` > 0x0c)"
+              }
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -656,6 +674,20 @@ TRACE
             } /* attaching_conditions_to_tables */
           },
           {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t2`",
+                "original_table_condition": "<if>(is_not_null_compl(t2..t3), (`t2`.`i` = `t1`.`i`), true)",
+                "final_table_condition   ": "<if>(is_not_null_compl(t2..t3), (`t2`.`i` = `t1`.`i`), true)"
+              },
+              {
+                "table": "`t3`",
+                "original_table_condition": "(<if>(found_match(t2..t3), <if>(found_match(t3), isnull(`t3`.`i`), true), true) and <if>(is_not_null_compl(t3), (`t3`.`i` = `t1`.`i`), true))",
+                "final_table_condition   ": "(<if>(found_match(t2..t3), <if>(found_match(t3), isnull(`t3`.`i`), true), true) and <if>(is_not_null_compl(t3), (`t3`.`i` = `t1`.`i`), true))"
+              }
+            ] /* finalizing_table_conditions */
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t1`"
@@ -869,6 +901,10 @@ TRACE
                                 {
                                   "optimizing_distinct_group_by_order_by": {
                                   } /* optimizing_distinct_group_by_order_by */
+                                },
+                                {
+                                  "finalizing_table_conditions": [
+                                  ] /* finalizing_table_conditions */
                                 },
                                 {
                                   "refine_plan": [
@@ -1104,6 +1140,15 @@ TRACE
             } /* optimizing_distinct_group_by_order_by */
           },
           {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t2`",
+                "original_table_condition": "(`t2`.`f2` = `t3`.`f2`)",
+                "final_table_condition   ": "(`t2`.`f2` = `t3`.`f2`)"
+              }
+            ] /* finalizing_table_conditions */
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t1`"
@@ -1171,9 +1216,8 @@ TRACE
               "max_rows_per_buffer": 15,
               "num_rows_estimate": 15,
               "num_rows_found": 4,
-              "num_examined_rows": 4,
               "num_initial_chunks_spilled_to_disk": 0,
-              "sort_buffer_size": "NNN",
+              "peak_memory_used": "NNN",
               "sort_algorithm": "std::sort",
               "unpacked_addon_fields": "using_heap_table",
               "sort_mode": "<varlen_sort_key, rowid>"
@@ -1314,6 +1358,10 @@ TRACE
                   } /* optimizing_distinct_group_by_order_by */
                 },
                 {
+                  "finalizing_table_conditions": [
+                  ] /* finalizing_table_conditions */
+                },
+                {
                   "refine_plan": [
                     {
                       "table": "`t1`"
@@ -1393,6 +1441,10 @@ TRACE
           {
             "optimizing_distinct_group_by_order_by": {
             } /* optimizing_distinct_group_by_order_by */
+          },
+          {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -1806,6 +1858,15 @@ SET @a=(select count(a) from t1 where a>0)	{
                   } /* optimizing_distinct_group_by_order_by */
                 },
                 {
+                  "finalizing_table_conditions": [
+                    {
+                      "table": "`t1`",
+                      "original_table_condition": "(`t1`.`a` > 0)",
+                      "final_table_condition   ": "(`t1`.`a` > 0)"
+                    }
+                  ] /* finalizing_table_conditions */
+                },
+                {
                   "refine_plan": [
                     {
                       "table": "`t1`"
@@ -1944,6 +2005,15 @@ set_case_expr (15) 0 (select count(`a`) from `test`.`t1` where (`a` > 1))	{
                 {
                   "optimizing_distinct_group_by_order_by": {
                   } /* optimizing_distinct_group_by_order_by */
+                },
+                {
+                  "finalizing_table_conditions": [
+                    {
+                      "table": "`t1`",
+                      "original_table_condition": "(`t1`.`a` > 1)",
+                      "final_table_condition   ": "(`t1`.`a` > 1)"
+                    }
+                  ] /* finalizing_table_conditions */
                 },
                 {
                   "refine_plan": [
@@ -2188,6 +2258,10 @@ call p1((select a from t1 limit 1))	{
                   } /* attaching_conditions_to_tables */
                 },
                 {
+                  "finalizing_table_conditions": [
+                  ] /* finalizing_table_conditions */
+                },
+                {
                   "refine_plan": [
                     {
                       "table": "`t1`"
@@ -2340,6 +2414,10 @@ select concat(concat(_latin1'->',f1),_latin1'<-') from t1	{
             } /* attaching_conditions_to_tables */
           },
           {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t1`"
@@ -2468,7 +2546,7 @@ KEY col_varchar_10_utf8_key (col_varchar_10_utf8_key),
 KEY col_int_key (col_int_key)
 );
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 INSERT INTO t2 VALUES ('qykbaqfyhz','l',NULL);
 CREATE TABLE t3 (
 col_int_key INT,
@@ -2478,7 +2556,7 @@ KEY col_varchar_10_utf8_key (col_varchar_10_utf8_key),
 KEY col_varchar_10_latin1_key (col_varchar_10_latin1_key)
 );
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 INSERT INTO t3 VALUES (0,'s','it');
 INSERT INTO t3 VALUES (9,'IQTHK','JCAQM');
 SELECT table2.col_int_key
@@ -2704,7 +2782,11 @@ table3.col_varchar_10_utf8_key	{
                         "group_index_range": {
                           "chosen": false,
                           "cause": "not_single_table"
-                        } /* group_index_range */
+                        } /* group_index_range */,
+                        "skip_scan_range": {
+                          "chosen": false,
+                          "cause": "not_single_table"
+                        } /* skip_scan_range */
                       } /* range_analysis */
                     } /* without_ON_clause */
                   } /* rechecking_index_usage */
@@ -2721,6 +2803,15 @@ table3.col_varchar_10_utf8_key	{
                 }
               ] /* attached_conditions_summary */
             } /* attaching_conditions_to_tables */
+          },
+          {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t2` `table3`",
+                "original_table_condition": "<if>(is_not_null_compl(table3), (convert(NULL using utf8) >= `table3`.`col_varchar_10_utf8_key`), true)",
+                "final_table_condition   ": "<if>(is_not_null_compl(table3), (<cache>(convert(NULL using utf8)) >= `table3`.`col_varchar_10_utf8_key`), true)"
+              }
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -2920,6 +3011,15 @@ from t0 where a in
                 }
               ] /* attached_conditions_summary */
             } /* attaching_conditions_to_tables */
+          },
+          {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t0`",
+                "original_table_condition": "<in_optimizer>(`t0`.`a`,<exists>(/* select#2 */ select (`t2`.`a` + `t3`.`a`) from `t1` join `t2` join `t3` where ((<cache>(`t0`.`a`) = (`t2`.`a` + `t3`.`a`)) and (`t2`.`a` = `t1`.`a`) and (`t3`.`a` = `t1`.`a`))))",
+                "final_table_condition   ": "<in_optimizer>(`t0`.`a`,<exists>(/* select#2 */ select (`t2`.`a` + `t3`.`a`) from `t1` join `t2` join `t3` where ((<cache>(`t0`.`a`) = (`t2`.`a` + `t3`.`a`)) and (`t2`.`a` = `t1`.`a`) and (`t3`.`a` = `t1`.`a`))))"
+              }
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -3524,7 +3624,11 @@ from t0 where a in
                       "group_index_range": {
                         "chosen": false,
                         "cause": "not_single_table"
-                      } /* group_index_range */
+                      } /* group_index_range */,
+                      "skip_scan_range": {
+                        "chosen": false,
+                        "cause": "not_single_table"
+                      } /* skip_scan_range */
                     } /* range_analysis */
                   } /* rechecking_index_usage */
                 }
@@ -3536,14 +3640,33 @@ from t0 where a in
                 },
                 {
                   "table": "`t2`",
-                  "attached": null
+                  "attached": "(`t2`.`a` = `t1`.`a`)"
                 },
                 {
                   "table": "`t3`",
-                  "attached": null
+                  "attached": "(`t3`.`a` = `t1`.`a`)"
                 }
               ] /* attached_conditions_summary */
             } /* attaching_conditions_to_tables */
+          },
+          {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t1`",
+                "original_table_condition": "(<cache>(`t0`.`a`) = (`t1`.`a` + `t1`.`a`))",
+                "final_table_condition   ": "(<cache>(`t0`.`a`) = (`t1`.`a` + `t1`.`a`))"
+              },
+              {
+                "table": "`t2`",
+                "original_table_condition": "(`t2`.`a` = `t1`.`a`)",
+                "final_table_condition   ": null
+              },
+              {
+                "table": "`t3`",
+                "original_table_condition": "(`t3`.`a` = `t1`.`a`)",
+                "final_table_condition   ": null
+              }
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -3769,7 +3892,11 @@ select 497, tmp.ID, NULL from (select 497 as ID, MAX(t3.DATA) as DATA      from 
                         "group_index_range": {
                           "chosen": false,
                           "cause": "not_single_table"
-                        } /* group_index_range */
+                        } /* group_index_range */,
+                        "skip_scan_range": {
+                          "chosen": false,
+                          "cause": "not_single_table"
+                        } /* skip_scan_range */
                       } /* range_analysis */
                     },
                     {
@@ -3961,6 +4088,10 @@ select 497, tmp.ID, NULL from (select 497 as ID, MAX(t3.DATA) as DATA      from 
                 }
               ] /* attached_conditions_summary */
             } /* attaching_conditions_to_tables */
+          },
+          {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -4361,6 +4492,10 @@ link_alias_148._field_156	{
                     "chosen": false,
                     "cause": "not_single_table"
                   } /* group_index_range */,
+                  "skip_scan_range": {
+                    "chosen": false,
+                    "cause": "not_single_table"
+                  } /* skip_scan_range */,
                   "analyzing_range_alternatives": {
                     "range_scan_alternatives": [
                       {
@@ -4432,6 +4567,10 @@ link_alias_148._field_156	{
                     "chosen": false,
                     "cause": "not_single_table"
                   } /* group_index_range */,
+                  "skip_scan_range": {
+                    "chosen": false,
+                    "cause": "not_single_table"
+                  } /* skip_scan_range */,
                   "analyzing_range_alternatives": {
                     "range_scan_alternatives": [
                       {
@@ -4503,6 +4642,10 @@ link_alias_148._field_156	{
                     "chosen": false,
                     "cause": "not_single_table"
                   } /* group_index_range */,
+                  "skip_scan_range": {
+                    "chosen": false,
+                    "cause": "not_single_table"
+                  } /* skip_scan_range */,
                   "analyzing_range_alternatives": {
                     "range_scan_alternatives": [
                       {
@@ -4760,27 +4903,27 @@ link_alias_148._field_156	{
               "attached_conditions_summary": [
                 {
                   "table": "`t4`",
-                  "attached": null
+                  "attached": "<if>(is_not_null_compl(t4), (`t4`.`seq_0_id` = 1), true)"
                 },
                 {
                   "table": "`t7` `link_alias_142`",
-                  "attached": null
+                  "attached": "<if>(is_not_null_compl(link_alias_142), (`link_alias_142`.`t7_id` = `t4`.`seq_1_id`), true)"
                 },
                 {
                   "table": "`t6`",
-                  "attached": null
+                  "attached": "<if>(is_not_null_compl(t6), (`t6`.`seq_0_id` = 1), true)"
                 },
                 {
                   "table": "`t1` `link_alias_133`",
-                  "attached": null
+                  "attached": "<if>(is_not_null_compl(link_alias_133), (`link_alias_133`.`t1_id` = `t6`.`seq_1_id`), true)"
                 },
                 {
                   "table": "`t2`",
-                  "attached": null
+                  "attached": "<if>(is_not_null_compl(t2), (`t2`.`seq_0_id` = 1), true)"
                 },
                 {
                   "table": "`t5` `link_alias_148`",
-                  "attached": null
+                  "attached": "<if>(is_not_null_compl(link_alias_148), (`link_alias_148`.`t5_id` = `t2`.`seq_1_id`), true)"
                 }
               ] /* attached_conditions_summary */
             } /* attaching_conditions_to_tables */
@@ -4823,6 +4966,40 @@ link_alias_148._field_156	{
                 "resulting_clause": ""
               } /* simplifying_group_by */
             } /* optimizing_distinct_group_by_order_by */
+          },
+          {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t4`",
+                "original_table_condition": "<if>(is_not_null_compl(t4), (`t4`.`seq_0_id` = 1), true)",
+                "final_table_condition   ": null
+              },
+              {
+                "table": "`t7` `link_alias_142`",
+                "original_table_condition": "<if>(is_not_null_compl(link_alias_142), (`link_alias_142`.`t7_id` = `t4`.`seq_1_id`), true)",
+                "final_table_condition   ": null
+              },
+              {
+                "table": "`t6`",
+                "original_table_condition": "<if>(is_not_null_compl(t6), (`t6`.`seq_0_id` = 1), true)",
+                "final_table_condition   ": null
+              },
+              {
+                "table": "`t1` `link_alias_133`",
+                "original_table_condition": "<if>(is_not_null_compl(link_alias_133), (`link_alias_133`.`t1_id` = `t6`.`seq_1_id`), true)",
+                "final_table_condition   ": null
+              },
+              {
+                "table": "`t2`",
+                "original_table_condition": "<if>(is_not_null_compl(t2), (`t2`.`seq_0_id` = 1), true)",
+                "final_table_condition   ": null
+              },
+              {
+                "table": "`t5` `link_alias_148`",
+                "original_table_condition": "<if>(is_not_null_compl(link_alias_148), (`link_alias_148`.`t5_id` = `t2`.`seq_1_id`), true)",
+                "final_table_condition   ": null
+              }
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -5035,7 +5212,11 @@ GROUP BY field2 ORDER BY alias1.col_int_key,alias2.pk	{
                   "group_index_range": {
                     "chosen": false,
                     "cause": "not_single_table"
-                  } /* group_index_range */
+                  } /* group_index_range */,
+                  "skip_scan_range": {
+                    "chosen": false,
+                    "cause": "not_single_table"
+                  } /* skip_scan_range */
                 } /* range_analysis */
               }
             ] /* rows_estimation */
@@ -5113,7 +5294,7 @@ GROUP BY field2 ORDER BY alias1.col_int_key,alias2.pk	{
                 },
                 {
                   "table": "`t2` `alias2`",
-                  "attached": null
+                  "attached": "(`alias2`.`pk` = `alias1`.`col_int_key`)"
                 }
               ] /* attached_conditions_summary */
             } /* attaching_conditions_to_tables */
@@ -5145,6 +5326,20 @@ GROUP BY field2 ORDER BY alias1.col_int_key,alias2.pk	{
                 "resulting_clause": "`field2`"
               } /* simplifying_group_by */
             } /* optimizing_distinct_group_by_order_by */
+          },
+          {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t1` `alias1`",
+                "original_table_condition": "(`alias1`.`pk` and (`alias1`.`col_int_key` is not null))",
+                "final_table_condition   ": "(`alias1`.`pk` and (`alias1`.`col_int_key` is not null))"
+              },
+              {
+                "table": "`t2` `alias2`",
+                "original_table_condition": "(`alias2`.`pk` = `alias1`.`col_int_key`)",
+                "final_table_condition   ": null
+              }
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -5211,9 +5406,8 @@ GROUP BY field2 ORDER BY alias1.col_int_key,alias2.pk	{
               "max_rows_per_buffer": 18,
               "num_rows_estimate": 18,
               "num_rows_found": 8,
-              "num_examined_rows": 8,
               "num_initial_chunks_spilled_to_disk": 0,
-              "sort_buffer_size": "NNN",
+              "peak_memory_used": "NNN",
               "sort_algorithm": "std::sort",
               "unpacked_addon_fields": "using_heap_table",
               "sort_mode": "<fixed_sort_key, rowid>"
@@ -5496,6 +5690,10 @@ select * from t1,mysqltest2.t2	{
                 }
               ] /* attached_conditions_summary */
             } /* attaching_conditions_to_tables */
+          },
+          {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [

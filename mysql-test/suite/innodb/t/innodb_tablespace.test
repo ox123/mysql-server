@@ -423,3 +423,17 @@ ALTER TABLE t1 DISCARD TABLESPACE;
 FLUSH TABLES t1 FOR EXPORT;
 UNLOCK TABLES;
 DROP TABLE t1;
+
+--echo #
+--echo # Bug#27903881 [MYSQL 8.0 GA RELEASE & DEBUG BUILD]
+--echo # FIL_SPACE_GET(TABLE->SPACE) != __NULL
+--echo #
+--disable_query_log
+call mtr.add_suppression("\\[Warning\\] Missing .ibd file for table `test`\.`t1` .* ");
+--enable_query_log
+CREATE TABLE t1(c1 INT,c2 CHAR,c3 DATE)PARTITION BY HASH(DAYOFWEEK(c3));
+ALTER TABLE t1 DISCARD TABLESPACE;
+--error ER_TABLESPACE_DISCARDED
+FLUSH TABLES t1 FOR EXPORT;
+UNLOCK TABLES;
+DROP TABLE t1;

@@ -24,6 +24,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
 *****************************************************************************/
 #include "dict0upgrade.h"
+#include <sql_backup_lock.h>
 #include <sql_class.h>
 #include <sql_show.h>
 #include <sql_table.h>
@@ -192,7 +193,7 @@ static dd::Tablespace *dd_upgrade_get_tablespace(
                                     << name;);
 
   /* MDL on tablespace name */
-  if (dd::acquire_exclusive_tablespace_mdl(thd, name, false)) {
+  if (dd_tablespace_get_mdl(name)) {
     ut_a(false);
   }
 
@@ -637,11 +638,11 @@ static void dd_upgrade_process_index(Index dd_index, dict_index_t *index,
   dd_index->set_tablespace_id(dd_space_id);
   dd::Properties &p = dd_index->se_private_data();
 
-  p.set_uint32(dd_index_key_strings[DD_INDEX_ROOT], index->page);
-  p.set_uint64(dd_index_key_strings[DD_INDEX_SPACE_ID], index->space);
-  p.set_uint64(dd_index_key_strings[DD_INDEX_ID], index->id);
-  p.set_uint64(dd_index_key_strings[DD_TABLE_ID], index->table->id);
-  p.set_uint64(dd_index_key_strings[DD_INDEX_TRX_ID], 0);
+  p.set(dd_index_key_strings[DD_INDEX_ROOT], index->page);
+  p.set(dd_index_key_strings[DD_INDEX_SPACE_ID], index->space);
+  p.set(dd_index_key_strings[DD_INDEX_ID], index->id);
+  p.set(dd_index_key_strings[DD_TABLE_ID], index->table->id);
+  p.set(dd_index_key_strings[DD_INDEX_TRX_ID], 0);
 
   if (has_auto_inc) {
     ut_ad(auto_inc_index_name != nullptr);
@@ -698,20 +699,29 @@ static bool dd_upgrade_partitions(THD *thd, const char *norm_name,
                         << "Part table name from server: " << partition_name
                         << " from InnoDB: " << part_table->name.m_name;);
 
+    if (DICT_TF_HAS_SHARED_SPACE(part_table->flags)) {
+      ib::error(ER_IB_MSG_1282)
+          << "Partitioned table '" << part_table->name.m_name
+          << "' is not allowed to use shared tablespace '"
+          << part_table->tablespace << "'. Please move all "
+          << "partitions to file-per-table tablespaces before upgrade.";
+      return (true);
+    }
+
     /* Set table id */
     part_obj->set_se_private_id(part_table->id);
 
     /* Set DATA_DIRECTORY attribute in se_private_data */
     if (DICT_TF_HAS_DATA_DIR(part_table->flags)) {
       ut_ad(dict_table_is_file_per_table(part_table));
-      part_obj->se_private_data().set_bool(
+      part_obj->se_private_data().set(
           dd_table_key_strings[DD_TABLE_DATA_DIRECTORY], true);
     }
 
     /* Set Discarded attribute in DD table se_private_data */
     if (dict_table_is_discarded(part_table)) {
-      part_obj->se_private_data().set_bool(
-          dd_table_key_strings[DD_TABLE_DISCARD], true);
+      part_obj->se_private_data().set(dd_table_key_strings[DD_TABLE_DISCARD],
+                                      true);
     }
 
     dd::Object_id dd_space_id;
@@ -736,7 +746,7 @@ static bool dd_upgrade_partitions(THD *thd, const char *norm_name,
       /* If table is discarded, set discarded attribute in tablespace
       object */
       if (dict_table_is_discarded(part_table)) {
-        dd_tablespace_set_discard(dd_space, true);
+        dd_tablespace_set_state(dd_space, DD_SPACE_STATE_DISCARDED);
         if (dd_client->update(dd_space)) {
           ut_ad(0);
         }
@@ -861,6 +871,12 @@ bool dd_upgrade_table(THD *thd, const char *db_name, const char *table_name,
     return (failure);
   }
 
+  /* Set table id to mysql.columns as runtime */
+  for (auto dd_column : *dd_table->table().columns()) {
+    dd_column->se_private_data().set(dd_index_key_strings[DD_TABLE_ID],
+                                     ib_table->id);
+  }
+
   dd::Object_id dd_space_id;
   if (ib_table->space == SYSTEM_TABLE_SPACE) {
     dd_space_id = dict_sys_t::s_dd_sys_space_id;
@@ -882,7 +898,7 @@ bool dd_upgrade_table(THD *thd, const char *db_name, const char *table_name,
     /* If table is discarded, set discarded attribute in tablespace
     object */
     if (dict_table_is_discarded(ib_table)) {
-      dd_tablespace_set_discard(dd_space, true);
+      dd_tablespace_set_state(dd_space, DD_SPACE_STATE_DISCARDED);
       if (dd_client->update(dd_space)) {
         ut_ad(0);
       }
@@ -894,14 +910,14 @@ bool dd_upgrade_table(THD *thd, const char *db_name, const char *table_name,
   /* Set DATA_DIRECTORY attribute in se_private_data */
   if (DICT_TF_HAS_DATA_DIR(ib_table->flags)) {
     ut_ad(dict_table_is_file_per_table(ib_table));
-    dd_table->se_private_data().set_bool(
+    dd_table->se_private_data().set(
         dd_table_key_strings[DD_TABLE_DATA_DIRECTORY], true);
   }
 
   /* Set Discarded attribute in DD table se_private_data */
   if (dict_table_is_discarded(ib_table)) {
-    dd_table->se_private_data().set_bool(dd_table_key_strings[DD_TABLE_DISCARD],
-                                         true);
+    dd_table->se_private_data().set(dd_table_key_strings[DD_TABLE_DISCARD],
+                                    true);
   }
 
   /* Set row_type */
@@ -1020,14 +1036,20 @@ static uint32_t dd_upgrade_register_tablespace(
   dd_space->set_name(upgrade_space->name);
 
   dd::Properties &p = dd_space->se_private_data();
-  p.set_uint32(dd_space_key_strings[DD_SPACE_ID],
-               static_cast<uint32>(upgrade_space->id));
-  p.set_uint32(dd_space_key_strings[DD_SPACE_FLAGS],
-               static_cast<uint32>(upgrade_space->flags));
-  p.set_uint32(dd_space_key_strings[DD_SPACE_SERVER_VERSION],
-               DD_SPACE_CURRENT_SRV_VERSION);
-  p.set_uint32(dd_space_key_strings[DD_SPACE_VERSION],
-               DD_SPACE_CURRENT_SPACE_VERSION);
+
+  p.set(dd_space_key_strings[DD_SPACE_ID],
+        static_cast<uint32>(upgrade_space->id));
+  p.set(dd_space_key_strings[DD_SPACE_FLAGS],
+        static_cast<uint32>(upgrade_space->flags));
+  p.set(dd_space_key_strings[DD_SPACE_SERVER_VERSION],
+        DD_SPACE_CURRENT_SRV_VERSION);
+  p.set(dd_space_key_strings[DD_SPACE_VERSION], DD_SPACE_CURRENT_SPACE_VERSION);
+
+  dd_space_states state =
+      (fsp_is_undo_tablespace(upgrade_space->id) ? DD_SPACE_STATE_ACTIVE
+                                                 : DD_SPACE_STATE_NORMAL);
+  p.set(dd_space_key_strings[DD_SPACE_STATE], dd_space_state_values[state]);
+
   dd::Tablespace_file *dd_file = dd_space->add_file();
 
   dd_file->set_filename(upgrade_space->path);
@@ -1188,8 +1210,9 @@ int dd_upgrade_tablespace(THD *thd) {
 
 /** Add server version number to tablespace while upgrading.
 @param[in]      space_id              space id of tablespace
+@param[in]      server_version_only   leave space version unchanged
 @return false on success, true on failure. */
-bool upgrade_space_version(const uint32 space_id) {
+bool upgrade_space_version(const uint32 space_id, bool server_version_only) {
   buf_block_t *block;
   page_t *page;
   mtr_t mtr;
@@ -1210,9 +1233,10 @@ bool upgrade_space_version(const uint32 space_id) {
 
   mlog_write_ulint(page + FIL_PAGE_SRV_VERSION, DD_SPACE_CURRENT_SRV_VERSION,
                    MLOG_4BYTES, &mtr);
-
-  mlog_write_ulint(page + FIL_PAGE_SPACE_VERSION,
-                   DD_SPACE_CURRENT_SPACE_VERSION, MLOG_4BYTES, &mtr);
+  if (!server_version_only) {
+    mlog_write_ulint(page + FIL_PAGE_SPACE_VERSION,
+                     DD_SPACE_CURRENT_SPACE_VERSION, MLOG_4BYTES, &mtr);
+  }
 
   mtr_commit(&mtr);
   fil_space_release(space);
@@ -1225,12 +1249,13 @@ bool upgrade_space_version(const uint32 space_id) {
 bool upgrade_space_version(dd::Tablespace *tablespace) {
   uint32 space_id;
 
-  if (tablespace->se_private_data().get_uint32("id", &space_id)) {
+  if (tablespace->se_private_data().get("id", &space_id)) {
     /* error, attribute not found */
     ut_ad(0);
     return (true);
   }
-  return (upgrade_space_version(space_id));
+  /* Upgrade both server and space version */
+  return (upgrade_space_version(space_id, false));
 }
 
 /** Upgrade innodb undo logs after upgrade. Also increment the table_id
@@ -1318,7 +1343,12 @@ static void dd_upgrade_fts_rename_cleanup(bool failed_upgrade) {
       fts_upgrade_rename(ib_table, failed_upgrade);
 
       mutex_enter(&dict_sys->mutex);
-      dict_table_allow_eviction(ib_table);
+
+      /* Do not mark the table ready for eviction if there is
+      a foreign key relationship on this table */
+      if (ib_table->foreign_set.empty() && ib_table->referenced_set.empty()) {
+        dict_table_allow_eviction(ib_table);
+      }
       dict_table_close(ib_table, true, false);
       mutex_exit(&dict_sys->mutex);
     }

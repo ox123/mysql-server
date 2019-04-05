@@ -51,14 +51,15 @@
 #include "my_compiler.h"
 #include "my_inttypes.h"
 #include "my_loglevel.h"
-#include "my_macros.h"
 #include "my_psi_config.h" /* IWYU pragma: keep */
 #include "my_sharedlib.h"
+#include "mysql/components/services/my_io_bits.h"
+#include "mysql/components/services/mysql_cond_bits.h"
+#include "mysql/components/services/mysql_mutex_bits.h"
+#include "mysql/components/services/psi_file_bits.h"
 #include "mysql/components/services/psi_memory_bits.h"
-#include "mysql/psi/mysql_cond.h"  /* mysql_cond_t */
-#include "mysql/psi/mysql_mutex.h" /* mysql_mutex_t */
-#include "mysql/psi/psi_file.h"    /* PSI_file_service_t */
-#include "mysql/psi/psi_stage.h"
+#include "mysql/components/services/psi_stage_bits.h"
+#include "mysql/psi/psi_base.h"
 
 struct CHARSET_INFO;
 struct MY_CHARSET_LOADER;
@@ -75,6 +76,7 @@ struct PSI_rwlock_bootstrap;
 struct PSI_socket_bootstrap;
 struct PSI_stage_bootstrap;
 struct PSI_statement_bootstrap;
+struct PSI_system_bootstrap;
 struct PSI_table_bootstrap;
 struct PSI_thread_bootstrap;
 struct PSI_transaction_bootstrap;
@@ -221,8 +223,7 @@ extern const char *my_progname; /* program-name (printed in errors) */
 extern void (*error_handler_hook)(uint my_err, const char *str, myf MyFlags);
 extern void (*fatal_error_handler_hook)(uint my_err, const char *str,
                                         myf MyFlags);
-extern void (*local_message_hook)(enum loglevel ll, const char *format,
-                                  va_list args);
+extern void (*local_message_hook)(enum loglevel ll, uint ecode, va_list args);
 extern uint my_file_limit;
 extern MYSQL_PLUGIN_IMPORT ulong my_thread_stack_size;
 
@@ -486,8 +487,7 @@ struct ST_FILE_ID {
   ino_t st_ino;
 };
 
-typedef void (*my_error_reporter)(enum loglevel level, const char *format, ...)
-    MY_ATTRIBUTE((format(printf, 2, 3)));
+typedef void (*my_error_reporter)(enum loglevel level, uint ecode, ...);
 
 extern my_error_reporter my_charset_error_reporter;
 
@@ -603,19 +603,12 @@ extern my_off_t my_ftell(FILE *stream);
 #define MAX_SYSLOG_MESSAGE_SIZE 1024
 
 /* Platform-independent SysLog support */
-
-/* facilities on unixoid syslog. harmless on systemd / Win platforms. */
-struct SYSLOG_FACILITY {
-  int id;
-  const char *name;
-};
-extern SYSLOG_FACILITY syslog_facility[];
-
 enum my_syslog_options { MY_SYSLOG_PIDS = 1 };
 
-int my_openlog(const char *eventSourceName, int option, int facility);
-int my_closelog();
-int my_syslog(const CHARSET_INFO *cs, enum loglevel level, const char *msg);
+extern int my_openlog(const char *eventSourceName, int option, int facility);
+extern int my_closelog();
+extern int my_syslog(const CHARSET_INFO *cs, enum loglevel level,
+                     const char *msg);
 
 #ifdef _WIN32
 extern int my_access(const char *path, int amode);
@@ -672,9 +665,8 @@ extern int my_error_register(const char *(*get_errmsg)(int), int first,
 extern bool my_error_unregister(int first, int last);
 extern void my_message(uint my_err, const char *str, myf MyFlags);
 extern void my_message_stderr(uint my_err, const char *str, myf MyFlags);
-void my_message_local_stderr(enum loglevel ll, const char *format, va_list args)
-    MY_ATTRIBUTE((format(printf, 2, 0)));
-extern void my_message_local(enum loglevel ll, const char *format, ...);
+void my_message_local_stderr(enum loglevel, uint ecode, va_list args);
+extern void my_message_local(enum loglevel ll, uint ecode, ...);
 extern bool my_init(void);
 extern void my_end(int infoflag);
 extern char *my_filename(File fd);
@@ -935,36 +927,38 @@ int my_win_translate_command_line_args(const CHARSET_INFO *cs, int *ac,
 #ifdef HAVE_PSI_INTERFACE
 void my_init_mysys_psi_keys(void);
 
-extern MYSQL_PLUGIN_IMPORT PSI_thread_bootstrap *psi_thread_hook;
-extern void set_psi_thread_service(void *psi);
+extern MYSQL_PLUGIN_IMPORT PSI_cond_bootstrap *psi_cond_hook;
+extern void set_psi_cond_service(void *psi);
+extern MYSQL_PLUGIN_IMPORT PSI_data_lock_bootstrap *psi_data_lock_hook;
+extern void set_psi_data_lock_service(void *psi);
+extern MYSQL_PLUGIN_IMPORT PSI_error_bootstrap *psi_error_hook;
+extern void set_psi_error_service(void *psi);
+extern MYSQL_PLUGIN_IMPORT PSI_file_bootstrap *psi_file_hook;
+extern void set_psi_file_service(void *psi);
+extern MYSQL_PLUGIN_IMPORT PSI_idle_bootstrap *psi_idle_hook;
+extern void set_psi_idle_service(void *psi);
+extern MYSQL_PLUGIN_IMPORT PSI_mdl_bootstrap *psi_mdl_hook;
+extern void set_psi_mdl_service(void *psi);
+extern MYSQL_PLUGIN_IMPORT PSI_memory_bootstrap *psi_memory_hook;
+extern void set_psi_memory_service(void *psi);
 extern MYSQL_PLUGIN_IMPORT PSI_mutex_bootstrap *psi_mutex_hook;
 extern void set_psi_mutex_service(void *psi);
 extern MYSQL_PLUGIN_IMPORT PSI_rwlock_bootstrap *psi_rwlock_hook;
 extern void set_psi_rwlock_service(void *psi);
-extern MYSQL_PLUGIN_IMPORT PSI_cond_bootstrap *psi_cond_hook;
-extern void set_psi_cond_service(void *psi);
-extern MYSQL_PLUGIN_IMPORT PSI_file_bootstrap *psi_file_hook;
-extern void set_psi_file_service(void *psi);
 extern MYSQL_PLUGIN_IMPORT PSI_socket_bootstrap *psi_socket_hook;
 extern void set_psi_socket_service(void *psi);
-extern MYSQL_PLUGIN_IMPORT PSI_table_bootstrap *psi_table_hook;
-extern void set_psi_table_service(void *psi);
-extern MYSQL_PLUGIN_IMPORT PSI_mdl_bootstrap *psi_mdl_hook;
-extern void set_psi_mdl_service(void *psi);
-extern MYSQL_PLUGIN_IMPORT PSI_idle_bootstrap *psi_idle_hook;
-extern void set_psi_idle_service(void *psi);
 extern MYSQL_PLUGIN_IMPORT PSI_stage_bootstrap *psi_stage_hook;
 extern void set_psi_stage_service(void *psi);
 extern MYSQL_PLUGIN_IMPORT PSI_statement_bootstrap *psi_statement_hook;
 extern void set_psi_statement_service(void *psi);
+extern MYSQL_PLUGIN_IMPORT PSI_system_bootstrap *psi_system_hook;
+extern void set_psi_system_service(void *psi);
+extern MYSQL_PLUGIN_IMPORT PSI_table_bootstrap *psi_table_hook;
+extern void set_psi_table_service(void *psi);
+extern MYSQL_PLUGIN_IMPORT PSI_thread_bootstrap *psi_thread_hook;
+extern void set_psi_thread_service(void *psi);
 extern MYSQL_PLUGIN_IMPORT PSI_transaction_bootstrap *psi_transaction_hook;
 extern void set_psi_transaction_service(void *psi);
-extern MYSQL_PLUGIN_IMPORT PSI_memory_bootstrap *psi_memory_hook;
-extern void set_psi_memory_service(void *psi);
-extern MYSQL_PLUGIN_IMPORT PSI_error_bootstrap *psi_error_hook;
-extern void set_psi_error_service(void *psi);
-extern MYSQL_PLUGIN_IMPORT PSI_data_lock_bootstrap *psi_data_lock_hook;
-extern void set_psi_data_lock_service(void *psi);
 #endif /* HAVE_PSI_INTERFACE */
 
 struct MYSQL_FILE;

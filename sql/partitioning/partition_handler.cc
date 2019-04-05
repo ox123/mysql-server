@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2005, 2017, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2005, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1815,6 +1815,9 @@ int Partition_helper::ph_index_init_setup(uint inx, bool sorted) {
 
   DBUG_ASSERT(inx != MAX_KEY);
   DBUG_PRINT("info", ("inx %u sorted %u", inx, sorted));
+
+  set_partition_read_set();
+
   m_part_spec.start_part = NO_CURRENT_PART_ID;
   m_start_key.length = 0;
   m_ordered = sorted;
@@ -1839,15 +1842,6 @@ int Partition_helper::ph_index_init_setup(uint inx, bool sorted) {
     DBUG_PRINT("info", ("Clustered pk, using pk as secondary cmp"));
     m_curr_key_info[1] = m_table->key_info + m_table->s->primary_key;
   }
-
-  /*
-    Some handlers only read fields as specified by the bitmap for the
-    read set. For partitioned handlers we always require that the
-    fields of the partition functions are read such that we can
-    calculate the partition id to place updated and deleted records.
-  */
-  if (m_handler->get_lock_type() == F_WRLCK)
-    bitmap_union(m_table->read_set, &m_part_info->full_part_field_set);
 
   DBUG_RETURN(0);
 }
@@ -2795,14 +2789,16 @@ int Partition_helper::handle_ordered_next(uchar *buf, bool is_next_same) {
   else
     read_buf = rec_buf;
 
-  if (m_index_scan_type == PARTITION_READ_RANGE) {
-    error = read_range_next_in_part(
-        part_id, read_buf == m_table->record[0] ? NULL : read_buf);
-  } else if (!is_next_same)
-    error = index_next_in_part(part_id, read_buf);
-  else
+  if (is_next_same) {
     error = index_next_same_in_part(part_id, read_buf, m_start_key.key,
                                     m_start_key.length);
+  } else if (m_index_scan_type == PARTITION_READ_RANGE) {
+    error = read_range_next_in_part(
+        part_id, read_buf == m_table->record[0] ? NULL : read_buf);
+  } else {
+    error = index_next_in_part(part_id, read_buf);
+  }
+
   if (error) {
     if (error == HA_ERR_END_OF_FILE) {
       /* Return next buffered row */

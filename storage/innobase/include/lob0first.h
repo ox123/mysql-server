@@ -216,12 +216,7 @@ struct first_page_t : public basic_page_t {
 
   /** Free the first page.  This is done when all other LOB pages have
   been freed. */
-  void dealloc() {
-    ut_ad(m_mtr != nullptr);
-    ut_ad(get_next_page() == FIL_NULL);
-    btr_page_free_low(m_index, m_block, ULINT_UNDEFINED, m_mtr);
-    m_block = nullptr;
-  }
+  void dealloc();
 
   /** Check if the index list is empty or not.
   @return true if empty, false otherwise. */
@@ -348,6 +343,18 @@ struct first_page_t : public basic_page_t {
   buf_block_t *replace(trx_t *trx, ulint offset, const byte *&ptr, ulint &want,
                        mtr_t *mtr);
 
+  /** Replace data in the page inline.
+  @param[in]	trx	the current transaction.
+  @param[in]	offset	the location where replace operation starts.
+  @param[in,out]	ptr	the buffer containing new data. after the
+                          call it will point to remaining data.
+  @param[in,out]	want	requested amount of data to be replaced.
+                          after the call it will contain amount of
+                          data yet to be replaced.
+  @param[in]	mtr	the mini-transaction context.*/
+  void replace_inline(trx_t *trx, ulint offset, const byte *&ptr, ulint &want,
+                      mtr_t *mtr);
+
   ulint get_data_len() const {
     return (mach_read_from_4(frame() + OFFSET_DATA_LEN));
   }
@@ -376,7 +383,7 @@ struct first_page_t : public basic_page_t {
   of uncompressed LOB.
   @return Number of bytes available for LOB data. */
   static ulint max_space_available() {
-    const uint16_t index_array_size = node_count() * index_entry_t::SIZE;
+    const ulint index_array_size = node_count() * index_entry_t::SIZE;
 
     return (payload() - index_array_size);
   }
@@ -402,7 +409,7 @@ struct first_page_t : public basic_page_t {
   byte *data_begin() const {
     ut_ad(buf_block_get_page_zip(m_block) == NULL);
 
-    constexpr uint16_t index_array_size = node_count() * index_entry_t::SIZE;
+    constexpr ulint index_array_size = node_count() * index_entry_t::SIZE;
 
     return (frame() + LOB_PAGE_DATA + index_array_size);
   }
@@ -415,10 +422,11 @@ struct first_page_t : public basic_page_t {
   bool validate() const;
 #endif /* UNIV_DEBUG */
 
-  ulint get_page_type() { return (basic_page_t::get_page_type()); }
+  page_type_t get_page_type() { return (basic_page_t::get_page_type()); }
 
-  static ulint get_page_type(dict_index_t *index, const page_id_t &page_id,
-                             const page_size_t &page_size) {
+  static page_type_t get_page_type(dict_index_t *index,
+                                   const page_id_t &page_id,
+                                   const page_size_t &page_size) {
     mtr_t local_mtr;
     mtr_start(&local_mtr);
     first_page_t first(&local_mtr, index);
@@ -429,6 +437,6 @@ struct first_page_t : public basic_page_t {
   }
 };
 
-}; /* namespace lob */
+} /* namespace lob */
 
 #endif /* lob0first_h */

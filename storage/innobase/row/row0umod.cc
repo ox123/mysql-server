@@ -39,8 +39,6 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "ha_prototypes.h"
 #include "log0log.h"
 #include "mach0data.h"
-#include "my_compiler.h"
-#include "my_inttypes.h"
 #include "que0que.h"
 #include "row0log.h"
 #include "row0row.h"
@@ -53,8 +51,8 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "trx0trx.h"
 #include "trx0undo.h"
 
-#include <debug_sync.h>
 #include "current_thd.h"
+#include "debug_sync.h"
 
 /* Considerations on undoing a modify operation.
 (1) Undoing a delete marking: all index records should be found. Some of
@@ -1027,9 +1025,10 @@ static void row_undo_mod_parse_undo_rec(undo_node_t *node, MDL_ticket **mdl) {
   ulint type;
   ulint cmpl_info;
   bool dummy_extern;
+  type_cmpl_t type_cmpl;
 
   ptr = trx_undo_rec_get_pars(node->undo_rec, &type, &cmpl_info, &dummy_extern,
-                              &undo_no, &table_id);
+                              &undo_no, &table_id, type_cmpl);
   node->rec_type = type;
 
   /* Although table IX lock is held now, DROP TABLE could still be
@@ -1063,7 +1062,8 @@ static void row_undo_mod_parse_undo_rec(undo_node_t *node, MDL_ticket **mdl) {
 
   ptr = trx_undo_update_rec_get_update(ptr, clust_index, type, trx_id, roll_ptr,
                                        info_bits, node->trx, node->heap,
-                                       &(node->update));
+                                       &(node->update), nullptr, type_cmpl);
+
   node->new_trx_id = trx_id;
   node->cmpl_info = cmpl_info;
 
@@ -1129,7 +1129,6 @@ dberr_t row_undo_mod(undo_node_t *node, /*!< in: row undo node */
       break;
     default:
       ut_error;
-      err = DB_ERROR;
   }
 
   if (err == DB_SUCCESS) {

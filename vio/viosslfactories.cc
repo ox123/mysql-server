@@ -33,6 +33,7 @@
 #include "mysql/psi/mysql_rwlock.h"
 #endif
 #include "mysql/service_mysql_alloc.h"
+#include "mysys_err.h"
 #include "vio/vio_priv.h"
 
 #ifdef HAVE_OPENSSL
@@ -159,7 +160,9 @@ static void report_errors() {
 
   DBUG_ENTER("report_errors");
 
-  while ((l = ERR_get_error_line_data(&file, &line, &data, &flags)) != 0) {
+  // Note: WolfSSL returns failures to read data as negative int values
+  while (static_cast<int>(
+             l = ERR_get_error_line_data(&file, &line, &data, &flags)) > 0) {
 #ifndef DBUG_OFF /* Avoid warning */
     char buf[200];
     DBUG_PRINT("error", ("OpenSSL: %s:%s:%d:%s\n", ERR_error_string(l, buf),
@@ -203,7 +206,7 @@ static int vio_set_cert_stuff(SSL_CTX *ctx, const char *cert_file,
     DBUG_PRINT("error",
                ("%s from file '%s'", sslGetErrString(*error), cert_file));
     DBUG_EXECUTE("error", ERR_print_errors_fp(DBUG_FILE););
-    my_message_local(ERROR_LEVEL, "SSL error: %s from '%s'",
+    my_message_local(ERROR_LEVEL, EE_SSL_ERROR_FROM_FILE,
                      sslGetErrString(*error), cert_file);
     DBUG_RETURN(1);
   }
@@ -214,7 +217,7 @@ static int vio_set_cert_stuff(SSL_CTX *ctx, const char *cert_file,
     DBUG_PRINT("error",
                ("%s from file '%s'", sslGetErrString(*error), key_file));
     DBUG_EXECUTE("error", ERR_print_errors_fp(DBUG_FILE););
-    my_message_local(ERROR_LEVEL, "SSL error: %s from '%s'",
+    my_message_local(ERROR_LEVEL, EE_SSL_ERROR_FROM_FILE,
                      sslGetErrString(*error), key_file);
     DBUG_RETURN(1);
   }
@@ -227,7 +230,7 @@ static int vio_set_cert_stuff(SSL_CTX *ctx, const char *cert_file,
     *error = SSL_INITERR_NOMATCH;
     DBUG_PRINT("error", ("%s", sslGetErrString(*error)));
     DBUG_EXECUTE("error", ERR_print_errors_fp(DBUG_FILE););
-    my_message_local(ERROR_LEVEL, "SSL error: %s", sslGetErrString(*error));
+    my_message_local(ERROR_LEVEL, EE_SSL_ERROR, sslGetErrString(*error));
     DBUG_RETURN(1);
   }
 
@@ -465,6 +468,13 @@ int set_fips_mode(const uint fips_mode, char err_string[OPENSSL_ERROR_LENGTH]) {
 EXIT:
   return rc;
 }
+
+/**
+  Get fips mode from openssl library,
+
+  @returns openssl current fips mode
+*/
+uint get_fips_mode() { return FIPS_mode(); }
 #endif
 
 long process_tls_version(const char *tls_version) {
@@ -569,8 +579,6 @@ static struct st_VioSSLFd *new_VioSSLFd(
     my_free(ssl_fd);
     DBUG_RETURN(0);
   }
-
-  SSL_CTX_set_options(ssl_fd->ssl_context, ssl_ctx_options);
 
   /*
     We explicitly prohibit weak ciphers.
@@ -678,6 +686,8 @@ static struct st_VioSSLFd *new_VioSSLFd(
     DBUG_RETURN(0);
   }
   DH_free(dh);
+
+  SSL_CTX_set_options(ssl_fd->ssl_context, ssl_ctx_options);
 
   /* set IO functions used by wolfSSL */
 #ifdef HAVE_WOLFSSL

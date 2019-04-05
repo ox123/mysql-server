@@ -39,7 +39,6 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "ha_prototypes.h"
 
 #include "dict0types.h"
-#include "sql/handler.h"
 #include "trx0types.h"
 #include "ut0new.h"
 
@@ -205,8 +204,10 @@ dberr_t trx_prepare_for_mysql(trx_t *trx);
 /** This function is used to find number of prepared transactions and
  their transaction objects for a recovery.
  @return number of prepared transactions */
-int trx_recover_for_mysql(XID *xid_list, /*!< in/out: prepared transactions */
-                          ulint len);    /*!< in: number of slots in xid_list */
+int trx_recover_for_mysql(
+    XA_recover_txn *txn_list, /*!< in/out: prepared transactions */
+    ulint len,                /*!< in: number of slots in xid_list */
+    MEM_ROOT *mem_root);      /*!< in: memory for table names */
 /** This function is used to find one X/Open XA distributed transaction
  which is in the prepared state
  @return trx or NULL; on match, the trx->xid will be invalidated;
@@ -400,6 +401,16 @@ Kill all transactions that are blocking this transaction from acquiring locks.
 
 void trx_kill_blocking(trx_t *trx);
 
+/** Provides an id of the transaction which does not change over time.
+Contrast this with trx->id and trx_get_id_for_print(trx) which change value once
+a transaction can no longer be treated as read-only and becomes read-write.
+@param[in]  trx   The transaction for which you want an immutable id
+@return the transaction's immutable id */
+UNIV_INLINE
+uint64_t trx_immutable_id(const trx_t *trx) {
+  return reinterpret_cast<uint64_t>(trx);
+}
+
 /**
 Check if redo/noredo rseg is modified for insert/update.
 @param[in] trx		Transaction to check */
@@ -413,8 +424,7 @@ wait timeout to 0 instead of the user configured value that comes
 from innodb_lock_wait_timeout via trx_t::mysql_thd.
 @param	t transaction
 @return lock wait timeout in seconds */
-#define trx_lock_wait_timeout_get(t) \
-  ((t)->mysql_thd != NULL ? thd_lock_wait_timeout((t)->mysql_thd) : 0)
+#define trx_lock_wait_timeout_get(t) thd_lock_wait_timeout((t)->mysql_thd)
 
 /**
 Determine if the transaction is a non-locking autocommit select
@@ -589,17 +599,6 @@ struct trx_lock_t {
   lock_pool_t table_locks; /*!< All table locks requested by this
                            transaction, including AUTOINC locks */
 
-  bool cancel;       /*!< true if the transaction is being
-                     rolled back either via deadlock
-                     detection or due to lock timeout. The
-                     caller has to acquire the trx_t::mutex
-                     in order to cancel the locks. In
-                     lock_trx_table_locks_remove() we
-                     check for this cancel of a transaction's
-                     locks and avoid reacquiring the trx
-                     mutex to prevent recursive deadlocks.
-                     Protected by both the lock sys mutex
-                     and the trx_t::mutex. */
   ulint n_rec_locks; /*!< number of rec locks in this trx */
 #ifdef UNIV_DEBUG
   /** When a transaction is forced to rollback due to a deadlock
@@ -1141,6 +1140,10 @@ struct trx_t {
                   Committed on DD tables */
 #endif            /* UNIV_DEBUG */
   ulint magic_n;
+
+  bool is_read_uncommitted() const {
+    return (isolation_level == READ_UNCOMMITTED);
+  }
 
   bool skip_gap_locks() const {
     switch (isolation_level) {

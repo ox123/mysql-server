@@ -117,6 +117,10 @@ SELECT uniq, col1 FROM t1 GROUP BY col2,uniq LIMIT 3	{
             } /* optimizing_distinct_group_by_order_by */
           },
           {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t1`"
@@ -265,6 +269,10 @@ SELECT uniq, col1, col2 FROM t1 GROUP BY uniq	{
                 "resulting_clause": "`t1`.`uniq`"
               } /* simplifying_group_by */
             } /* optimizing_distinct_group_by_order_by */
+          },
+          {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -432,6 +440,10 @@ SELECT uniq, col1, col2 FROM t1 GROUP BY uniq	{
             } /* optimizing_distinct_group_by_order_by */
           },
           {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t1`"
@@ -588,6 +600,10 @@ SELECT pool_id FROM information_schema.INNODB_BUFFER_PAGE LIMIT 1	{
             } /* attaching_conditions_to_tables */
           },
           {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
+          },
+          {
             "refine_plan": [
               {
                 "table": "`information_schema`.`INNODB_BUFFER_PAGE`"
@@ -633,7 +649,7 @@ c1 INT AUTO_INCREMENT PRIMARY KEY,
 c2 VARCHAR(250)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 INSERT INTO t1(c2) VALUES ('b'),('b');
 INSERT INTO t1(c2) SELECT t1.c2 FROM t1, t1 t2, t1 t3, t1 t4, t1 t5, t1 t6;
 SET @@max_heap_table_size=1;
@@ -849,6 +865,10 @@ ORDER BY cc	{
                   } /* attaching_conditions_to_tables */
                 },
                 {
+                  "finalizing_table_conditions": [
+                  ] /* finalizing_table_conditions */
+                },
+                {
                   "refine_plan": [
                     {
                       "table": "`t1`"
@@ -922,6 +942,10 @@ ORDER BY cc	{
                   } /* attaching_conditions_to_tables */
                 },
                 {
+                  "finalizing_table_conditions": [
+                  ] /* finalizing_table_conditions */
+                },
+                {
                   "refine_plan": [
                     {
                       "table": "`t1`"
@@ -993,6 +1017,10 @@ ORDER BY cc	{
                       }
                     ] /* attached_conditions_summary */
                   } /* attaching_conditions_to_tables */
+                },
+                {
+                  "finalizing_table_conditions": [
+                  ] /* finalizing_table_conditions */
                 },
                 {
                   "refine_plan": [
@@ -1090,6 +1118,10 @@ ORDER BY cc	{
                 "resulting_clause": "`tt`.`c1`"
               } /* simplifying_group_by */
             } /* optimizing_distinct_group_by_order_by */
+          },
+          {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -1227,9 +1259,8 @@ ORDER BY cc	{
               "max_rows_per_buffer": 340,
               "num_rows_estimate": 1365,
               "num_rows_found": 132,
-              "num_examined_rows": 132,
               "num_initial_chunks_spilled_to_disk": 0,
-              "sort_buffer_size": 262144,
+              "peak_memory_used": "NNN",
               "sort_algorithm": "std::stable_sort",
               "sort_mode": "<fixed_sort_key, packed_additional_fields>"
             } /* filesort_summary */
@@ -1289,9 +1320,8 @@ ORDER BY cc	{
               "max_rows_per_buffer": 258,
               "num_rows_estimate": 1365,
               "num_rows_found": 66,
-              "num_examined_rows": 66,
               "num_initial_chunks_spilled_to_disk": 0,
-              "sort_buffer_size": 261872,
+              "peak_memory_used": "NNN",
               "sort_algorithm": "std::sort",
               "unpacked_addon_fields": "max_length_for_sort_data",
               "sort_mode": "<fixed_sort_key, rowid>"

@@ -1044,7 +1044,7 @@ Lgman::execDUMP_STATE_ORD(Signal* signal){
       ndbout_c("Detected logfile-group with non zero m_callback_buffer_words");
       signal->theData[0] = DumpStateOrd::LgmanDumpUndoStateLocalLog;
       execDUMP_STATE_ORD(signal);
-      ndbrequire(false);
+      ndbabort();
     }
 #ifdef VM_TRACE
     else
@@ -1151,7 +1151,7 @@ Lgman::execDBINFO_SCANREQ(Signal *signal)
 
       Ndbinfo::Row row(signal, req);
       row.write_uint32(getOwnNodeId());
-      row.write_uint32(1); // log type, 1 = DD-UNDO
+      row.write_uint32(Ndbinfo::DD_UNDO); // log type = DD-UNDO
       row.write_uint32(ptr.p->m_logfile_group_id); // log id
       row.write_uint32(0); // log part
 
@@ -1332,7 +1332,7 @@ Lgman::execDROP_FILEGROUP_IMPL_REQ(Signal* signal)
       jam();
       break;
     default:
-      ndbrequire(false);
+      ndbabort();
     }
   } while(0);
   
@@ -1578,7 +1578,7 @@ Lgman::open_file(Signal* signal,
     file_ptr.p->m_state = Undofile::FS_OPENING;
     break;
   default:
-    ndbrequire(false);
+    ndbabort();
   }
 
   req->page_size = File_formats::NDB_PAGE_SIZE;
@@ -1803,7 +1803,7 @@ Lgman::execFSOPENCONF(Signal* signal)
   }
   default:
   {
-    ndbrequire(false);
+    ndbabort();
   }
   }
 }
@@ -2032,7 +2032,7 @@ void
 Lgman::execDROP_FILE_IMPL_REQ(Signal* signal)
 {
   jamEntry();
-  ndbrequire(false);
+  ndbabort();
 }
 
 #define CONSUMER 0
@@ -2596,7 +2596,7 @@ Lgman::get_remaining_page_space(Uint32 ref)
     Uint32 free = get_undo_page_words(lg_ptr) - pos;
     return free;
   }
-  ndbrequire(false);
+  ndbabort();
   return 0; //Will never reach here
 }
 
@@ -3080,8 +3080,7 @@ Lgman::execCALLBACK_ACK(Signal* signal)
     break;
   // no PROCESS_LOG_SYNC_WAITERS yet (or ever)
   default:
-    ndbrequire(false);
-    break;
+    ndbabort();
   }
 
   signal->theData[0] = callbackInfo;
@@ -3185,6 +3184,10 @@ Lgman::write_log_pages(Signal* signal, Ptr<Logfile_group> ptr,
       page_v2->m_unused[3] = 0;
       page_v2->m_unused[4] = 0;
       page_v2->m_unused[5] = 0;
+      Uint32 pos = page_v2->m_words_used;
+      Uint32 *record = get_undo_data_ptr((Uint32*)page_v2, ptr, jamBuffer()) + (pos - 1);
+      Uint32 len = (*record) & 0xFFFF;
+      ndbrequire(pos >= len);
     }
   }
 
@@ -3287,7 +3290,7 @@ Lgman::execFSWRITEREF(Signal* signal)
 {
   jamEntry();
   SimulatedBlock::execFSWRITEREF(signal);
-  ndbrequire(false);
+  ndbabort();
 }
 
 void
@@ -3666,7 +3669,7 @@ Lgman::alloc_log_space(Uint32 ref,
     return 1501;
   }
   thrjam(jamBuf);
-  ndbrequire(false);
+  ndbabort();
   return -1;
 }
 
@@ -3691,7 +3694,7 @@ Lgman::free_log_space(Uint32 ref,
     validate_logfile_group(lg_ptr, "free_log_space", jamBuf);
     return 0;
   }
-  ndbrequire(false);
+  ndbabort();
   return -1;
 }
 
@@ -4123,7 +4126,7 @@ Lgman::execFSREADCONF(Signal* signal)
   case Undofile::FS_EMPTY:
     jam();
     jamLine(file_ptr.p->m_state);
-    ndbrequire(false);
+    ndbabort();
   }
 
   /**
@@ -4180,7 +4183,7 @@ Lgman::execFSREADREF(Signal* signal)
 {
   jamEntry();
   SimulatedBlock::execFSREADREF(signal);
-  ndbrequire(false);
+  ndbabort();
 }
 
 /**
@@ -5064,7 +5067,7 @@ Lgman::execute_undo_record(Signal* signal)
     case File_formats::Undofile::UNDO_TUP_FREE_PART:
       break;
     default:
-      ndbrequire(false);
+      ndbabort();
     }
     /**
      * If we've reached here, it means we have decided to send the undo record
@@ -5200,7 +5203,7 @@ Lgman::get_next_undo_record(Uint64 * this_lsn)
 
   Uint32 page_position = pageP->m_words_used;
   bool ignore_page = false;
-  bool new_page;
+  bool new_page = false;
 
   if (page_position == pos)
   {

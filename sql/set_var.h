@@ -115,6 +115,10 @@ class sys_var {
     /**
      There can be some variables which needs to be set before plugin is loaded.
      ex: binlog_checksum needs to be set before GR plugin is loaded.
+     Also, there are some variables which needs to be set before some server
+     internal component initialization.
+     ex: binlog_encryption needs to be set before binary and relay log
+     files generation.
     */
 
     PERSIST_AS_READ_ONLY = 0x10000
@@ -222,6 +226,13 @@ class sys_var {
   bool set_default(THD *thd, set_var *var);
   bool update(THD *thd, set_var *var);
 
+  /**
+    This function converts value stored in save_result to string. This
+    function must ba called after calling save_default() as save_default() will
+    store default value to save_result.
+  */
+  virtual void saved_value_to_string(THD *thd, set_var *var, char *def_val) = 0;
+
   SHOW_TYPE show_type() { return show_val_type; }
   int scope() const { return flags & SCOPE_MASK; }
   const CHARSET_INFO *charset(THD *thd);
@@ -269,8 +280,13 @@ class sys_var {
             type == OPT_PERSIST_ONLY);
   }
 
+  /**
+    Return true if settable at the command line
+  */
+  bool is_settable_at_command_line() { return option.id != -1; }
+
   bool register_option(std::vector<my_option> *array, int parse_flags) {
-    return (option.id != -1) && (m_parse_flag & parse_flags) &&
+    return is_settable_at_command_line() && (m_parse_flag & parse_flags) &&
            (array->push_back(option), false);
   }
   void do_deprecated_warning(THD *thd);
@@ -283,6 +299,8 @@ class sys_var {
             impossible to obtain the value.
   */
   Item *copy_value(THD *thd);
+
+  void save_default(THD *thd, set_var *var) { global_save_default(thd, var); }
 
  private:
   virtual bool do_check(THD *thd, set_var *var) = 0;
@@ -410,10 +428,13 @@ class set_var_user : public set_var_base {
 class set_var_password : public set_var_base {
   LEX_USER *user;
   char *password;
+  char *current_password;
+  bool retain_current_password;
 
  public:
-  set_var_password(LEX_USER *user_arg, char *password_arg)
-      : user(user_arg), password(password_arg) {}
+  set_var_password(LEX_USER *user_arg, char *password_arg,
+                   char *current_password_arg, bool retain_current);
+
   int resolve(THD *) { return 0; }
   int check(THD *thd);
   int update(THD *thd);
@@ -481,6 +502,8 @@ bool fix_delay_key_write(sys_var *self, THD *thd, enum_var_type type);
 sql_mode_t expand_sql_mode(sql_mode_t sql_mode, THD *thd);
 bool sql_mode_string_representation(THD *thd, sql_mode_t sql_mode,
                                     LEX_STRING *ls);
+bool sql_mode_quoted_string_representation(THD *thd, sql_mode_t sql_mode,
+                                           LEX_STRING *ls);
 void update_parser_max_mem_size();
 
 extern sys_var *Sys_autocommit_ptr;
@@ -495,5 +518,12 @@ const CHARSET_INFO *get_old_charset_by_name(const char *old_name);
 int sys_var_init();
 int sys_var_add_options(std::vector<my_option> *long_options, int parse_flags);
 void sys_var_end(void);
+
+/* check needed privileges to perform SET PERSIST[_only] or RESET PERSIST */
+bool check_priv(THD *thd, bool static_variable);
+
+#define PERSIST_ONLY_ADMIN_X509_SUBJECT "persist_only_admin_x509_subject"
+#define PERSISTED_GLOBALS_LOAD "persisted_globals_load"
+extern char *sys_var_persist_only_admin_x509_subject;
 
 #endif

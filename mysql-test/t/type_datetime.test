@@ -279,10 +279,12 @@ drop table t1;
 #
 create table t1(f1 date);
 insert into t1 values('01-01-01'),('02-02-02'),('01-01-01'),('02-02-02');
+--disable_ps_protocol  # See bug #27245598.
 set @bug28261='';
 select if(@bug28261 = f1, '', @bug28261:= f1) from t1;
 select if(@bug28261 = f1, '', @bug28261:= f1) from t1;
 select if(@bug28261 = f1, '', @bug28261:= f1) from t1;
+--enable_ps_protocol
 drop table t1;
 
 #
@@ -637,10 +639,12 @@ CREATE TABLE test.t(col_varchar_nokey VARCHAR(1) NOT NULL,
                     col_int_nokey INT NOT NULL,
                     col_datetime_key datetime not null,
                     key(col_datetime_key)) ENGINE= InnoDB;
---error ER_TRUNCATED_WRONG_VALUE
+# --error ER_TRUNCATED_WRONG_VALUE
+# Reintroduce above check when prepare is done in strict mode for DELETE
 DELETE FROM test.t WHERE `col_int_nokey` > `col_int_nokey`
                          AND TIMESTAMP( '18:16:35.025453' ) IS  NULL;
---error ER_TRUNCATED_WRONG_VALUE
+# --error ER_TRUNCATED_WRONG_VALUE
+# Reintroduce above check when prepare is done in strict mode for DELETE
 UPDATE test.t SET `col_varchar_nokey` = TIMESTAMP(`col_time_nokey`,'00:00:00')
   WHERE `col_int_nokey` > `col_int_nokey`
         AND TIMESTAMP('18:16:35.025453') IS  NULL;

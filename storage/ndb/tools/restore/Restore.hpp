@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2016, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -28,6 +28,7 @@
 #define RESTORE_H
 
 #include <ndb_global.h>
+#include "my_byteorder.h"
 #include <NdbOut.hpp>
 #include "../src/kernel/blocks/backup/BackupFormat.hpp"
 #include <NdbApi.hpp>
@@ -146,12 +147,12 @@ public:
   TupleS() {
     m_currentTable= 0;
     allAttrData= 0;
-  };
+  }
   ~TupleS()
   {
     if (allAttrData)
       delete [] allAttrData;
-  };
+  }
   TupleS(const TupleS& tuple); // disable copy constructor
   TupleS & operator=(const TupleS& tuple);
   int getNoOfAttributes() const;
@@ -241,19 +242,19 @@ public:
   
   int getNoOfAttributes() const { 
     return allAttributesDesc.size();
-  };
+  }
   
   bool have_auto_inc() const {
     return m_auto_val_attrib != 0;
-  };
+  }
 
   bool have_auto_inc(Uint32 id) const {
     return (m_auto_val_attrib ? m_auto_val_attrib->attrId == id : false);
-  };
+  }
 
   Uint64 get_max_auto_val() const {
     return m_max_auto_val;
-  };
+  }
 
   void update_max_auto_val(const char *data, int size) {
     union {
@@ -286,7 +287,7 @@ public:
     };
     if(v > m_max_auto_val)
       m_max_auto_val= v;
-  };
+  }
 
   bool get_auto_data(const TupleS & tuple, Uint32 * syskey, Uint64 * nextid) const;
 
@@ -388,7 +389,17 @@ public:
                AttributeData * attr_data);
 
   Uint64 get_file_size() const { return m_file_size; }
-  Uint64 get_file_pos() const { return m_file_pos; }
+  /**
+   * get_file_size() and get_file_pos() are used to calculate restore
+   * progress percentage and works fine in normal mode.
+   *
+   * But, when compressed backup is enabled, m_file_pos gives the current file
+   * position in uncompressed state and m_file_size gives the backup file size
+   * in compressed state. So, Instead of m_file_pos, ndbzio_stream's m_file.in
+   * parameter is used to get current position in compressed state.This
+   * parameter also works when compressed backup is disabled.
+   */
+  Uint64 get_file_pos() const { return m_file.in; }
 #ifdef ERROR_INSERT
   void error_insert(unsigned int code); 
 #endif
@@ -440,7 +451,7 @@ public:
   void* getObjPtr(Uint32 i) const { return m_objects[i].m_objPtr; }
   
   Uint32 getStopGCP() const;
-  Uint32 getNdbVersion() const { return m_fileHeader.NdbVersion; };
+  Uint32 getNdbVersion() const { return m_fileHeader.NdbVersion; }
 }; // RestoreMetaData
 
 
@@ -540,7 +551,7 @@ private:
   LogEntry m_logEntry;
 public:
   RestoreLogIterator(const RestoreMetaData &);
-  virtual ~RestoreLogIterator() {};
+  virtual ~RestoreLogIterator() {}
 
   const LogEntry * getNextLogEntry(int & res);
 };

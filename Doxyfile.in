@@ -41,28 +41,11 @@
 #
 #   cmake --build . --config <Debug|RelWithDebInfo> --target doxygen
 #
-# See the logs in ./doxyerror.log
-# See the doc in ./doxygen/html/index.html
-#
-# To parse the error log generated:
-# ---------------------------------
-#
-#   sort -u doxyerror.log |
-#     grep "^"`pwd` |
-#       sed -e "s|"`pwd`"/||g" > tofix-all.log
-#
-# See the errors to fix in tofix-all.log
-#
-# To filter known issues from the error log:
-# ------------------------------------------
-#
-#    grep -v "#" Doxyfile-ignored |
-#      grep -v "^[[:space:]]*$" > Doxyfile-ignored.tmp
-#
-#    grep -v -E --file=Doxyfile-ignored.tmp tofix-all.log > tofix-regressions.log
-#
-# See the list of filtering rules in Doxyfile-ignored.tmp
-# See the list of regression errors in tofix-regressions.log
+# The documentation can be found in ./doxygen/html/index.html
+# Doxygen stdout is written to ./doxyoutput.log
+# Doxygen stderr is written to ./doxyerror.log
+# All errors and warnings are written to ./tofix-all.log
+# Regressions are written to ./tofix-regressions.log
 #
 # To edit the list of known errors:
 # ---------------------------------
@@ -384,7 +367,7 @@ TOC_INCLUDE_HEADINGS   = 0
 # globally by setting AUTOLINK_SUPPORT to NO.
 # The default value is: YES.
 
-AUTOLINK_SUPPORT       = YES
+AUTOLINK_SUPPORT       = NO
 
 # If you use STL classes (i.e. std::string, std::vector, etc.) but do not want
 # to include (a tag file for) the STL sources as input, then you should set this
@@ -844,7 +827,7 @@ WARN_FORMAT            = "$file:$line: $text"
 # messages should be written. If left blank the output is written to standard
 # error (stderr).
 
-WARN_LOGFILE           = @CMAKE_CURRENT_BINARY_DIR@/doxyerror.log
+WARN_LOGFILE           =
 
 #---------------------------------------------------------------------------
 # Configuration options related to the input files
@@ -888,12 +871,15 @@ INPUT                  = ./client \
                          ./plugin/test_service_sql_api \
                          ./plugin/version_token \
                          ./plugin/pfs_table_plugin \
+                         ./plugin/x/protocol/doc \
+                         ./router/src \
                          ./sql \
                          ./sql-common \
                          ./storage \
                          ./strings \
                          ./libmysql \
                          ./vio
+
 
 # This tag can be used to specify the character encoding of the source files
 # that doxygen parses. Internally doxygen uses the UTF-8 encoding. Doxygen uses
@@ -995,6 +981,7 @@ EXCLUDE_SYMLINKS       = NO
 
 EXCLUDE_PATTERNS       = */include/boost*/* \
                          */include/mysql/psi/psi_abi*.h \
+                         */router/src/*/tests/* \
                          */sql/*ndb*.h \
                          */sql/*ndb*.cc \
                          */unittest/* \
@@ -1016,7 +1003,8 @@ EXCLUDE_SYMBOLS        =
 # that contain example code fragments that are included (see the \include
 # command).
 
-EXAMPLE_PATH           = sql/examples
+EXAMPLE_PATH           = sql/examples \
+                         router
 
 # If the value of the EXAMPLE_PATH tag contains directories, you can use the
 # EXAMPLE_PATTERNS tag to specify one or more wildcard pattern (like *.cpp and

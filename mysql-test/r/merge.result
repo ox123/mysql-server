@@ -756,7 +756,7 @@ insert into t1 (a,b,c) values (1,1,0),(1,2,0);
 insert into t2 (a,b,c) values (1,1,1),(1,2,1);
 explain select a,b,c from t3 force index (a) where a=1 order by a,b,c;
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
-1	SIMPLE	t3	NULL	ref	a	a	5	const	2	100.00	Using where; Using index
+1	SIMPLE	t3	NULL	ref	a	a	5	const	2	100.00	Using index
 Warnings:
 Note	1003	/* select#1 */ select `test`.`t3`.`a` AS `a`,`test`.`t3`.`b` AS `b`,`test`.`t3`.`c` AS `c` from `test`.`t3` FORCE INDEX (`a`) where (`test`.`t3`.`a` = 1) order by `test`.`t3`.`a`,`test`.`t3`.`b`,`test`.`t3`.`c`
 select a,b,c from t3 force index (a) where a=1 order by a,b,c;
@@ -767,7 +767,7 @@ a	b	c
 1	2	1
 explain select a,b,c from t3 force index (a) where a=1 order by a desc, b desc, c desc;
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
-1	SIMPLE	t3	NULL	ref	a	a	5	const	2	100.00	Using where; Backward index scan; Using index
+1	SIMPLE	t3	NULL	ref	a	a	5	const	2	100.00	Backward index scan; Using index
 Warnings:
 Note	1003	/* select#1 */ select `test`.`t3`.`a` AS `a`,`test`.`t3`.`b` AS `b`,`test`.`t3`.`c` AS `c` from `test`.`t3` FORCE INDEX (`a`) where (`test`.`t3`.`a` = 1) order by `test`.`t3`.`a` desc,`test`.`t3`.`b` desc,`test`.`t3`.`c` desc
 select a,b,c from t3 force index (a) where a=1 order by a desc, b desc, c desc;
@@ -777,10 +777,10 @@ a	b	c
 1	1	1
 1	1	0
 show index from t3;
-Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible
-t3	1	a	1	a	A	NULL	NULL	NULL	YES	BTREE			YES
-t3	1	a	2	b	A	NULL	NULL	NULL	YES	BTREE			YES
-t3	1	a	3	c	A	NULL	NULL	NULL	YES	BTREE			YES
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t3	1	a	1	a	A	NULL	NULL	NULL	YES	BTREE			YES	NULL
+t3	1	a	2	b	A	NULL	NULL	NULL	YES	BTREE			YES	NULL
+t3	1	a	3	c	A	NULL	NULL	NULL	YES	BTREE			YES	NULL
 drop table t1, t2, t3;
 CREATE TABLE t1 ( a INT AUTO_INCREMENT PRIMARY KEY, b VARCHAR(10), UNIQUE (b) )
 ENGINE=MyISAM;
@@ -1282,17 +1282,9 @@ c1
 4
 4
 RENAME TABLE t2 TO t5;
-ERROR HY000: Can't execute the given command because you have active locked tables or an active transaction
 SELECT * FROM t3 ORDER BY c1;
-c1
-1
-2
-3
-4
-4
-4
+ERROR HY000: Table 't2' was not locked with LOCK TABLES
 RENAME TABLE t5 TO t2;
-ERROR HY000: Can't execute the given command because you have active locked tables or an active transaction
 SELECT * FROM t3 ORDER BY c1;
 c1
 1
@@ -1335,7 +1327,7 @@ UNLOCK TABLES;
 #
 # Rename parent.
 #
-# 1. Normal rename with locked tables.
+# 6. Normal rename with locked tables.
 LOCK TABLES t1 WRITE, t2 WRITE, t3 WRITE;
 SELECT * FROM t3 ORDER BY c1;
 c1
@@ -1346,8 +1338,7 @@ c1
 4
 4
 RENAME TABLE t3 TO t5;
-ERROR HY000: Can't execute the given command because you have active locked tables or an active transaction
-SELECT * FROM t3 ORDER BY c1;
+SELECT * FROM t5 ORDER BY c1;
 c1
 1
 2
@@ -1356,7 +1347,6 @@ c1
 4
 4
 RENAME TABLE t5 TO t3;
-ERROR HY000: Can't execute the given command because you have active locked tables or an active transaction
 SELECT * FROM t3 ORDER BY c1;
 c1
 1
@@ -1366,7 +1356,7 @@ c1
 4
 4
 #
-# 5. Alter table rename with locked tables.
+# 7. Alter table rename with locked tables.
 ALTER TABLE t3 RENAME TO t5;
 SELECT * FROM t5 ORDER BY c1;
 c1
@@ -2696,7 +2686,6 @@ CREATE TEMPORARY TABLE t2 (c1 INT);
 ALTER TABLE t1 ENGINE=MERGE UNION(t_not_exists, t2);
 OPTIMIZE TABLE t1;
 Table	Op	Msg_type	Msg_text
-test.t1	optimize	Error	Table 'test.t_not_exists' doesn't exist
 test.t1	optimize	Error	Unable to open underlying table which is differently defined or of non-MyISAM type or doesn't exist
 test.t1	optimize	error	Corrupt
 DROP TABLE t1, t2;
@@ -3606,7 +3595,6 @@ CREATE TABLE t1(a INT);
 ALTER TABLE t1 engine= MERGE UNION (t_not_exists);
 ANALYZE TABLE t1;
 Table	Op	Msg_type	Msg_text
-test.t1	analyze	Error	Table 'test.t_not_exists' doesn't exist
 test.t1	analyze	Error	Unable to open underlying table which is differently defined or of non-MyISAM type or doesn't exist
 test.t1	analyze	error	Corrupt
 CHECK TABLE t1;
@@ -3618,11 +3606,9 @@ CHECKSUM TABLE t1;
 Table	Checksum
 test.t1	NULL
 Warnings:
-Error	1146	Table 'test.t_not_exists' doesn't exist
 Error	1168	Unable to open underlying table which is differently defined or of non-MyISAM type or doesn't exist
 OPTIMIZE TABLE t1;
 Table	Op	Msg_type	Msg_text
-test.t1	optimize	Error	Table 'test.t_not_exists' doesn't exist
 test.t1	optimize	Error	Unable to open underlying table which is differently defined or of non-MyISAM type or doesn't exist
 test.t1	optimize	error	Corrupt
 REPAIR TABLE t1;

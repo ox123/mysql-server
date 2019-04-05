@@ -54,6 +54,11 @@ upd_t *upd_create(ulint n,          /*!< in: number of fields */
   update->fields = reinterpret_cast<upd_field_t *>(&update[1]);
   update->heap = heap;
 
+  for (ulint i = 0; i < n; ++i) {
+    upd_field_t *uf = &update->fields[i];
+    uf->heap = heap;
+  }
+
   return (update);
 }
 
@@ -181,9 +186,6 @@ void row_upd_rec_sys_fields(
       offset = row_get_trx_id_offset(index, offsets);
     }
 
-#if DATA_TRX_ID + 1 != DATA_ROLL_PTR
-#error "DATA_TRX_ID + 1 != DATA_ROLL_PTR"
-#endif
     /* During IMPORT the trx id in the record can be in the
     future, if the .ibd file is being imported from another
     instance. During IMPORT roll_ptr will be 0. */

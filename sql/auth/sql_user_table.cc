@@ -78,7 +78,8 @@
 #include "sql/sql_lex.h"
 #include "sql/sql_list.h"
 /* trans_commit_implicit */
-#include "sql/sql_parse.h"  /* stmt_causes_implicit_commit */
+#include "sql/sql_parse.h" /* stmt_causes_implicit_commit */
+#include "sql/sql_rewrite.h"
 #include "sql/sql_table.h"  /* write_bin_log */
 #include "sql/sql_update.h" /* compare_records */
 #include "sql/system_variables.h"
@@ -299,6 +300,12 @@ static const TABLE_FIELD_TYPE mysql_user_table_fields[MYSQL_USER_FIELD_COUNT] =
       {NULL, 0}},
      {{C_STRING_WITH_LEN("Password_reuse_time")},
       {C_STRING_WITH_LEN("smallint(5)")},
+      {NULL, 0}},
+     {{C_STRING_WITH_LEN("Password_require_current")},
+      {C_STRING_WITH_LEN("enum('N','Y')")},
+      {C_STRING_WITH_LEN("utf8")}},
+     {{C_STRING_WITH_LEN("User_attributes")},
+      {C_STRING_WITH_LEN("json")},
       {NULL, 0}}};
 
 static const TABLE_FIELD_TYPE
@@ -631,81 +638,12 @@ static bool acl_end_trans_and_close_tables(THD *thd, bool rollback_transaction,
       acquire MDL on privilege tables after the release_transactional_locks()
       and before acl_reload/grant_reload() below.
     */
-    reload_acl_caches(thd, true);
+    reload_acl_caches(thd);
   } else if (notify_htons) {
     acl_notify_htons(thd, thd->query().str, thd->query().length);
   }
 
   return result;
-}
-
-/*
-  Helper function for rewriting query
-
-  @param thd          Handle to THD object
-  @param extra_user   Users which were not proccessed by ddl
-  @param for_binlog   Purpose of rewriting the query
-*/
-
-static void rewrite_acl_ddl(THD *thd, std::set<LEX_USER *> *extra_users,
-                            bool for_binlog) {
-  DBUG_ENTER("rewrite_acl_ddl");
-  DBUG_ASSERT(thd);
-  String *rlb = NULL;
-  bool rewrite = false;
-
-  enum_sql_command command = thd->lex->sql_command;
-  /* Rewrite the query */
-  rlb = &thd->rewritten_query;
-
-  switch (command) {
-    case SQLCOM_CREATE_USER:
-    case SQLCOM_ALTER_USER:
-      rlb->mem_free();
-      mysql_rewrite_create_alter_user(thd, rlb, extra_users, for_binlog);
-      rewrite = true;
-      break;
-    case SQLCOM_GRANT:
-      rlb->mem_free();
-      mysql_rewrite_grant(thd, rlb);
-      rewrite = true;
-      break;
-    case SQLCOM_SET_PASSWORD:
-      rlb->mem_free();
-      mysql_rewrite_set_password(thd, rlb, extra_users, for_binlog);
-      rewrite = true;
-      break;
-    /*
-      We don't attempt to rewrite any of the following because they do
-      not contain credential information.
-    */
-    case SQLCOM_DROP_USER:
-    case SQLCOM_REVOKE_ALL:
-    case SQLCOM_REVOKE:
-    case SQLCOM_RENAME_USER:
-    case SQLCOM_CREATE_ROLE:
-    case SQLCOM_DROP_ROLE:
-    case SQLCOM_GRANT_ROLE:
-    case SQLCOM_REVOKE_ROLE:
-    case SQLCOM_ALTER_USER_DEFAULT_ROLE:
-    case SQLCOM_CREATE_SPFUNCTION:
-    case SQLCOM_CREATE_PROCEDURE:
-    case SQLCOM_CREATE_FUNCTION:
-    case SQLCOM_DROP_PROCEDURE:
-    case SQLCOM_DROP_FUNCTION:
-      break;
-    default:
-      DBUG_ASSERT(false);
-      break;
-  }
-
-  if (rewrite && thd->rewritten_query.length()) {
-    MYSQL_SET_STATEMENT_TEXT(thd->m_statement_psi,
-                             thd->rewritten_query.c_ptr_safe(),
-                             thd->rewritten_query.length());
-  }
-
-  DBUG_VOID_RETURN;
 }
 
 /*
@@ -734,74 +672,74 @@ bool log_and_commit_acl_ddl(THD *thd, bool transactional_tables,
                             std::set<LEX_USER *> *extra_users, /* = NULL */
                             bool extra_error,                  /* = true */
                             bool write_to_binlog,              /* = true */
-                            bool notify_htons)                 /* = true */
-{
+                            bool notify_htons) {
   bool result = false;
-  LEX_CSTRING query;
-  enum_sql_command command;
-  size_t num_extra_users = extra_users ? extra_users->size() : 0;
   DBUG_ENTER("logn_ddl_to_binlog");
-
   DBUG_ASSERT(thd);
   result = thd->is_error() || extra_error || thd->transaction_rollback_request;
+  /* Write to binlog and textlogs only if there is no error */
+  if (!result) {
+    User_params user_params(extra_users);
+    mysql_rewrite_acl_query(thd, Consumer_type::BINLOG, &user_params);
+    if (write_to_binlog) {
+      LEX_CSTRING query;
+      enum_sql_command command;
+      size_t num_extra_users = extra_users ? extra_users->size() : 0;
+      command = thd->lex->sql_command;
+      if (mysql_bin_log.is_open()) {
+        query.str = thd->rewritten_query.length()
+                        ? thd->rewritten_query.c_ptr_safe()
+                        : thd->query().str;
 
-  if (!result) rewrite_acl_ddl(thd, extra_users, true);
+        query.length = thd->rewritten_query.length()
+                           ? thd->rewritten_query.length()
+                           : thd->query().length;
 
-  /* Write to binlog only if there is no error */
-  if (write_to_binlog && !result) {
-    command = thd->lex->sql_command;
-    if (mysql_bin_log.is_open()) {
-      query.str = thd->rewritten_query.length()
-                      ? thd->rewritten_query.c_ptr_safe()
-                      : thd->query().str;
-
-      query.length = thd->rewritten_query.length()
-                         ? thd->rewritten_query.length()
-                         : thd->query().length;
-
-      /* Write to binary log */
-      result = (write_bin_log(thd, false, query.str, query.length,
-                              transactional_tables) != 0)
-                   ? true
-                   : false;
-
-      /*
-        Log warning about extra users in case of
-        CREATE USER IF NOT EXISTS/ALTER USER IF EXISTS
-      */
-      if ((command == SQLCOM_CREATE_USER || command == SQLCOM_ALTER_USER) &&
-          !result && num_extra_users) {
-        String warn_user;
-        bool comma = false;
-        bool log_warning = false;
-        for (LEX_USER *extra_user : *extra_users) {
-          /*
-            Consider for warning if one of the following is true:
-            1. If SQLCOM_CREATE_USER, IDENTIFIED WITH clause is not used
-            2. If SQLCOM_ALTER_USER, IDENTIFIED WITH clause is not used
-            but IDENTIFIED BY is used.
-          */
-          if (!extra_user->uses_identified_with_clause &&
-              (command == SQLCOM_CREATE_USER ||
-               extra_user->uses_identified_by_clause)) {
-            log_user(thd, &warn_user, extra_user, comma);
-            comma = true;
-            log_warning = true;
+        /* Write to binary log */
+        result = (write_bin_log(thd, false, query.str, query.length,
+                                transactional_tables) != 0)
+                     ? true
+                     : false;
+        /*
+          Log warning about extra users in case of
+          CREATE USER IF NOT EXISTS/ALTER USER IF EXISTS
+        */
+        if ((command == SQLCOM_CREATE_USER || command == SQLCOM_ALTER_USER) &&
+            !result && num_extra_users) {
+          String warn_user;
+          bool comma = false;
+          bool log_warning = false;
+          for (LEX_USER *extra_user : *extra_users) {
+            /*
+              Consider for warning if one of the following is true:
+              1. If SQLCOM_CREATE_USER, IDENTIFIED WITH clause is not used
+              2. If SQLCOM_ALTER_USER, IDENTIFIED WITH clause is not used
+              but IDENTIFIED BY is used.
+            */
+            if (!extra_user->uses_identified_with_clause &&
+                (command == SQLCOM_CREATE_USER ||
+                 extra_user->uses_identified_by_clause)) {
+              log_user(thd, &warn_user, extra_user, comma);
+              comma = true;
+              log_warning = true;
+            }
           }
-        }
-        if (log_warning)
-          LogErr(WARNING_LEVEL,
-                 (command == SQLCOM_CREATE_USER)
-                     ? ER_SQL_USER_TABLE_CREATE_WARNING
-                     : ER_SQL_USER_TABLE_ALTER_WARNING,
-                 default_auth_plugin_name.str, warn_user.c_ptr_safe());
+          if (log_warning)
+            LogErr(WARNING_LEVEL,
+                   (command == SQLCOM_CREATE_USER)
+                       ? ER_SQL_USER_TABLE_CREATE_WARNING
+                       : ER_SQL_USER_TABLE_ALTER_WARNING,
+                   default_auth_plugin_name.str, warn_user.c_ptr_safe());
 
-        warn_user.mem_free();
+          warn_user.mem_free();
+        }
       }
     }
-
-    /* rewrite for general log only if there were extra users */
-    if (num_extra_users) rewrite_acl_ddl(thd, extra_users, false);
+    /*
+      Rewrite query in the thd again for the consistent logging for all consumer
+      type TEXTLOG later on. For instance: Audit logs.
+    */
+    mysql_rewrite_acl_query(thd, Consumer_type::TEXTLOG, &user_params);
   }
 
   if (acl_end_trans_and_close_tables(thd, result, notify_htons)) result = 1;
@@ -835,493 +773,6 @@ void acl_print_ha_error(int handler_error) {
 }
 
 /**
-  Update SSL properties in mysql.user table.
-
-  @param thd          Thread context
-  @param table        Points to mysql.user table.
-
-*/
-
-static void update_ssl_properties(THD *thd, TABLE *table) {
-  LEX *lex = thd->lex;
-  switch (lex->ssl_type) {
-    case SSL_TYPE_ANY:
-      table->field[MYSQL_USER_FIELD_SSL_TYPE]->store(STRING_WITH_LEN("ANY"),
-                                                     &my_charset_latin1);
-      table->field[MYSQL_USER_FIELD_SSL_CIPHER]->store("", 0,
-                                                       &my_charset_latin1);
-      table->field[MYSQL_USER_FIELD_X509_ISSUER]->store("", 0,
-                                                        &my_charset_latin1);
-      table->field[MYSQL_USER_FIELD_X509_SUBJECT]->store("", 0,
-                                                         &my_charset_latin1);
-      break;
-    case SSL_TYPE_X509:
-      table->field[MYSQL_USER_FIELD_SSL_TYPE]->store(STRING_WITH_LEN("X509"),
-                                                     &my_charset_latin1);
-      table->field[MYSQL_USER_FIELD_SSL_CIPHER]->store("", 0,
-                                                       &my_charset_latin1);
-      table->field[MYSQL_USER_FIELD_X509_ISSUER]->store("", 0,
-                                                        &my_charset_latin1);
-      table->field[MYSQL_USER_FIELD_X509_SUBJECT]->store("", 0,
-                                                         &my_charset_latin1);
-      break;
-    case SSL_TYPE_SPECIFIED:
-      table->field[MYSQL_USER_FIELD_SSL_TYPE]->store(
-          STRING_WITH_LEN("SPECIFIED"), &my_charset_latin1);
-      table->field[MYSQL_USER_FIELD_SSL_CIPHER]->store("", 0,
-                                                       &my_charset_latin1);
-      table->field[MYSQL_USER_FIELD_X509_ISSUER]->store("", 0,
-                                                        &my_charset_latin1);
-      table->field[MYSQL_USER_FIELD_X509_SUBJECT]->store("", 0,
-                                                         &my_charset_latin1);
-      if (lex->ssl_cipher)
-        table->field[MYSQL_USER_FIELD_SSL_CIPHER]->store(
-            lex->ssl_cipher, strlen(lex->ssl_cipher), system_charset_info);
-      if (lex->x509_issuer)
-        table->field[MYSQL_USER_FIELD_X509_ISSUER]->store(
-            lex->x509_issuer, strlen(lex->x509_issuer), system_charset_info);
-      if (lex->x509_subject)
-        table->field[MYSQL_USER_FIELD_X509_SUBJECT]->store(
-            lex->x509_subject, strlen(lex->x509_subject), system_charset_info);
-      break;
-    case SSL_TYPE_NOT_SPECIFIED:
-      break;
-    case SSL_TYPE_NONE:
-      table->field[MYSQL_USER_FIELD_SSL_TYPE]->store("", 0, &my_charset_latin1);
-      table->field[MYSQL_USER_FIELD_SSL_CIPHER]->store("", 0,
-                                                       &my_charset_latin1);
-      table->field[MYSQL_USER_FIELD_X509_ISSUER]->store("", 0,
-                                                        &my_charset_latin1);
-      table->field[MYSQL_USER_FIELD_X509_SUBJECT]->store("", 0,
-                                                         &my_charset_latin1);
-      break;
-  }
-}
-
-/**
-  Update user resources in mysql.user table.
-
-  @param table        Points to mysql.user table.
-  @param mqh          user resources to be updated
-
-*/
-
-static void update_user_resource(TABLE *table, USER_RESOURCES *mqh) {
-  if (mqh->specified_limits & USER_RESOURCES::QUERIES_PER_HOUR)
-    table->field[MYSQL_USER_FIELD_MAX_QUESTIONS]->store(
-        (longlong)mqh->questions, true);
-  if (mqh->specified_limits & USER_RESOURCES::UPDATES_PER_HOUR)
-    table->field[MYSQL_USER_FIELD_MAX_UPDATES]->store((longlong)mqh->updates,
-                                                      true);
-  if (mqh->specified_limits & USER_RESOURCES::CONNECTIONS_PER_HOUR)
-    table->field[MYSQL_USER_FIELD_MAX_CONNECTIONS]->store(
-        (longlong)mqh->conn_per_hour, true);
-  if (table->s->fields >= 36 &&
-      (mqh->specified_limits & USER_RESOURCES::USER_CONNECTIONS))
-    table->field[MYSQL_USER_FIELD_MAX_USER_CONNECTIONS]->store(
-        (longlong)mqh->user_conn, true);
-}
-
-/**
-  Search and create/update a record for the user requested.
-
-  @param thd     The current thread.
-  @param table   Pointer to a TABLE object for open mysql.user table
-  @param combo   User information
-  @param rights  Rights requested
-  @param revoke_grant  Set to true if a REVOKE command is executed
-  @param can_create_user  Set true if it's allowed to create user
-  @param what_to_replace  Bitmap indicating which attributes need to be
-                          updated.
-
-  @return  Operation result
-    @retval  0    OK.
-    @retval  < 0  System error or storage engine error happen
-    @retval  > 0  Error in handling current user entry but still can continue
-                  processing subsequent user specified in the ACL statement.
-*/
-
-int replace_user_table(THD *thd, TABLE *table, LEX_USER *combo, ulong rights,
-                       bool revoke_grant, bool can_create_user,
-                       ulong what_to_replace) {
-  int error = -1;
-  bool old_row_exists = 0;
-  bool builtin_plugin = true;
-  bool update_password = (what_to_replace & PLUGIN_ATTR);
-  char what = (revoke_grant) ? 'N' : 'Y';
-  char *priv_str;
-  uchar user_key[MAX_KEY_LENGTH];
-  LEX *lex = thd->lex;
-  LEX_CSTRING old_plugin;
-  struct timeval password_change_timestamp = {0, 0};
-  Acl_table_intact table_intact(thd);
-  DBUG_ENTER("replace_user_table");
-
-  DBUG_ASSERT(assert_acl_cache_write_lock(thd));
-
-  if (table_intact.check(table, ACL_TABLES::TABLE_USER)) goto end;
-
-  table->use_all_columns();
-  DBUG_ASSERT(combo->host.str != NULL);
-  table->field[MYSQL_USER_FIELD_HOST]->store(
-      combo->host.str, combo->host.length, system_charset_info);
-  table->field[MYSQL_USER_FIELD_USER]->store(
-      combo->user.str, combo->user.length, system_charset_info);
-  key_copy(user_key, table->record[0], table->key_info,
-           table->key_info->key_length);
-
-  error = table->file->ha_index_read_idx_map(table->record[0], 0, user_key,
-                                             HA_WHOLE_KEY, HA_READ_KEY_EXACT);
-  DBUG_ASSERT(table->file->ht->db_type == DB_TYPE_NDBCLUSTER ||
-              error != HA_ERR_LOCK_DEADLOCK);
-  DBUG_ASSERT(table->file->ht->db_type == DB_TYPE_NDBCLUSTER ||
-              error != HA_ERR_LOCK_WAIT_TIMEOUT);
-  DBUG_EXECUTE_IF("wl7158_replace_user_table_1", error = HA_ERR_LOCK_DEADLOCK;);
-  if (error) {
-    if (error != HA_ERR_KEY_NOT_FOUND && error != HA_ERR_END_OF_FILE) {
-      acl_print_ha_error(error);
-      DBUG_RETURN(-1);
-    }
-
-    /*
-      The user record wasn't found; if the intention was to revoke privileges
-      (indicated by what == 'N') then execution must fail now.
-    */
-    if (what == 'N') {
-      my_error(ER_NONEXISTING_GRANT, MYF(0), combo->user.str, combo->host.str);
-      /*
-        Return 1 as an indication that expected error occured during
-        handling of REVOKE statement for an unknown user.
-      */
-      error = 1;
-      goto end;
-    }
-
-    if (thd->lex->sql_command == SQLCOM_ALTER_USER) {
-      /* Entry should have existsed since this is ALTER USER */
-      error = 1;
-      goto end;
-    }
-
-    optimize_plugin_compare_by_pointer(&combo->plugin);
-    builtin_plugin = auth_plugin_is_built_in(combo->plugin.str);
-
-    if (!can_create_user) {
-      my_error(ER_CANT_CREATE_USER_WITH_GRANT, MYF(0));
-      error = 1;
-      goto end;
-    }
-    if (thd->lex->sql_command == SQLCOM_GRANT) {
-      my_error(ER_PASSWORD_NO_MATCH, MYF(0), combo->user.str, combo->host.str);
-      error = 1;
-      goto end;
-    }
-    old_row_exists = 0;
-    restore_record(table, s->default_values);
-    DBUG_ASSERT(combo->host.str != NULL);
-    table->field[MYSQL_USER_FIELD_HOST]->store(
-        combo->host.str, combo->host.length, system_charset_info);
-    table->field[MYSQL_USER_FIELD_USER]->store(
-        combo->user.str, combo->user.length, system_charset_info);
-  } else  // if (table->file->ha_index_read_idx_map [..]
-  {
-    /*
-      There is a matching user record ------------------------------------------
-     */
-
-    old_row_exists = 1;
-
-    /* Check if there is such a user in user table in memory? */
-
-    if (!find_acl_user(combo->host.str, combo->user.str, false)) {
-      my_error(ER_PASSWORD_NO_MATCH, MYF(0));
-      error = -1;
-      goto end;
-    }
-
-    store_record(table, record[1]);  // Save copy for update
-
-    /* 1. resolve plugins in the LEX_USER struct if needed */
-
-    /* Get old plugin value from storage. */
-    old_plugin.str =
-        get_field(thd->mem_root, table->field[MYSQL_USER_FIELD_PLUGIN]);
-
-    if (old_plugin.str == NULL || *old_plugin.str == '\0') {
-      my_error(ER_PASSWORD_NO_MATCH, MYF(0));
-      error = 1;
-      goto end;
-    }
-
-    /*
-      It is important not to include the trailing '\0' in the string length
-      because otherwise the plugin hash search will fail.
-    */
-    old_plugin.length = strlen(old_plugin.str);
-
-    /* Optimize for pointer comparision of built-in plugin name */
-    optimize_plugin_compare_by_pointer(&old_plugin);
-    builtin_plugin = auth_plugin_is_built_in(old_plugin.str);
-
-    /* there is nothing to update */
-    if ((thd->lex->sql_command != SQLCOM_ALTER_USER) && !rights &&
-        lex->ssl_type == SSL_TYPE_NOT_SPECIFIED && !lex->mqh.specified_limits &&
-        !revoke_grant && (!builtin_plugin || !update_password)) {
-      DBUG_PRINT("info", ("Dynamic privileges exit path"));
-      DBUG_RETURN(0);
-    }
-  }
-
-  if (what_to_replace & PLUGIN_ATTR ||
-      (what_to_replace & DEFAULT_AUTH_ATTR && !old_row_exists)) {
-    if (table->s->fields >= MYSQL_USER_FIELD_PLUGIN) {
-      table->field[MYSQL_USER_FIELD_PLUGIN]->store(
-          combo->plugin.str, combo->plugin.length, system_charset_info);
-      table->field[MYSQL_USER_FIELD_PLUGIN]->set_notnull();
-      table->field[MYSQL_USER_FIELD_AUTHENTICATION_STRING]->store(
-          combo->auth.str, combo->auth.length, &my_charset_utf8_bin);
-      table->field[MYSQL_USER_FIELD_AUTHENTICATION_STRING]->set_notnull();
-    } else {
-      my_error(ER_BAD_FIELD_ERROR, MYF(0), "plugin", "mysql.user");
-      DBUG_RETURN(-1);
-    }
-    /* If we change user plugin then check if it is builtin plugin */
-    optimize_plugin_compare_by_pointer(&combo->plugin);
-    builtin_plugin = auth_plugin_is_built_in(combo->plugin.str);
-    /*
-      we update the password last changed field whenever there is change
-      in auth str and plugin is built in
-    */
-    if (table->s->fields > MYSQL_USER_FIELD_PASSWORD_LAST_CHANGED) {
-      if (builtin_plugin) {
-        /*
-          Calculate time stamp up to seconds elapsed
-          from 1 Jan 1970 00:00:00.
-        */
-        password_change_timestamp = thd->query_start_timeval_trunc(0);
-        table->field[MYSQL_USER_FIELD_PASSWORD_LAST_CHANGED]->store_timestamp(
-            &password_change_timestamp);
-        table->field[MYSQL_USER_FIELD_PASSWORD_LAST_CHANGED]->set_notnull();
-      }
-    } else {
-      my_error(ER_BAD_FIELD_ERROR, MYF(0), "password_last_changed",
-               "mysql.user");
-      DBUG_RETURN(-1);
-    }
-    /* if we have a password supplied we update the expiration field */
-    if (table->s->fields > MYSQL_USER_FIELD_PASSWORD_EXPIRED) {
-      table->field[MYSQL_USER_FIELD_PASSWORD_EXPIRED]->store(
-          "N", 1, system_charset_info);
-    } else {
-      my_error(ER_BAD_FIELD_ERROR, MYF(0), "password_expired", "mysql.user");
-      DBUG_RETURN(-1);
-    }
-  }
-  /* Update table columns with new privileges */
-  uint next_field;
-  if (what_to_replace & ACCESS_RIGHTS_ATTR) {
-    Field **tmp_field;
-    ulong priv;
-    for (tmp_field = table->field + 2, priv = SELECT_ACL;
-         *tmp_field && (*tmp_field)->real_type() == MYSQL_TYPE_ENUM &&
-         ((Field_enum *)(*tmp_field))->typelib->count == 2;
-         tmp_field++, priv <<= 1) {
-      if (priv & rights) {
-        // set requested privileges
-        (*tmp_field)->store(&what, 1, &my_charset_latin1);
-        DBUG_PRINT("info", ("Updating field %lu with privilege %c",
-                            (ulong)(table->field + 2 - tmp_field), (char)what));
-      }
-    }
-    if (table->s->fields > MYSQL_USER_FIELD_CREATE_ROLE_PRIV) {
-      if (CREATE_ROLE_ACL & rights) {
-        table->field[MYSQL_USER_FIELD_CREATE_ROLE_PRIV]->store(
-            &what, 1, &my_charset_latin1);
-      }
-      if (DROP_ROLE_ACL & rights) {
-        table->field[MYSQL_USER_FIELD_DROP_ROLE_PRIV]->store(
-            &what, 1, &my_charset_latin1);
-      }
-    }
-  }
-  rights = get_access(table, MYSQL_USER_FIELD_SELECT_PRIV, &next_field);
-  if (table->s->fields > MYSQL_USER_FIELD_DROP_ROLE_PRIV) {
-    priv_str = get_field(&global_acl_memory,
-                         table->field[MYSQL_USER_FIELD_CREATE_ROLE_PRIV]);
-    if (priv_str && (*priv_str == 'Y' || *priv_str == 'y')) {
-      rights |= CREATE_ROLE_ACL;
-    }
-    priv_str = get_field(&global_acl_memory,
-                         table->field[MYSQL_USER_FIELD_DROP_ROLE_PRIV]);
-    if (priv_str && (*priv_str == 'Y' || *priv_str == 'y')) {
-      rights |= DROP_ROLE_ACL;
-    }
-  }
-  DBUG_PRINT("info", ("Privileges on disk are now %lu", rights));
-  DBUG_PRINT("info", ("table fields: %d", table->s->fields));
-
-  /* We write down SSL related ACL stuff */
-  if ((what_to_replace & SSL_ATTR) &&
-      (table->s->fields >= MYSQL_USER_FIELD_X509_SUBJECT))
-    update_ssl_properties(thd, table);
-  next_field += 4;
-
-  if (what_to_replace & RESOURCE_ATTR) update_user_resource(table, &lex->mqh);
-  mqh_used = mqh_used || lex->mqh.questions || lex->mqh.updates ||
-             lex->mqh.conn_per_hour;
-  next_field += 4;
-
-  if (what_to_replace & PASSWORD_EXPIRE_ATTR) {
-    /*
-      ALTER/CREATE USER <user> PASSWORD EXPIRE  (or)
-      ALTER USER <user> IDENTIFIED WITH plugin
-    */
-    if (combo->alter_status.update_password_expired_column) {
-      if (table->s->fields > MYSQL_USER_FIELD_PASSWORD_EXPIRED) {
-        table->field[MYSQL_USER_FIELD_PASSWORD_EXPIRED]->store(
-            "Y", 1, system_charset_info);
-      } else {
-        my_error(ER_BAD_FIELD_ERROR, MYF(0), "password_expired", "mysql.user");
-        DBUG_RETURN(-1);
-      }
-    }
-    /*
-      If password_expired column is not to be updated and only
-      password_lifetime is to be updated
-    */
-    if (table->s->fields > MYSQL_USER_FIELD_PASSWORD_LIFETIME &&
-        !combo->alter_status.update_password_expired_column) {
-      if (!combo->alter_status.use_default_password_lifetime) {
-        table->field[MYSQL_USER_FIELD_PASSWORD_LIFETIME]->store(
-            (longlong)combo->alter_status.expire_after_days, true);
-        table->field[MYSQL_USER_FIELD_PASSWORD_LIFETIME]->set_notnull();
-      } else
-        table->field[MYSQL_USER_FIELD_PASSWORD_LIFETIME]->set_null();
-    }
-  }
-
-  if (combo->alter_status.update_password_history) {
-    /* ALTER USER .. PASSWORD HISTORY */
-    if (table->s->fields > MYSQL_USER_FIELD_PASSWORD_REUSE_HISTORY) {
-      Field *fld_history =
-          table->field[MYSQL_USER_FIELD_PASSWORD_REUSE_HISTORY];
-      if (combo->alter_status.use_default_password_history)
-        fld_history->set_null();
-      else {
-        fld_history->store(combo->alter_status.password_history_length);
-        fld_history->set_notnull();
-      }
-    } else {
-      my_error(ER_BAD_FIELD_ERROR, MYF(0), "password_reuse_history",
-               "mysql.user");
-      DBUG_RETURN(-1);
-    }
-  }
-
-  if (combo->alter_status.update_password_reuse_interval) {
-    /* ALTER USER .. PASSWORD REUSE INTERVAL */
-    if (table->s->fields > MYSQL_USER_FIELD_PASSWORD_REUSE_TIME) {
-      Field *fld = table->field[MYSQL_USER_FIELD_PASSWORD_REUSE_TIME];
-      if (combo->alter_status.use_default_password_reuse_interval)
-        fld->set_null();
-      else {
-        fld->store(combo->alter_status.password_reuse_interval);
-        fld->set_notnull();
-      }
-    } else {
-      my_error(ER_BAD_FIELD_ERROR, MYF(0), "password_reuse_time", "mysql.user");
-      DBUG_RETURN(-1);
-    }
-  }
-
-  if (what_to_replace & ACCOUNT_LOCK_ATTR) {
-    if (!old_row_exists ||
-        (old_row_exists && combo->alter_status.update_account_locked_column)) {
-      if (table->s->fields > MYSQL_USER_FIELD_ACCOUNT_LOCKED) {
-        /*
-          Update the field for a new row and for the row that exists and the
-          update was enforced (ACCOUNT [UNLOCK|LOCK]).
-        */
-        table->field[MYSQL_USER_FIELD_ACCOUNT_LOCKED]->store(
-            combo->alter_status.account_locked ? "Y" : "N", 1,
-            system_charset_info);
-      } else {
-        my_error(ER_BAD_FIELD_ERROR, MYF(0), "account_locked", "mysql.user");
-        DBUG_RETURN(-1);
-      }
-    }
-  }
-
-  if (old_row_exists) {
-    /*
-      We should NEVER delete from the user table, as a uses can still
-      use mysqld even if he doesn't have any privileges in the user table!
-    */
-    if (compare_records(table)) {
-      error = table->file->ha_update_row(table->record[1], table->record[0]);
-      DBUG_ASSERT(error != HA_ERR_FOUND_DUPP_KEY);
-      DBUG_ASSERT(table->file->ht->db_type == DB_TYPE_NDBCLUSTER ||
-                  error != HA_ERR_LOCK_DEADLOCK);
-      DBUG_ASSERT(table->file->ht->db_type == DB_TYPE_NDBCLUSTER ||
-                  error != HA_ERR_LOCK_WAIT_TIMEOUT);
-      DBUG_EXECUTE_IF("wl7158_replace_user_table_2",
-                      error = HA_ERR_LOCK_DEADLOCK;);
-      if (error && error != HA_ERR_RECORD_IS_THE_SAME) {
-        acl_print_ha_error(error);
-        error = -1;
-        goto end;
-      } else
-        error = 0;
-    }
-  } else {
-    error = table->file->ha_write_row(table->record[0]);  // insert
-    DBUG_ASSERT(error != HA_ERR_FOUND_DUPP_KEY);
-    DBUG_ASSERT(table->file->ht->db_type == DB_TYPE_NDBCLUSTER ||
-                error != HA_ERR_LOCK_DEADLOCK);
-    DBUG_ASSERT(table->file->ht->db_type == DB_TYPE_NDBCLUSTER ||
-                error != HA_ERR_LOCK_WAIT_TIMEOUT);
-    DBUG_EXECUTE_IF("wl7158_replace_user_table_3",
-                    error = HA_ERR_LOCK_DEADLOCK;);
-    if (error) {
-      if (!table->file->is_ignorable_error(error)) {
-        acl_print_ha_error(error);
-        error = -1;
-        goto end;
-      }
-    }
-  }
-  error = 0;  // Privileges granted / revoked
-
-end:
-  if (!error) {
-    /*
-       Convert the time when the password was changed from timeval
-       structure to MYSQL_TIME format, to store it in cache.
-    */
-    MYSQL_TIME password_change_time;
-
-    if (builtin_plugin && (update_password || !old_row_exists))
-      thd->variables.time_zone->gmt_sec_to_TIME(
-          &password_change_time, (my_time_t)password_change_timestamp.tv_sec);
-    else
-      password_change_time.time_type = MYSQL_TIMESTAMP_ERROR;
-    clear_and_init_db_cache();  // Clear privilege cache
-    if (old_row_exists)
-      acl_update_user(combo->user.str, combo->host.str, lex->ssl_type,
-                      lex->ssl_cipher, lex->x509_issuer, lex->x509_subject,
-                      &lex->mqh, rights, combo->plugin, combo->auth,
-                      password_change_time, combo->alter_status,
-                      what_to_replace);
-    else
-      acl_insert_user(thd, combo->user.str, combo->host.str, lex->ssl_type,
-                      lex->ssl_cipher, lex->x509_issuer, lex->x509_subject,
-                      &lex->mqh, rights, combo->plugin, combo->auth,
-                      password_change_time, combo->alter_status);
-  }
-  DBUG_RETURN(error);
-}
-
-/**
   change grants in the mysql.db table.
 
   @param thd          Current thread execution context.
@@ -1350,12 +801,7 @@ int replace_db_table(THD *thd, TABLE *table, const char *db,
   uchar user_key[MAX_KEY_LENGTH];
   Acl_table_intact table_intact(thd);
   DBUG_ENTER("replace_db_table");
-
-  if (!initialized) {
-    my_error(ER_OPTION_PREVENTS_STATEMENT, MYF(0), "--skip-grant-tables");
-    DBUG_RETURN(-1);
-  }
-
+  DBUG_ASSERT(initialized);
   if (table_intact.check(table, ACL_TABLES::TABLE_DB)) DBUG_RETURN(-1);
 
   /* Check if there is such a user in user table in memory? */
@@ -1492,12 +938,7 @@ int replace_proxies_priv_table(THD *thd, TABLE *table, const LEX_USER *user,
   Acl_table_intact table_intact(thd);
 
   DBUG_ENTER("replace_proxies_priv_table");
-
-  if (!initialized) {
-    my_error(ER_OPTION_PREVENTS_STATEMENT, MYF(0), "--skip-grant-tables");
-    DBUG_RETURN(-1);
-  }
-
+  DBUG_ASSERT(initialized);
   if (table_intact.check(table, ACL_TABLES::TABLE_PROXIES_PRIV))
     DBUG_RETURN(-1);
 
@@ -2266,7 +1707,10 @@ void grant_tables_setup_for_open(TABLE_LIST *tables, thr_lock_type lock_type,
                        C_STRING_WITH_LEN("password_history"),
                        "password_history", lock_type, mdl_type);
   if (lock_type <= TL_READ_NO_INSERT) {
-    /* tables new to 8.0 are optional when reading as mysql_upgrade must work */
+    /*
+      tables new to 8.0 are optional when
+      reading as mysql_upgrade must work
+    */
     tables[ACL_TABLES::TABLE_PASSWORD_HISTORY].open_strategy =
         TABLE_LIST::OPEN_IF_EXISTS;
     tables[ACL_TABLES::TABLE_ROLE_EDGES].open_strategy =

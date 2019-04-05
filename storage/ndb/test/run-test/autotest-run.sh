@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright (c) 2007, 2017, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2007, 2018, Oracle and/or its affiliates. All rights reserved.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -33,7 +33,7 @@
 ##############
 
 save_args=$*
-VERSION="autotest-run.sh version 1.12"
+VERSION="autotest-run.sh version 1.22"
 
 DATE=`date '+%Y-%m-%d'`
 if [ `uname -s` != "SunOS" ]
@@ -80,7 +80,10 @@ do
                 --conf=*) conf=`echo $1 | sed s/--conf=//`;;
                 --version) echo $VERSION; exit;;
 	        --suite=*) RUN=`echo $1 | sed s/--suite=//`;;
+          --suite-suffix=*) suite_suffix=`echo $1 | sed s/--suite-suffix=//`;;
 	        --run-dir=*) run_dir=`echo $1 | sed s/--run-dir=//`;;
+          --custom-atrt=*) custom_atrt=`echo $1 | sed s/--custom-atrt=//`;;
+          --custom-cpcc=*) custom_cpcc=`echo $1 | sed s/--custom-cpcc=//`;;
 	        --install-dir=*) install_dir=`echo $1 | sed s/--install-dir=//`;;
 	        --install-dir0=*) install_dir0=`echo $1 | sed s/--install-dir0=//`;;
 	        --install-dir1=*) install_dir1=`echo $1 | sed s/--install-dir1=//`;;
@@ -92,7 +95,12 @@ do
                 --baseport=*) baseport_arg="$1";;
                 --base-dir=*) base_dir=`echo $1 | sed s/--base-dir=//`;;
                 --clusters=*) clusters_arg="$1";;
+                --atrt-defaults-group-suffix=*)
+                    atrt_defaults_group_suffix_arg="${1/#--atrt-/--}"
+                    ;;
                 --site=*) site_arg="$1";;
+                --default-max-retries=*) default_max_retries_arg="$1";;
+                --default-force-cluster-restart) default_force_cluster_restart_arg="$1";;
         esac
         shift
 done
@@ -170,14 +178,24 @@ then
     echo "$DATE $RUN" > $LOCK
 fi
 
+on_exit() {
+####################################
+# Revert copy of test programs
+####################################
+  if [ -f "${run_dir}/revert_copy_missing_ndbclient_test_programs" ]
+  then
+    source "${run_dir}/revert_copy_missing_ndbclient_test_programs"
+  fi
 ####################################
 # Remove the lock file before exit #
 ####################################
-if [ -z "${nolock}" ]
-then
-    trap "rm -f $LOCK" EXIT
-fi
-
+  if [ -z "${nolock}" ] &&
+     [ -f "${LOCK}" ]
+  then
+    rm -f "${LOCK}"
+  fi
+}
+trap on_exit EXIT
 
 ###############################################
 # Check that all interesting files are present#
@@ -188,20 +206,39 @@ test_dir=$install_dir/mysql-test/ndb
 # Check if executables in $install_dir0 is executable at current
 # platform, they could be built for another kind of platform
 unset NDB_CPCC_HOSTS
-if ${install_dir}/bin/ndb_cpcc 2>/dev/null ; then
-  # Use atrt and ndb_cpcc from test build
+
+if [ -n "$custom_atrt" ];
+then
+  echo "Using custom atrt ${custom_atrt}"
+  atrt="${custom_atrt}"
+elif ${install_dir}/bin/ndb_cpcc 2>/dev/null
+then
+  echo "Using atrt from test build"
   atrt="${test_dir}/atrt"
+else
+  echo "Note: Cross platform testing, atrt used from server path" >&2
+  atrt=`which atrt`
+fi
+
+if [ -n "$custom_cpcc" ];
+then
+  echo "Using custom ndb_cpcc ${custom_cpcc}"
+  ndb_cpcc="${custom_cpcc}"
+elif ${install_dir}/bin/ndb_cpcc 2>/dev/null
+then
+  echo "Using ndb_cpcc from test build"
   ndb_cpcc="${install_dir}/bin/ndb_cpcc"
 else
-  echo "Note: Cross platform testing, atrt and ndb_cpcc is not used from test build" >&2
-  atrt=`which atrt`
+  echo "Note: Cross platform testing, ndb_cpcc used from server path" >&2
   ndb_cpcc=`which ndb_cpcc`
 fi
 
-test_file=$test_dir/$RUN-tests.txt
+if [ -n "${suite_suffix}" ]; then
+  suite_suffix="--${suite_suffix}"
+fi
 
-if [ ! -f "$test_file" ]
-then
+test_file="${test_dir}/${RUN}${suite_suffix}-tests.txt"
+if [ ! -f "$test_file" ]; then
     echo "Cant find testfile: $test_file"
     exit 1
 fi
@@ -318,10 +355,52 @@ fi
 choose $conf $hosts > d.tmp.$$
 sed -e s,CHOOSE_dir,"$run_dir/run",g < d.tmp.$$ > my.cnf
 
+clusters=`echo ${clusters_arg} | sed s/--clusters=//`
+for cluster_name in ${clusters//,/ }; do
+  conf_base=$(echo "${conf}" | sed 's/\.cnf$//')
+  config_ini="${conf_base}${cluster_name}.ini"
+
+  if [ -f "$config_ini" ]; then
+    [ -r "$config_ini" ] || (echo "Failed to read ${config_ini}" && exit 1)
+
+    choose "$config_ini" $hosts > d.tmp.$$
+    sed -e s,CHOOSE_dir,"$run_dir/run",g < d.tmp.$$ > "config${cluster_name}.ini"
+  fi
+done
+
+rm -f d.tmp.$$
+
+copy_missing_ndbclient_test_programs() {
+  (
+    export LD_LIBRARY_PATH="${1}/bin:${1}/lib"
+    for prog in testDowngrade testUpgrade
+    do
+      if [ -f "${1}/bin/${prog}" ] &&
+         [ ! -f "${2}/bin/${prog}" ] &&
+         ldd "${1}/bin/${prog}" | grep -c ndbclient
+      then
+        echo "rm -f '$(realpath ${2}/bin/${prog})'" &&
+          cp -p "${1}/bin/${prog}" "${2}/bin/${prog}"
+      fi
+    done
+    for file in "${1}"/mysql-test/ndb/*grade*
+    do
+      f=$(basename "${file}")
+      if [ -f "${file}" ] &&
+         [ ! -f "${2}/mysql-test/ndb/${f}" ]
+      then
+        echo "rm -f '$(realpath ${2}/mysql-test/ndb/${f})'" &&
+          cp -p "${file}" "${2}/mysql-test/ndb/${f}"
+      fi
+    done
+  ) > revert_copy_missing_ndbclient_test_programs
+}
 prefix="--prefix=$install_dir --prefix0=$install_dir0"
 if [ -n "$install_dir1" ]
 then
     prefix="$prefix --prefix1=$install_dir1"
+    copy_missing_ndbclient_test_programs ${install_dir0} ${install_dir1}
+    copy_missing_ndbclient_test_programs ${install_dir1} ${install_dir0}
 fi
 
 # If verbose level 0, use default verbose mode (1) for atrt anyway
@@ -330,21 +409,42 @@ if [ ${verbose} -gt 0 ] ; then
   verbose_arg=--verbose=${verbose}
 fi
 
-# Setup configuration
-$atrt Cdq ${site_arg} ${clusters_arg} ${verbose_arg} $prefix my.cnf
+return_code=0
 
-# Start...
-args=""
-args="--report-file=report.txt"
-args="$args --log-file=log.txt"
-args="$args --testcase-file=$test_dir/$RUN-tests.txt"
-args="$args ${baseport_arg}"
-args="$args ${site_arg} ${clusters_arg}"
-args="$args $prefix"
-args="$args ${verbose_arg}"
-$atrt $args my.cnf || echo "ERROR: $?: $atrt $args my.cnf"
+# Setup configuration
+$atrt ${atrt_defaults_group_suffix_arg} Cdq \
+   ${site_arg} \
+   ${clusters_arg} \
+   ${verbose_arg} \
+   $prefix \
+   my.cnf \
+   | tee log.txt
+
+atrt_conf_status=${PIPESTATUS[0]}
+if [ ${atrt_conf_status} -ne 0 ]; then
+    return_code=$atrt_conf_status
+    echo "Setup configuration failure"
+else
+    args="${atrt_defaults_group_suffix_arg}"
+    args="$args --report-file=report.txt"
+    args="$args --testcase-file=${test_file}"
+    args="$args ${baseport_arg}"
+    args="$args ${site_arg} ${clusters_arg}"
+    args="$args $prefix"
+    args="$args ${verbose_arg}"
+    args="$args ${default_max_retries_arg}"
+    args="$args ${default_force_cluster_restart_arg}"
+    $atrt $args my.cnf | tee -a log.txt
+
+    atrt_test_status=${PIPESTATUS[0]}
+    if [ $atrt_test_status -ne 0 ]; then
+        return_code=$atrt_test_status
+        echo "ERROR: $atrt_test_status: $atrt $args my.cnf"
+    fi
+fi
 
 # Make tar-ball
+[ -f my.cnf ] && mv my.cnf $res_dir
 [ -f log.txt ] && mv log.txt $res_dir
 [ -f report.txt ] && mv report.txt $res_dir
 [ "`find . -name 'result*'`" ] && mv result* $res_dir
@@ -405,3 +505,5 @@ fi
 
 cd $p
 rm -rf $res_dir $run_dir
+
+exit $return_code

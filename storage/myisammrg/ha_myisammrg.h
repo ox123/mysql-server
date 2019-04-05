@@ -98,7 +98,7 @@ class ha_myisammrg : public handler {
     return (HA_AUTO_PART_KEY | HA_NO_TRANSACTIONS | HA_BINLOG_ROW_CAPABLE |
             HA_BINLOG_STMT_CAPABLE | HA_NULL_IN_KEY | HA_CAN_INDEX_BLOBS |
             HA_FILE_BASED | HA_ANY_INDEX_MAY_BE_UNIQUE | HA_CAN_BIT_FIELD |
-            HA_HAS_RECORDS | HA_NO_COPY_ON_ALTER | HA_DUPLICATE_POS);
+            HA_COUNT_ROWS_INSTANT | HA_NO_COPY_ON_ALTER | HA_DUPLICATE_POS);
   }
   ulong index_flags(uint inx, uint, bool) const {
     return ((table_share->key_info[inx].algorithm == HA_KEY_ALG_FULLTEXT)
@@ -108,7 +108,10 @@ class ha_myisammrg : public handler {
   }
   uint max_supported_keys() const { return MI_MAX_KEY; }
   uint max_supported_key_length() const { return MI_MAX_KEY_LENGTH; }
-  uint max_supported_key_part_length() const { return MI_MAX_KEY_LENGTH; }
+  uint max_supported_key_part_length(
+      HA_CREATE_INFO *create_info MY_ATTRIBUTE((unused))) const {
+    return MI_MAX_KEY_LENGTH;
+  }
   double scan_time() {
     return ulonglong2double(stats.data_file_length) / IO_SIZE + file->tables;
   }

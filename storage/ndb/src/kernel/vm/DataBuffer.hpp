@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2010, 2016, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2010, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -129,6 +129,12 @@ public:
    */
   static Uint32 getSegmentSize();
 
+  /** 
+   * Get segment size in bytes (derived from template argument)
+   */
+  static Uint32 getSegmentSizeInBytes();
+
+
   void print(FILE*) const;
 
   /* ----------------------------------------------------------------------- */
@@ -143,7 +149,7 @@ public:
     void print(FILE* out) {
       fprintf(out, "[DataBufferIterator curr.i=%d, data=%p, ind=%d, pos=%d]\n",
 	      curr.i, (void*) data, ind, pos);
-    };
+    }
 
     inline void assign(const ConstDataBufferIterator& src);
     inline bool isNull() const { return curr.isNull();}
@@ -485,10 +491,17 @@ DataBuffer<sz, Pool>::getSegmentSize(){
 
 template<Uint32 sz, typename Pool>
 inline
+Uint32
+DataBuffer<sz, Pool>::getSegmentSizeInBytes(){
+  return 4 * sz;
+}
+
+
+template<Uint32 sz, typename Pool>
+inline
 bool
 DataBuffer<sz, Pool>::first(DataBufferIterator & it){
   ConstDataBufferIterator tmp;
-  tmp.assign(it);
   bool ret = first(tmp);
   it.assign(tmp);
   return ret;

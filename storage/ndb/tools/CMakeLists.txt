@@ -1,4 +1,4 @@
-# Copyright (c) 2008, 2017, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2008, 2018, Oracle and/or its affiliates. All rights reserved.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -30,7 +30,10 @@ IF(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
           "unused-parameter"
           # Downgrade -Werror to warning for "may be used uninitialized"
           # and "is used uninitialized in this function"
-          "error=maybe-uninitialized")
+          "error=maybe-uninitialized"
+          # Downgrade -Werror=deprecated-copy to warning for gcc 9
+          "error=deprecated-copy"
+          )
     STRING(REPLACE "-" "_" warning_ ${warning})
     STRING(TOUPPER ${warning_} WARNING)
     CHECK_CXX_COMPILER_FLAG("-W${warning}" HAVE_${WARNING})
@@ -46,7 +49,6 @@ INCLUDE(${CMAKE_SOURCE_DIR}/cmake/bison.cmake)
 INCLUDE_DIRECTORIES(
   ${CMAKE_SOURCE_DIR}/storage/ndb/src/ndbapi
   ${CMAKE_SOURCE_DIR}/storage/ndb/include/kernel/signaldata
-  ${CMAKE_SOURCE_DIR}/storage/ndb/include/ndbtools
   ${CMAKE_SOURCE_DIR}/storage/ndb/include/util
   ${CMAKE_BINARY_DIR}/storage/ndb/tools)
 
@@ -192,12 +194,6 @@ IF(NOT CMAKE_SYSTEM_NAME MATCHES "SunOS")
     IF (NOT NCURSESW_LIB)
       FIND_LIBRARY(NCURSESW_LIB
                    NAMES ncurses)
-    ENDIF()
-
-    IF(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-      # Suppress warnings for undefined identifiers in ndb_top
-      ADD_COMPILE_FLAGS(${CMAKE_CURRENT_SOURCE_DIR}/ndb_top.cpp
-                        COMPILE_FLAGS "-Wno-undef")
     ENDIF()
 
     CHECK_LIBRARY_EXISTS("${NCURSESW_LIB}"

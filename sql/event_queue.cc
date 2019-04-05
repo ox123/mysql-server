@@ -383,7 +383,6 @@ void Event_queue::find_n_remove_event(LEX_STRING db, LEX_STRING name) {
 */
 
 void Event_queue::recalculate_activation_times(THD *thd) {
-  Event_db_repository *db_repository = Events::get_db_repository();
   DBUG_ENTER("Event_queue::recalculate_activation_times");
 
   LOCK_QUEUE_DATA();
@@ -426,9 +425,9 @@ void Event_queue::recalculate_activation_times(THD *thd) {
     if (element->m_dropped) {
       bool ret;
       bool event_exists;
-      if (!(ret = db_repository->drop_event(thd, element->m_schema_name,
-                                            element->m_event_name, false,
-                                            &event_exists))) {
+      if (!(ret = Event_db_repository::drop_event(thd, element->m_schema_name,
+                                                  element->m_event_name, false,
+                                                  &event_exists))) {
         String sp_sql;
         if ((ret =
                  construct_drop_event_sql(thd, &sp_sql, element->m_schema_name,
@@ -643,8 +642,7 @@ end:
                          (*event_name)->name.str))
       DBUG_RETURN(true);
 
-    Event_db_repository *db_repository = Events::get_db_repository();
-    (void)db_repository->update_timing_fields_for_event(
+    (void)Event_db_repository::update_timing_fields_for_event(
         thd, (*event_name)->dbname, (*event_name)->name, last_executed,
         (ulonglong)status);
 
@@ -771,8 +769,9 @@ void Event_queue::dump_internal_status() {
   printf("LUA             : %s:%u\n", mutex_last_unlocked_in_func,
          mutex_last_unlocked_at_line);
   if (mutex_last_attempted_lock_at_line)
-    printf("Last lock attempt at: %s:%u\n", mutex_last_attempted_lock_in_func,
-           mutex_last_attempted_lock_at_line);
+    printf("Last lock attempt at: %s:%u\n",
+           mutex_last_attempted_lock_in_func.load(),
+           mutex_last_attempted_lock_at_line.load());
   printf("WOC             : %s\n", waiting_on_cond ? "YES" : "NO");
 
   MYSQL_TIME time;

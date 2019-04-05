@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -183,7 +183,6 @@ class Transaction_ctx {
   */
   struct {
     bool enabled;      // see ha_enable_transaction()
-    bool pending;      // Is the transaction commit pending?
     bool xid_written;  // The session wrote an XID
     bool real_commit;  // Is this a "real" commit?
     bool commit_low;   // see MYSQL_BIN_LOG::ordered_commit
@@ -227,6 +226,7 @@ class Transaction_ctx {
     m_xid_state.cleanup();
     m_rpl_transaction_ctx.cleanup();
     m_transaction_write_set_ctx.clear_write_set();
+    trans_begin_hook_invoked = false;
     free_root(&m_mem_root, MYF(MY_KEEP_PREALLOC));
     DBUG_VOID_RETURN;
   }
@@ -283,7 +283,9 @@ class Transaction_ctx {
   }
 
   void set_ha_trx_info(enum_trx_scope scope, Ha_trx_info *trx_info) {
+    DBUG_ENTER("Transaction_ctx::set_ha_trx_info");
     m_scope_info[scope].m_ha_list = trx_info;
+    DBUG_VOID_RETURN;
   }
 
   XID_STATE *xid_state() { return &m_xid_state; }
@@ -357,9 +359,11 @@ class Transaction_ctx {
   }
 
   void reset_scope(enum_trx_scope scope) {
+    DBUG_ENTER("Transaction_ctx::reset_scope");
     m_scope_info[scope].m_ha_list = 0;
     m_scope_info[scope].m_no_2pc = 0;
     m_scope_info[scope].m_rw_ha_count = 0;
+    DBUG_VOID_RETURN;
   }
 
   Rpl_transaction_ctx *get_rpl_transaction_ctx() {
@@ -378,9 +382,14 @@ class Transaction_ctx {
     return &m_transaction_write_set_ctx;
   }
 
+  bool was_trans_begin_hook_invoked() { return trans_begin_hook_invoked; }
+
+  void set_trans_begin_hook_invoked() { trans_begin_hook_invoked = true; }
+
  private:
   Rpl_transaction_ctx m_rpl_transaction_ctx;
   Rpl_transaction_write_set_ctx m_transaction_write_set_ctx;
+  bool trans_begin_hook_invoked;
 };
 
 /**

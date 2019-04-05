@@ -26,6 +26,8 @@
 
 #include <algorithm>
 
+#include "plugin/x/ngs/include/ngs/interface/notice_configuration_interface.h"
+#include "plugin/x/ngs/include/ngs/notice_descriptor.h"
 #include "plugin/x/ngs/include/ngs/protocol/column_info_builder.h"
 #include "plugin/x/src/admin_cmd_index.h"
 #include "plugin/x/src/query_string_builder.h"
@@ -36,16 +38,49 @@
 
 namespace xpl {
 
-const char *const Admin_command_handler::MYSQLX_NAMESPACE = "mysqlx";
+const char *const Admin_command_handler::k_mysqlx_namespace = "mysqlx";
 
-namespace {
+namespace details {
+
+class Notice_configuration_commiter {
+ public:
+  using Notice_type = ngs::Notice_type;
+  using Notice_configuration_interface = ngs::Notice_configuration_interface;
+
+ public:
+  Notice_configuration_commiter(
+      Notice_configuration_interface *notice_configuration)
+      : m_notice_configuration(notice_configuration) {}
+
+  bool try_to_mark_notice(const std::string &notice_name) {
+    Notice_type out_notice_type;
+
+    if (!m_notice_configuration->get_notice_type_by_name(notice_name,
+                                                         &out_notice_type))
+      return false;
+
+    m_marked_notices.emplace(out_notice_type);
+
+    return true;
+  }
+
+  void commit_marked_notices(const bool should_be_enabled) {
+    for (const auto notice_type : m_marked_notices) {
+      m_notice_configuration->set_notice(notice_type, should_be_enabled);
+    }
+  }
+
+ private:
+  Notice_configuration_interface *m_notice_configuration;
+  std::set<Notice_type> m_marked_notices;
+};
 
 inline std::string to_lower(std::string src) {
   std::transform(src.begin(), src.end(), src.begin(), ::tolower);
   return src;
 }
 
-}  // namespace
+}  // namespace details
 
 const Admin_command_handler::Command_handler
     Admin_command_handler::m_command_handler;
@@ -76,7 +111,7 @@ ngs::Error_code Admin_command_handler::Command_handler::execute(
                       name_space.c_str(), command.c_str());
 
   try {
-    return (admin->*(iter->second))(to_lower(name_space), args);
+    return (admin->*(iter->second))(details::to_lower(name_space), args);
   } catch (std::exception &e) {
     log_error(ER_XPLUGIN_FAILED_TO_EXECUTE_ADMIN_CMD, command.c_str(),
               e.what());
@@ -84,7 +119,7 @@ ngs::Error_code Admin_command_handler::Command_handler::execute(
   }
 }
 
-Admin_command_handler::Admin_command_handler(Session *session)
+Admin_command_handler::Admin_command_handler(ngs::Session_interface *session)
     : m_session(session) {}
 
 ngs::Error_code Admin_command_handler::execute(const std::string &name_space,
@@ -100,7 +135,8 @@ ngs::Error_code Admin_command_handler::execute(const std::string &name_space,
     return ngs::Error(ER_INTERNAL_ERROR, "Error executing statement");
   }
 
-  return m_command_handler.execute(this, name_space, to_lower(command), args);
+  return m_command_handler.execute(this, name_space, details::to_lower(command),
+                                   args);
 }
 
 /* Stmt: ping
@@ -108,7 +144,7 @@ ngs::Error_code Admin_command_handler::execute(const std::string &name_space,
  */
 ngs::Error_code Admin_command_handler::ping(const std::string & /*name_space*/,
                                             Command_arguments *args) {
-  m_session->update_status<&ngs::Common_status_variables::m_stmt_ping>();
+  m_session->update_status(&ngs::Common_status_variables::m_stmt_ping);
 
   ngs::Error_code error = args->end();
   if (error) return error;
@@ -128,7 +164,7 @@ struct Client_data_ {
 };
 
 void get_client_data(std::vector<Client_data_> *clients_data,
-                     const Session &requesting_session,
+                     const ngs::Session_interface &requesting_session,
                      const ngs::Sql_session_interface &da,
                      ngs::Client_interface *client) {
   // The client object is handled by different thread,
@@ -170,8 +206,7 @@ void get_client_data(std::vector<Client_data_> *clients_data,
  */
 ngs::Error_code Admin_command_handler::list_clients(
     const std::string & /*name_space*/, Command_arguments *args) {
-  m_session
-      ->update_status<&ngs::Common_status_variables::m_stmt_list_clients>();
+  m_session->update_status(&ngs::Common_status_variables::m_stmt_list_clients);
 
   ngs::Error_code error = args->end();
   if (error) return error;
@@ -214,14 +249,12 @@ ngs::Error_code Admin_command_handler::list_clients(
     if (it->user.empty())
       proto.row_builder().add_null_field();
     else
-      proto.row_builder().add_string_field(it->user.c_str(), it->user.length(),
-                                           nullptr);
+      proto.row_builder().add_string_field(it->user.c_str(), it->user.length());
 
     if (it->host.empty())
       proto.row_builder().add_null_field();
     else
-      proto.row_builder().add_string_field(it->host.c_str(), it->host.length(),
-                                           nullptr);
+      proto.row_builder().add_string_field(it->host.c_str(), it->host.length());
 
     if (!it->has_session)
       proto.row_builder().add_null_field();
@@ -242,7 +275,7 @@ ngs::Error_code Admin_command_handler::list_clients(
  */
 ngs::Error_code Admin_command_handler::kill_client(
     const std::string & /*name_space*/, Command_arguments *args) {
-  m_session->update_status<&ngs::Common_status_variables::m_stmt_kill_client>();
+  m_session->update_status(&ngs::Common_status_variables::m_stmt_kill_client);
 
   uint64_t cid = 0;
 
@@ -289,8 +322,8 @@ ngs::Error_code create_collection_impl(ngs::Sql_session_interface *da,
  */
 ngs::Error_code Admin_command_handler::create_collection(
     const std::string & /*name_space*/, Command_arguments *args) {
-  m_session->update_status<
-      &ngs::Common_status_variables::m_stmt_create_collection>();
+  m_session->update_status(
+      &ngs::Common_status_variables::m_stmt_create_collection);
 
   std::string schema;
   std::string collection;
@@ -318,8 +351,8 @@ ngs::Error_code Admin_command_handler::create_collection(
  */
 ngs::Error_code Admin_command_handler::drop_collection(
     const std::string & /*name_space*/, Command_arguments *args) {
-  m_session
-      ->update_status<&ngs::Common_status_variables::m_stmt_drop_collection>();
+  m_session->update_status(
+      &ngs::Common_status_variables::m_stmt_drop_collection);
 
   Query_string_builder qb;
   std::string schema;
@@ -373,8 +406,8 @@ ngs::Error_code Admin_command_handler::drop_collection(
  */
 ngs::Error_code Admin_command_handler::create_collection_index(
     const std::string &name_space, Command_arguments *args) {
-  m_session->update_status<
-      &ngs::Common_status_variables::m_stmt_create_collection_index>();
+  m_session->update_status(
+      &ngs::Common_status_variables::m_stmt_create_collection_index);
   return Admin_command_index(m_session).create(name_space, args);
 }
 
@@ -386,8 +419,8 @@ ngs::Error_code Admin_command_handler::create_collection_index(
  */
 ngs::Error_code Admin_command_handler::drop_collection_index(
     const std::string &name_space, Command_arguments *args) {
-  m_session->update_status<
-      &ngs::Common_status_variables::m_stmt_drop_collection_index>();
+  m_session->update_status(
+      &ngs::Common_status_variables::m_stmt_drop_collection_index);
   return Admin_command_index(m_session).drop(name_space, args);
 }
 
@@ -408,8 +441,7 @@ inline bool is_fixed_notice_name(const std::string &notice) {
 inline void add_notice_row(ngs::Protocol_encoder_interface *proto,
                            const std::string &notice, longlong status) {
   proto->start_row();
-  proto->row_builder().add_string_field(notice.c_str(), notice.length(),
-                                        nullptr);
+  proto->row_builder().add_string_field(notice.c_str(), notice.length());
   proto->row_builder().add_longlong_field(status, 0);
   proto->send_row();
 }
@@ -422,22 +454,29 @@ inline void add_notice_row(ngs::Protocol_encoder_interface *proto,
  */
 ngs::Error_code Admin_command_handler::enable_notices(
     const std::string & /*name_space*/, Command_arguments *args) {
-  m_session
-      ->update_status<&ngs::Common_status_variables::m_stmt_enable_notices>();
+  m_session->update_status(
+      &ngs::Common_status_variables::m_stmt_enable_notices);
 
-  std::vector<std::string> notices;
-  ngs::Error_code error = args->string_list({"notice"}, &notices).end();
+  std::vector<std::string> notice_names_to_enable;
+  ngs::Error_code error =
+      args->string_list({"notice"}, &notice_names_to_enable).end();
+
   if (error) return error;
 
-  bool enable_warnings = false;
-  for (const std::string &n : notices) {
-    if (n == "warnings")
-      enable_warnings = true;
-    else if (!is_fixed_notice_name(n))
-      return ngs::Error(ER_X_BAD_NOTICE, "Invalid notice name %s", n.c_str());
+  auto notice_configurator = &m_session->get_notice_configuration();
+  details::Notice_configuration_commiter new_configuration(notice_configurator);
+
+  for (const auto &name : notice_names_to_enable) {
+    if (is_fixed_notice_name(name)) continue;
+
+    if (!new_configuration.try_to_mark_notice(name)) {
+      return ngs::Error(ER_X_BAD_NOTICE, "Invalid notice name %s",
+                        name.c_str());
+    }
   }
-  // so far only warnings notices are switchable
-  if (enable_warnings) m_session->options().set_send_warnings(true);
+
+  const bool enable_notices = true;
+  new_configuration.commit_marked_notices(enable_notices);
 
   m_session->proto().send_exec_ok();
   return ngs::Success();
@@ -449,26 +488,30 @@ ngs::Error_code Admin_command_handler::enable_notices(
  */
 ngs::Error_code Admin_command_handler::disable_notices(
     const std::string & /*name_space*/, Command_arguments *args) {
-  m_session
-      ->update_status<&ngs::Common_status_variables::m_stmt_disable_notices>();
+  m_session->update_status(
+      &ngs::Common_status_variables::m_stmt_disable_notices);
 
-  std::vector<std::string> notices;
-  ngs::Error_code error = args->string_list({"notice"}, &notices).end();
+  std::vector<std::string> notice_names_to_disable;
+  ngs::Error_code error =
+      args->string_list({"notice"}, &notice_names_to_disable).end();
+
   if (error) return error;
 
-  bool disable_warnings = false;
-  for (std::vector<std::string>::const_iterator i = notices.begin();
-       i != notices.end(); ++i) {
-    if (*i == "warnings")
-      disable_warnings = true;
-    else if (is_fixed_notice_name(*i))
+  auto notice_configurator = &m_session->get_notice_configuration();
+  details::Notice_configuration_commiter new_configuration(notice_configurator);
+
+  for (const auto &name : notice_names_to_disable) {
+    if (is_fixed_notice_name(name))
       return ngs::Error(ER_X_CANNOT_DISABLE_NOTICE, "Cannot disable notice %s",
-                        i->c_str());
-    else
-      return ngs::Error(ER_X_BAD_NOTICE, "Invalid notice name %s", i->c_str());
+                        name.c_str());
+    if (!new_configuration.try_to_mark_notice(name)) {
+      return ngs::Error(ER_X_BAD_NOTICE, "Invalid notice name %s",
+                        name.c_str());
+    }
   }
 
-  if (disable_warnings) m_session->options().set_send_warnings(false);
+  const bool disable_notices = false;
+  new_configuration.commit_marked_notices(disable_notices);
 
   m_session->proto().send_exec_ok();
   return ngs::Success();
@@ -479,8 +522,8 @@ ngs::Error_code Admin_command_handler::disable_notices(
  */
 ngs::Error_code Admin_command_handler::list_notices(
     const std::string & /*name_space*/, Command_arguments *args) {
-  m_session
-      ->update_status<&ngs::Common_status_variables::m_stmt_list_notices>();
+  m_session->update_status(&ngs::Common_status_variables::m_stmt_list_notices);
+  const auto &notice_config = m_session->get_notice_configuration();
 
   ngs::Error_code error = args->end();
   if (error) return error;
@@ -495,11 +538,24 @@ ngs::Error_code Admin_command_handler::list_notices(
   proto.send_column_metadata(&column[0].get());
   proto.send_column_metadata(&column[1].get());
 
-  add_notice_row(&proto, "warnings",
-                 m_session->options().get_send_warnings() ? 1 : 0);
-  for (const char *const *notice = fixed_notice_names;
-       notice < fixed_notice_names_end; ++notice)
-    add_notice_row(&proto, *notice, 1);
+  const auto last_notice_value =
+      static_cast<int>(ngs::Notice_type::k_last_element);
+
+  for (int notice_value = 0; notice_value < last_notice_value; ++notice_value) {
+    const auto notice_type = static_cast<ngs::Notice_type>(notice_value);
+    std::string out_notice_name;
+
+    // Fails in case when notice is not by name.
+    if (!notice_config.get_name_by_notice_type(notice_type, &out_notice_name))
+      continue;
+
+    add_notice_row(&proto, out_notice_name,
+                   notice_config.is_notice_enabled(notice_type) ? 1 : 0);
+  }
+
+  for (const auto notice : fixed_notice_names) {
+    add_notice_row(&proto, notice, 1);
+  }
 
   proto.send_result_fetch_done();
   proto.send_exec_ok();
@@ -562,8 +618,7 @@ const char *const COUNT_GEN = COUNT_WHEN(
  */
 ngs::Error_code Admin_command_handler::list_objects(
     const std::string & /*name_space*/, Command_arguments *args) {
-  m_session
-      ->update_status<&ngs::Common_status_variables::m_stmt_list_objects>();
+  m_session->update_status(&ngs::Common_status_variables::m_stmt_list_objects);
 
   static const bool is_table_names_case_sensitive =
       get_system_variable<long>(&m_session->data_context(),
@@ -582,7 +637,7 @@ ngs::Error_code Admin_command_handler::list_objects(
                               .end();
   if (error) return error;
 
-  if (!is_table_names_case_sensitive) schema = to_lower(schema);
+  if (!is_table_names_case_sensitive) schema = details::to_lower(schema);
 
   error = is_schema_selected_and_exists(&m_session->data_context(), schema);
   if (error) return error;
@@ -619,7 +674,7 @@ ngs::Error_code Admin_command_handler::list_objects(
   qb.put(" GROUP BY name ORDER BY name");
 
   log_debug("LIST: %s", qb.get().c_str());
-  Streaming_resultset resultset(&m_session->proto(), false);
+  Streaming_resultset resultset(&m_session->proto(), nullptr, false);
   error = m_session->data_context().execute(qb.get().data(), qb.get().length(),
                                             &resultset);
   if (error) return error;
@@ -685,8 +740,8 @@ bool is_collection(ngs::Sql_session_interface *da, const std::string &schema,
  */
 ngs::Error_code Admin_command_handler::ensure_collection(
     const std::string & /*name_space*/, Command_arguments *args) {
-  m_session->update_status<
-      &ngs::Common_status_variables::m_stmt_ensure_collection>();
+  m_session->update_status(
+      &ngs::Common_status_variables::m_stmt_ensure_collection);
   std::string schema;
   std::string collection;
 
@@ -711,6 +766,6 @@ ngs::Error_code Admin_command_handler::ensure_collection(
   return ngs::Success();
 }
 
-const char *const Admin_command_handler::Command_arguments::PLACEHOLDER = "?";
+const char *const Admin_command_handler::Command_arguments::k_placeholder = "?";
 
 }  // namespace xpl

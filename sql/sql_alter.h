@@ -34,7 +34,9 @@
 #include "my_sqlcommand.h"
 #include "mysql/psi/psi_base.h"
 #include "nullable.h"
+#include "sql/dd/types/column.h"
 #include "sql/gis/srid.h"
+#include "sql/mdl.h"                // MDL_request
 #include "sql/mem_root_array.h"     // Mem_root_array
 #include "sql/sql_cmd.h"            // Sql_cmd
 #include "sql/sql_cmd_ddl_table.h"  // Sql_cmd_ddl_table
@@ -43,6 +45,7 @@
 
 class Create_field;
 class FOREIGN_KEY;
+class Value_generator;
 class Item;
 class Key_spec;
 class String;
@@ -81,6 +84,9 @@ class Alter_column {
   /// The default value supplied.
   Item *def;
 
+  /// The expression to be used to generated the default value.
+  Value_generator *m_default_val_expr;
+
   /// The new colum name.
   const char *m_new_name;
 
@@ -90,14 +96,26 @@ class Alter_column {
   /// Type of change requested in ALTER TABLE.
   inline Type change_type() const { return m_type; }
 
-  /// Constructor used when changing field DEFAULT value.
+  /// Constructor used when altering the field's default value with a literal
+  /// constant or when dropping a field's default value.
   Alter_column(const char *par_name, Item *literal)
-      : name(par_name), def(literal), m_new_name(nullptr) {
+      : name(par_name),
+        def(literal),
+        m_default_val_expr(nullptr),
+        m_new_name(nullptr) {
     if (def)
       m_type = Type::SET_DEFAULT;
     else
       m_type = Type::DROP_DEFAULT;
   }
+
+  /// Constructor used when setting a field's DEFAULT value to an expression.
+  Alter_column(const char *par_name, Value_generator *gen_def)
+      : name(par_name),
+        def(nullptr),
+        m_default_val_expr(gen_def),
+        m_new_name(nullptr),
+        m_type(Type::SET_DEFAULT) {}
 
   /// Constructor used while renaming field name.
   Alter_column(const char *old_name, const char *new_name)
@@ -253,6 +271,12 @@ class Alter_info {
 
     /// Means that the visibility of an index is changed.
     ALTER_INDEX_VISIBILITY = 1UL << 29,
+
+    /// Set for SECONDARY_LOAD
+    ALTER_SECONDARY_LOAD = 1UL << 30,
+
+    /// Set for SECONDARY_UNLOAD
+    ALTER_SECONDARY_UNLOAD = 1UL << 31,
   };
 
   enum enum_enable_or_disable { LEAVE_AS_IS, ENABLE, DISABLE };
@@ -267,6 +291,9 @@ class Alter_info {
 
     // In-place if supported, error otherwise.
     ALTER_TABLE_ALGORITHM_INPLACE,
+
+    // Instant if supported, error otherwise.
+    ALTER_TABLE_ALGORITHM_INSTANT,
 
     // Copy if supported, error otherwise.
     ALTER_TABLE_ALGORITHM_COPY
@@ -316,7 +343,7 @@ class Alter_info {
   Mem_root_array<const Alter_column *> alter_list;
   // List of keys, used by both CREATE and ALTER TABLE.
 
-  Mem_root_array<const Key_spec *> key_list;
+  Mem_root_array<Key_spec *> key_list;
   // Keys to be renamed.
   Mem_root_array<const Alter_rename_key *> alter_rename_key_list;
 
@@ -388,8 +415,9 @@ class Alter_info {
                  Item *on_update_value, LEX_STRING *comment, const char *change,
                  List<String> *interval_list, const CHARSET_INFO *cs,
                  bool has_explicit_collation, uint uint_geom_type,
-                 class Generated_column *gcol_info, const char *opt_after,
-                 Nullable<gis::srid_t> srid);
+                 Value_generator *gcol_info, Value_generator *default_val_expr,
+                 const char *opt_after, Nullable<gis::srid_t> srid,
+                 dd::Column::enum_hidden_type hidden);
 
  private:
   Alter_info &operator=(const Alter_info &rhs);  // not implemented
@@ -409,12 +437,12 @@ class Alter_table_ctx {
   /**
      @return true if the table is moved to another database, false otherwise.
   */
-  bool is_database_changed() const { return (new_db != db); };
+  bool is_database_changed() const { return (new_db != db); }
 
   /**
      @return true if the table name is changed, false otherwise.
   */
-  bool is_table_name_changed() const { return (new_name != table_name); };
+  bool is_table_name_changed() const { return (new_name != table_name); }
 
   /**
      @return true if the table is renamed (i.e. its name or database changed),
@@ -422,7 +450,7 @@ class Alter_table_ctx {
   */
   bool is_table_renamed() const {
     return is_database_changed() || is_table_name_changed();
-  };
+  }
 
   /**
      @return path to the original table.
@@ -462,6 +490,14 @@ class Alter_table_ctx {
   */
   uint fk_max_generated_name_number;
 
+  /**
+    Metadata lock request on table's new name when this name or database
+    are changed.
+  */
+  MDL_request target_mdl_request;
+  /** Metadata lock request on table's new database if it is changed. */
+  MDL_request target_db_mdl_request;
+
  private:
   char new_filename[FN_REFLEN + 1];
   char new_alias_buff[FN_REFLEN + 1];
@@ -486,7 +522,7 @@ class Sql_cmd_common_alter_table : public Sql_cmd_ddl_table {
  public:
   using Sql_cmd_ddl_table::Sql_cmd_ddl_table;
 
-  virtual ~Sql_cmd_common_alter_table() = 0;  // force abstract class
+  ~Sql_cmd_common_alter_table() override = 0;  // force abstract class
 
   enum_sql_command sql_command_code() const override final {
     return SQLCOM_ALTER_TABLE;
@@ -517,6 +553,20 @@ class Sql_cmd_discard_import_tablespace : public Sql_cmd_common_alter_table {
 
  private:
   bool mysql_discard_or_import_tablespace(THD *thd, TABLE_LIST *table_list);
+};
+
+/**
+  Represents ALTER TABLE SECONDARY_LOAD/SECONDARY_UNLOAD statements.
+*/
+class Sql_cmd_secondary_load_unload final : public Sql_cmd_common_alter_table {
+ public:
+  // Inherit the constructors from the parent class.
+  using Sql_cmd_common_alter_table::Sql_cmd_common_alter_table;
+
+  bool execute(THD *thd) override;
+
+ private:
+  bool mysql_secondary_load_or_unload(THD *thd, TABLE_LIST *table_list);
 };
 
 #endif

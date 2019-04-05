@@ -153,4 +153,247 @@ COUNT(DISTINCT MICROSECOND(set_time))
 # Cleanup
 SET GLOBAL max_join_size=DEFAULT, init_connect=DEFAULT;
 RESET PERSIST;
+#
+# Bug #27489026: PERSIST_ONLY DOESN'T RESPECT DEFAULT INSTEAD COPIES GLOBAL VALUE
+#
+SELECT @@global.binlog_cache_size;
+@@global.binlog_cache_size
+32768
+SELECT @@global.disabled_storage_engines;
+@@global.disabled_storage_engines
+
+SELECT @@global.collation_database;
+@@global.collation_database
+utf8mb4_0900_ai_ci
+SELECT @@global.optimizer_trace_offset;
+@@global.optimizer_trace_offset
+-1
+SELECT @@global.optimizer_switch;
+@@global.optimizer_switch
+index_merge=on,index_merge_union=on,index_merge_sort_union=on,index_merge_intersection=on,engine_condition_pushdown=on,index_condition_pushdown=on,mrr=on,mrr_cost_based=on,block_nested_loop=on,batched_key_access=off,materialization=on,semijoin=on,loosescan=on,firstmatch=on,duplicateweedout=on,subquery_materialization_cost_based=on,use_index_extensions=on,condition_fanout_filter=on,derived_merge=on,use_invisible_indexes=off,skip_scan=on
+SELECT @@global.enforce_gtid_consistency;
+@@global.enforce_gtid_consistency
+OFF
+SELECT @@global.sql_mode;
+@@global.sql_mode
+ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
+SET @@global.binlog_cache_size= 4096;
+SET @@persist_only.binlog_cache_size= default,
+@@persist_only.collation_database= default,
+@@persist_only.disabled_storage_engines= default,
+@@persist_only.optimizer_trace_offset= default,
+@@persist_only.optimizer_switch= default,
+@@persist_only.enforce_gtid_consistency= default,
+@@persist_only.sql_mode= default;
+SELECT * FROM performance_schema.persisted_variables ORDER BY 1;
+VARIABLE_NAME	VARIABLE_VALUE
+binlog_cache_size	32768
+collation_database	utf8mb4_0900_ai_ci
+disabled_storage_engines	
+enforce_gtid_consistency	0
+optimizer_switch	index_merge=on,index_merge_union=on,index_merge_sort_union=on,index_merge_intersection=on,engine_condition_pushdown=on,index_condition_pushdown=on,mrr=on,mrr_cost_based=on,block_nested_loop=on,batched_key_access=off,materialization=on,semijoin=on,loosescan=on,firstmatch=on,duplicateweedout=on,subquery_materialization_cost_based=on,use_index_extensions=on,condition_fanout_filter=on,derived_merge=on,use_invisible_indexes=off,skip_scan=on
+optimizer_trace_offset	-1
+sql_mode	ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
+# Restart server
+# restart
+SELECT @@global.binlog_cache_size;
+@@global.binlog_cache_size
+32768
+SELECT @@global.disabled_storage_engines;
+@@global.disabled_storage_engines
+
+SELECT @@global.collation_database;
+@@global.collation_database
+utf8mb4_0900_ai_ci
+SELECT @@global.optimizer_trace_offset;
+@@global.optimizer_trace_offset
+-1
+SELECT @@global.optimizer_switch;
+@@global.optimizer_switch
+index_merge=on,index_merge_union=on,index_merge_sort_union=on,index_merge_intersection=on,engine_condition_pushdown=on,index_condition_pushdown=on,mrr=on,mrr_cost_based=on,block_nested_loop=on,batched_key_access=off,materialization=on,semijoin=on,loosescan=on,firstmatch=on,duplicateweedout=on,subquery_materialization_cost_based=on,use_index_extensions=on,condition_fanout_filter=on,derived_merge=on,use_invisible_indexes=off,skip_scan=on
+SELECT @@global.enforce_gtid_consistency;
+@@global.enforce_gtid_consistency
+OFF
+SELECT @@global.sql_mode;
+@@global.sql_mode
+ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
+SELECT * FROM performance_schema.persisted_variables ORDER BY 1;
+VARIABLE_NAME	VARIABLE_VALUE
+binlog_cache_size	32768
+collation_database	utf8mb4_0900_ai_ci
+disabled_storage_engines	
+enforce_gtid_consistency	0
+optimizer_switch	index_merge=on,index_merge_union=on,index_merge_sort_union=on,index_merge_intersection=on,engine_condition_pushdown=on,index_condition_pushdown=on,mrr=on,mrr_cost_based=on,block_nested_loop=on,batched_key_access=off,materialization=on,semijoin=on,loosescan=on,firstmatch=on,duplicateweedout=on,subquery_materialization_cost_based=on,use_index_extensions=on,condition_fanout_filter=on,derived_merge=on,use_invisible_indexes=off,skip_scan=on
+optimizer_trace_offset	-1
+sql_mode	ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
+# Cleanup
+RESET PERSIST;
+#
+# Bug #27523095: SET PERSIST MANDATORY_ROLES FAILS TO START THE SERVER
+#
+SET PERSIST mandatory_roles= default;
+# Restart server and check if server starts
+# restart
+SELECT * FROM performance_schema.persisted_variables ORDER BY 1;
+VARIABLE_NAME	VARIABLE_VALUE
+mandatory_roles	
+RESET PERSIST;
+#
+# Bug #27903874: [MYSQL 8.0 GA DEBUG BUILD] ASSERTION `!THD ||
+#                THD->LOCKED_TABLES_MODE || !THD->M
+#
+CREATE DATABASE bug27903874;
+USE bug27903874;
+SET @@autocommit=FALSE;
+CREATE TABLE t(a CHAR (1))ENGINE=InnoDB;
+RESET PERSIST size;
+ERROR HY000: Variable size does not exist in persisted config file
+SELECT JSON_OBJECTAGG(id,x) FROM t;
+ERROR 42S22: Unknown column 'id' in 'field list'
+RESET SLAVE;
+DROP DATABASE bug27903874;
+#
+# Bug #27512616: SET PERSIST COMMAND FAILS TO MAP DEFAULT(NULL) VALUES IN
+#                MYSQLD-AUTO.CNF
+#
+SELECT @@global.innodb_tmpdir;
+@@global.innodb_tmpdir
+NULL
+SET PERSIST innodb_tmpdir = default;
+SELECT @@global.innodb_ft_user_stopword_table;
+@@global.innodb_ft_user_stopword_table
+NULL
+SET PERSIST innodb_ft_user_stopword_table = NULL;
+# Restart server and check if server starts
+# restart
+SELECT variable_name FROM performance_schema.variables_info WHERE variable_source='PERSISTED';
+variable_name
+innodb_ft_user_stopword_table
+innodb_tmpdir
+SELECT @@global.innodb_tmpdir, @@global.innodb_ft_user_stopword_table;
+@@global.innodb_tmpdir	@@global.innodb_ft_user_stopword_table
+NULL	NULL
+RESET PERSIST;
+#
+# Bug #28564239: RESET PERSIST REQUIRES NO PRIVILEGES
+#
+CREATE USER u1;
+SET PERSIST_ONLY ft_query_expansion_limit=80, innodb_api_enable_mdl=1;
+SET PERSIST sort_buffer_size=156000,max_connections= 52;
+SET PERSIST max_heap_table_size=887808, slave_net_timeout=160;
+SHOW GRANTS;
+Grants for u1@%
+GRANT USAGE ON *.* TO `u1`@`%`
+RESET PERSIST max_heap_table_size;
+ERROR 42000: Access denied; you need (at least one of) the SUPER or SYSTEM_VARIABLES_ADMIN privilege(s) for this operation
+RESET PERSIST ft_query_expansion_limit;
+ERROR 42000: Access denied; you need SYSTEM_VARIABLES_ADMIN and PERSIST_RO_VARIABLES_ADMIN privileges for this operation
+RESET PERSIST;
+ERROR 42000: Access denied; you need (at least one of) the SUPER or SYSTEM_VARIABLES_ADMIN privilege(s) for this operation
+GRANT SUPER ON *.* TO u1;
+Warnings:
+Warning	1287	The SUPER privilege identifier is deprecated
+SHOW GRANTS;
+Grants for u1@%
+GRANT SUPER ON *.* TO `u1`@`%`
+RESET PERSIST max_heap_table_size;
+RESET PERSIST ft_query_expansion_limit;
+ERROR 42000: Access denied; you need SYSTEM_VARIABLES_ADMIN and PERSIST_RO_VARIABLES_ADMIN privileges for this operation
+RESET PERSIST;
+ERROR 42000: Access denied; you need SYSTEM_VARIABLES_ADMIN and PERSIST_RO_VARIABLES_ADMIN privileges for this operation
+REVOKE SUPER ON *.* FROM u1;
+Warnings:
+Warning	1287	The SUPER privilege identifier is deprecated
+GRANT SYSTEM_VARIABLES_ADMIN ON *.* TO u1;
+SHOW GRANTS;
+Grants for u1@%
+GRANT USAGE ON *.* TO `u1`@`%`
+GRANT SYSTEM_VARIABLES_ADMIN ON *.* TO `u1`@`%`
+RESET PERSIST max_connections;
+RESET PERSIST ft_query_expansion_limit;
+ERROR 42000: Access denied; you need SYSTEM_VARIABLES_ADMIN and PERSIST_RO_VARIABLES_ADMIN privileges for this operation
+RESET PERSIST;
+ERROR 42000: Access denied; you need SYSTEM_VARIABLES_ADMIN and PERSIST_RO_VARIABLES_ADMIN privileges for this operation
+REVOKE SYSTEM_VARIABLES_ADMIN ON *.* FROM u1;
+GRANT PERSIST_RO_VARIABLES_ADMIN ON *.* TO u1;
+SHOW GRANTS;
+Grants for u1@%
+GRANT USAGE ON *.* TO `u1`@`%`
+GRANT PERSIST_RO_VARIABLES_ADMIN ON *.* TO `u1`@`%`
+RESET PERSIST slave_net_timeout;
+ERROR 42000: Access denied; you need (at least one of) the SUPER or SYSTEM_VARIABLES_ADMIN privilege(s) for this operation
+RESET PERSIST ft_query_expansion_limit;
+ERROR 42000: Access denied; you need SYSTEM_VARIABLES_ADMIN and PERSIST_RO_VARIABLES_ADMIN privileges for this operation
+RESET PERSIST;
+ERROR 42000: Access denied; you need (at least one of) the SUPER or SYSTEM_VARIABLES_ADMIN privilege(s) for this operation
+GRANT SYSTEM_VARIABLES_ADMIN ON *.* TO u1;
+SHOW GRANTS;
+Grants for u1@%
+GRANT USAGE ON *.* TO `u1`@`%`
+GRANT PERSIST_RO_VARIABLES_ADMIN,SYSTEM_VARIABLES_ADMIN ON *.* TO `u1`@`%`
+RESET PERSIST slave_net_timeout;
+RESET PERSIST ft_query_expansion_limit;
+RESET PERSIST;
+SELECT * FROM performance_schema.persisted_variables;
+VARIABLE_NAME	VARIABLE_VALUE
+SET GLOBAL sort_buffer_size = default, max_connections = default,
+slave_net_timeout = default, max_heap_table_size = default;
+DROP USER u1;
+#
+# Bug #28466045: SET PERSIST NOT SETTING CORRECT VALUES FOR VARIABLES
+#                LIKE INNODB_STRICT_MODE
+#
+SELECT @@global.innodb_strict_mode, @@global.innodb_lock_wait_timeout;
+@@global.innodb_strict_mode	@@global.innodb_lock_wait_timeout
+1	50
+SELECT @@global.myisam_repair_threads, @@global.myisam_sort_buffer_size;
+@@global.myisam_repair_threads	@@global.myisam_sort_buffer_size
+1	8388608
+SELECT @@global.myisam_stats_method;
+@@global.myisam_stats_method
+nulls_unequal
+SET PERSIST innodb_strict_mode=0;
+SET GLOBAL innodb_lock_wait_timeout = 150;
+SELECT @@global.innodb_lock_wait_timeout;
+@@global.innodb_lock_wait_timeout
+150
+SET PERSIST innodb_lock_wait_timeout = 110;
+SELECT @@global.innodb_lock_wait_timeout;
+@@global.innodb_lock_wait_timeout
+110
+SET GLOBAL myisam_repair_threads=27;
+SET PERSIST myisam_repair_threads=12;
+SET GLOBAL myisam_sort_buffer_size=16777216;
+SET PERSIST myisam_sort_buffer_size=default;
+SELECT @@global.innodb_lock_wait_timeout;
+@@global.innodb_lock_wait_timeout
+110
+SET PERSIST myisam_stats_method=nulls_equal;
+# Restart server
+# restart
+SELECT @@global.innodb_strict_mode;
+@@global.innodb_strict_mode
+0
+SELECT @@global.innodb_lock_wait_timeout;
+@@global.innodb_lock_wait_timeout
+110
+SELECT @@global.myisam_repair_threads;
+@@global.myisam_repair_threads
+12
+SELECT @@global.myisam_sort_buffer_size;
+@@global.myisam_sort_buffer_size
+8388608
+SELECT @@global.myisam_stats_method;
+@@global.myisam_stats_method
+nulls_equal
+SELECT variable_name FROM performance_schema.variables_info WHERE variable_source='PERSISTED';
+variable_name
+innodb_lock_wait_timeout
+innodb_strict_mode
+myisam_repair_threads
+myisam_sort_buffer_size
+myisam_stats_method
+SET GLOBAL innodb_strict_mode=default, innodb_lock_wait_timeout=default,
+myisam_repair_threads=default, myisam_stats_method=default;
+RESET PERSIST;
 # End of the 8.0 tests

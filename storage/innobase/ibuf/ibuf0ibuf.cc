@@ -35,11 +35,9 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "btr0sea.h"
 #include "ha_prototypes.h"
 #include "ibuf0ibuf.h"
-#include "log0log.h"
-#include "my_compiler.h"
-#include "my_dbug.h"
-#include "my_inttypes.h"
 #include "sync0sync.h"
+
+#include "my_dbug.h"
 
 #if defined UNIV_DEBUG || defined UNIV_IBUF_DEBUG
 bool srv_ibuf_disable_background_merge;
@@ -71,7 +69,7 @@ bool srv_ibuf_disable_background_merge;
 #include "rem0cmp.h"
 #include "rem0rec.h"
 #include "row0upd.h"
-#include "srv0start.h" /* srv_shutdown_state */
+#include "srv0start.h"
 #include "trx0sys.h"
 
 /*	STRUCTURE OF AN INSERT BUFFER RECORD
@@ -746,7 +744,7 @@ static page_t *ibuf_bitmap_get_map_page_func(const page_id_t &page_id,
 
   block =
       buf_page_get_gen(ibuf_bitmap_page_no_calc(page_id, page_size), page_size,
-                       RW_X_LATCH, NULL, BUF_GET, file, line, mtr);
+                       RW_X_LATCH, NULL, Page_fetch::NORMAL, file, line, mtr);
 
   buf_block_dbg_add_level(block, SYNC_IBUF_BITMAP);
 
@@ -1042,7 +1040,7 @@ ibool ibuf_page_low(const page_id_t &page_id, const page_size_t &page_size,
 
     bitmap_page = buf_block_get_frame(buf_page_get_gen(
         ibuf_bitmap_page_no_calc(page_id, page_size), page_size, RW_NO_LATCH,
-        NULL, BUF_GET_NO_LATCH, file, line, &local_mtr));
+        NULL, Page_fetch::NO_LATCH, file, line, &local_mtr));
 
     ret = ibuf_bitmap_page_get_bits_low(bitmap_page, page_id, page_size,
                                         MTR_MEMO_BUF_FIX, &local_mtr,
@@ -1091,7 +1089,7 @@ static page_no_t ibuf_rec_get_page_no_func(
   ut_ad(mtr_memo_contains_page(mtr, rec, MTR_MEMO_PAGE_X_FIX) ||
         mtr_memo_contains_page(mtr, rec, MTR_MEMO_PAGE_S_FIX));
   ut_ad(ibuf_inside(mtr));
-  ut_ad(rec_get_n_fields_old(rec) > 2);
+  ut_ad(rec_get_n_fields_old_raw(rec) > 2);
 
   field = rec_get_nth_field_old(rec, IBUF_REC_FIELD_MARKER, &len);
 
@@ -1125,7 +1123,7 @@ static space_id_t ibuf_rec_get_space_func(
   ut_ad(mtr_memo_contains_page(mtr, rec, MTR_MEMO_PAGE_X_FIX) ||
         mtr_memo_contains_page(mtr, rec, MTR_MEMO_PAGE_S_FIX));
   ut_ad(ibuf_inside(mtr));
-  ut_ad(rec_get_n_fields_old(rec) > 2);
+  ut_ad(rec_get_n_fields_old_raw(rec) > 2);
 
   field = rec_get_nth_field_old(rec, IBUF_REC_FIELD_MARKER, &len);
 
@@ -1171,7 +1169,7 @@ static void ibuf_rec_get_info_func(
   ut_ad(mtr_memo_contains_page(mtr, rec, MTR_MEMO_PAGE_X_FIX) ||
         mtr_memo_contains_page(mtr, rec, MTR_MEMO_PAGE_S_FIX));
   ut_ad(ibuf_inside(mtr));
-  fields = rec_get_n_fields_old(rec);
+  fields = rec_get_n_fields_old_raw(rec);
   ut_a(fields > IBUF_REC_FIELD_USER);
 
   types = rec_get_nth_field_old(rec, IBUF_REC_FIELD_METADATA, &len);
@@ -1237,7 +1235,7 @@ static ibuf_op_t ibuf_rec_get_op_type_func(
   ut_ad(mtr_memo_contains_page(mtr, rec, MTR_MEMO_PAGE_X_FIX) ||
         mtr_memo_contains_page(mtr, rec, MTR_MEMO_PAGE_S_FIX));
   ut_ad(ibuf_inside(mtr));
-  ut_ad(rec_get_n_fields_old(rec) > 2);
+  ut_ad(rec_get_n_fields_old_raw(rec) > 2);
 
   (void)rec_get_nth_field_old(rec, IBUF_REC_FIELD_MARKER, &len);
 
@@ -1263,7 +1261,7 @@ ulint ibuf_rec_get_counter(const rec_t *rec) /*!< in: ibuf record */
   const byte *ptr;
   ulint len;
 
-  if (rec_get_n_fields_old(rec) <= IBUF_REC_FIELD_METADATA) {
+  if (rec_get_n_fields_old_raw(rec) <= IBUF_REC_FIELD_METADATA) {
     return (ULINT_UNDEFINED);
   }
 
@@ -1401,9 +1399,9 @@ static dtuple_t *ibuf_build_entry_from_ibuf_rec_func(
 
   ut_a(len == 1);
   ut_a(*data == 0);
-  ut_a(rec_get_n_fields_old(ibuf_rec) > IBUF_REC_FIELD_USER);
+  ut_a(rec_get_n_fields_old_raw(ibuf_rec) > IBUF_REC_FIELD_USER);
 
-  n_fields = rec_get_n_fields_old(ibuf_rec) - IBUF_REC_FIELD_USER;
+  n_fields = rec_get_n_fields_old_raw(ibuf_rec) - IBUF_REC_FIELD_USER;
 
   tuple = dtuple_create(heap, n_fields);
 
@@ -1508,7 +1506,7 @@ static ulint ibuf_rec_get_volume_func(
   ut_ad(mtr_memo_contains_page(mtr, ibuf_rec, MTR_MEMO_PAGE_X_FIX) ||
         mtr_memo_contains_page(mtr, ibuf_rec, MTR_MEMO_PAGE_S_FIX));
   ut_ad(ibuf_inside(mtr));
-  ut_ad(rec_get_n_fields_old(ibuf_rec) > 2);
+  ut_ad(rec_get_n_fields_old_raw(ibuf_rec) > 2);
 
   data = rec_get_nth_field_old(ibuf_rec, IBUF_REC_FIELD_MARKER, &len);
   ut_a(len == 1);
@@ -1543,7 +1541,7 @@ static ulint ibuf_rec_get_volume_func(
   }
 
   types += info_len;
-  n_fields = rec_get_n_fields_old(ibuf_rec) - IBUF_REC_FIELD_USER;
+  n_fields = rec_get_n_fields_old_raw(ibuf_rec) - IBUF_REC_FIELD_USER;
 
   data_size = ibuf_rec_get_size(ibuf_rec, types, n_fields, comp);
 
@@ -2509,7 +2507,7 @@ static ibool ibuf_get_volume_buffered_hash(
   ulint bitmask;
 
   len = ibuf_rec_get_size(
-      rec, types, rec_get_n_fields_old(rec) - IBUF_REC_FIELD_USER, comp);
+      rec, types, rec_get_n_fields_old_raw(rec) - IBUF_REC_FIELD_USER, comp);
   fold = ut_fold_binary(data, len);
 
   hash += (fold / (CHAR_BIT * sizeof *hash)) % size;
@@ -2556,7 +2554,7 @@ static ulint ibuf_get_volume_buffered_count_func(
         mtr_memo_contains_page(mtr, rec, MTR_MEMO_PAGE_S_FIX));
   ut_ad(ibuf_inside(mtr));
 
-  n_fields = rec_get_n_fields_old(rec);
+  n_fields = rec_get_n_fields_old_raw(rec);
   ut_ad(n_fields > IBUF_REC_FIELD_USER);
   n_fields -= IBUF_REC_FIELD_USER;
 
@@ -2683,8 +2681,8 @@ static ulint ibuf_get_volume_buffered(
   /* bitmap of buffered recs */
   ulint hash_bitmap[128 / sizeof(ulint)];
 
-  ut_ad((pcur->latch_mode == BTR_MODIFY_PREV) ||
-        (pcur->latch_mode == BTR_MODIFY_TREE));
+  ut_ad((pcur->m_latch_mode == BTR_MODIFY_PREV) ||
+        (pcur->m_latch_mode == BTR_MODIFY_TREE));
 
   /* Count the volume of inserts earlier in the alphabetical order than
   pcur */
@@ -2895,7 +2893,7 @@ static ulint ibuf_get_entry_counter_low_func(
   ut_ad(ibuf_inside(mtr));
   ut_ad(mtr_memo_contains_page(mtr, rec, MTR_MEMO_PAGE_X_FIX) ||
         mtr_memo_contains_page(mtr, rec, MTR_MEMO_PAGE_S_FIX));
-  ut_ad(rec_get_n_fields_old(rec) > 2);
+  ut_ad(rec_get_n_fields_old_raw(rec) > 2);
 
   field = rec_get_nth_field_old(rec, IBUF_REC_FIELD_MARKER, &len);
 
@@ -3851,7 +3849,7 @@ static ibool ibuf_restore_pos(
     ib::error(ER_IB_MSG_621) << BUG_REPORT_MSG;
 
     rec_print_old(stderr, btr_pcur_get_rec(pcur));
-    rec_print_old(stderr, pcur->old_rec);
+    rec_print_old(stderr, pcur->m_old_rec);
     dtuple_print(stderr, search_tuple);
 
     rec_print_old(stderr, page_rec_get_next(btr_pcur_get_rec(pcur)));
@@ -4122,9 +4120,9 @@ loop:
                             BTR_MODIFY_LEAF, &pcur, &mtr);
 
   if (block != NULL) {
-    ibool success;
+    bool success;
 
-    success = buf_page_get_known_nowait(RW_X_LATCH, block, BUF_KEEP_OLD,
+    success = buf_page_get_known_nowait(RW_X_LATCH, block, Cache_hint::KEEP_OLD,
                                         __FILE__, __LINE__, &mtr);
 
     ut_a(success);
@@ -4227,8 +4225,9 @@ loop:
 
           ibuf_mtr_start(&mtr);
 
-          success = buf_page_get_known_nowait(RW_X_LATCH, block, BUF_KEEP_OLD,
-                                              __FILE__, __LINE__, &mtr);
+          success =
+              buf_page_get_known_nowait(RW_X_LATCH, block, Cache_hint::KEEP_OLD,
+                                        __FILE__, __LINE__, &mtr);
           ut_a(success);
 
           /* This is a user page (secondary

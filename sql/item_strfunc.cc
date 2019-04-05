@@ -26,11 +26,7 @@
   @file sql/item_strfunc.cc
 
   @brief
-  This file defines all string functions
-
-  @warning
-    Some string functions don't always put and end-null on a String.
-    (This shouldn't be needed)
+  This file defines all string Items (e.g. CONCAT).
 */
 
 #include "sql/item_strfunc.h"
@@ -69,6 +65,7 @@
 #include "mysql/psi/mysql_mutex.h"
 #include "mysql/service_mysql_password_policy.h"
 #include "mysqld_error.h"
+#include "mysys_err.h"
 #include "password.h"  // my_make_scrambled_password
 #include "sha1.h"      // SHA1_HASH_SIZE
 #include "sha2.h"
@@ -726,7 +723,7 @@ class Thd_parse_modifier {
  public:
   Thd_parse_modifier(THD *thd)
       : m_thd(thd),
-        m_arena(&m_mem_root, Query_arena::STMT_CONVENTIONAL_EXECUTION),
+        m_arena(&m_mem_root, Query_arena::STMT_REGULAR_EXECUTION),
         m_backed_up_lex(thd->lex),
         m_saved_parser_state(thd->m_parser_state),
         m_saved_digest(thd->m_digest) {
@@ -736,8 +733,7 @@ class Thd_parse_modifier {
     // remainder of the execution of the statement the buffer should be free
     // to use.
     m_digest_state.reset(thd->m_token_array, get_max_digest_length());
-    m_arena.set_query_arena(thd);
-    thd->set_query_arena(&m_arena);
+    m_arena.set_query_arena(*thd);
     thd->lex = &m_lex;
     lex_start(thd);
   }
@@ -745,7 +741,7 @@ class Thd_parse_modifier {
   ~Thd_parse_modifier() {
     lex_end(&m_lex);
     m_thd->lex = m_backed_up_lex;
-    m_thd->set_query_arena(&m_arena);
+    m_thd->set_query_arena(m_arena);
     m_thd->m_parser_state = m_saved_parser_state;
     m_thd->m_digest = m_saved_digest;
   }
@@ -813,7 +809,7 @@ class Parse_error_anonymizer : public Internal_error_handler {
     return true;
   }
 
-  ~Parse_error_anonymizer() { m_thd->pop_internal_handler(); }
+  ~Parse_error_anonymizer() override { m_thd->pop_internal_handler(); }
 
  private:
   THD *m_thd;
@@ -1728,7 +1724,7 @@ void Item_func_trim::print(String *str, enum_query_type query_type) {
   str->append(')');
 }
 
-Item *Item_func_sysconst::safe_charset_converter(THD *,
+Item *Item_func_sysconst::safe_charset_converter(THD *thd,
                                                  const CHARSET_INFO *tocs) {
   uint conv_errors;
   String tmp, cstr, *ostr = val_str(&tmp);
@@ -1740,13 +1736,13 @@ Item *Item_func_sysconst::safe_charset_converter(THD *,
   cstr.copy(ostr->ptr(), ostr->length(), ostr->charset(), tocs, &conv_errors);
   if (conv_errors != 0) return nullptr;
 
-  auto conv = new Item_static_string_func(fully_qualified_func_name(),
-                                          cstr.ptr(), cstr.length(),
-                                          cstr.charset(), collation.derivation);
+  char *ptr = thd->strmake(cstr.ptr(), cstr.length());
+  if (ptr == nullptr) return nullptr;
+  auto conv = new Item_static_string_func(fully_qualified_func_name(), ptr,
+                                          cstr.length(), cstr.charset(),
+                                          collation.derivation);
   if (conv == nullptr) return nullptr;
-
-  conv->str_value.copy();
-  conv->str_value.mark_as_const();
+  conv->mark_result_as_const();
   return conv;
 }
 
@@ -1973,8 +1969,8 @@ MY_LOCALE *Item_func_format::get_locale(Item *) {
   THD *thd = current_thd;
   String tmp, *locale_name = args[2]->val_str_ascii(&tmp);
   MY_LOCALE *lc;
-  if (!locale_name ||
-      !(lc = my_locale_by_name(thd, locale_name->c_ptr_safe()))) {
+  if (!locale_name || !(lc = my_locale_by_name(thd, locale_name->ptr(),
+                                               locale_name->length()))) {
     push_warning_printf(thd, Sql_condition::SL_WARNING, ER_UNKNOWN_LOCALE,
                         ER_THD(thd, ER_UNKNOWN_LOCALE),
                         locale_name ? locale_name->c_ptr_safe() : "NULL");
@@ -2041,13 +2037,14 @@ String *Item_func_format::val_str_ascii(String *str) {
   /* We need this test to handle 'nan' and short values */
   if (lc->grouping[0] > 0 && str_length >= dec_length + 1 + lc->grouping[0]) {
     /* We need space for ',' between each group of digits as well. */
-    char buf[2 * FLOATING_POINT_BUFFER];
+    char buf[2 * FLOATING_POINT_BUFFER + 2] = {0};
     int count;
     const char *grouping = lc->grouping;
     char sign_length = *str->ptr() == '-' ? 1 : 0;
     const char *src = str->ptr() + str_length - dec_length - 1;
     const char *src_begin = str->ptr() + sign_length;
-    char *dst = buf + sizeof(buf);
+    char *dst = buf + 2 * FLOATING_POINT_BUFFER;
+    char *start_dst = dst;
 
     /* Put the fractional part */
     if (dec) {
@@ -2076,7 +2073,8 @@ String *Item_func_format::val_str_ascii(String *str) {
       *--dst = *str->ptr();
 
     /* Put the rest of the integer part without grouping */
-    str->copy(dst, buf + sizeof(buf) - dst, &my_charset_latin1);
+    size_t result_length = start_dst - dst;
+    str->copy(dst, result_length, &my_charset_latin1);
   } else if (dec_length && lc->decimal_point != '.') {
     /*
       For short values without thousands (<1000)
@@ -2265,6 +2263,7 @@ void Item_func_make_set::print(String *str, enum_query_type query_type) {
 
 String *Item_func_char::val_str(String *str) {
   DBUG_ASSERT(fixed == 1);
+  null_value = false;
   str->length(0);
   str->set_charset(collation.collation);
   for (uint i = 0; i < arg_count; i++) {
@@ -2287,9 +2286,12 @@ String *Item_func_char::val_str(String *str) {
     }
   }
   str->mem_realloc(str->length());  // Add end 0 (for Purify)
-  return check_well_formed_result(str,
-                                  false,  // send warning
-                                  true);  // truncate
+  String *res = check_well_formed_result(str,
+                                         false,  // send warning
+                                         true);  // truncate
+  if (!res) null_value = true;
+
+  return res;
 }
 
 inline String *alloc_buffer(String *res, String *str, String *tmp_value,
@@ -2469,15 +2471,26 @@ String *Item_func_rpad::val_str(String *str) {
   char *to;
   /* must be longlong to avoid truncation */
   longlong count = args[1]->val_int();
+  /* Avoid modifying this string as it may affect args[0] */
   String *res = args[0]->val_str(str);
   String *rpad = args[2]->val_str(&rpad_str);
 
-  if (!res || args[1]->null_value || !rpad ||
-      ((count < 0) && !args[1]->unsigned_flag)) {
-    null_value = true;
-    return NULL;
+  if ((null_value =
+           (args[0]->null_value || args[1]->null_value || args[2]->null_value)))
+    return nullptr;
+
+  if ((count < 0) && !args[1]->unsigned_flag) {
+    return null_return_str();
   }
-  null_value = 0;
+
+  if (!res || !rpad) {
+    /* purecov: begin deadcode */
+    DBUG_ASSERT(false);
+    null_value = true;
+    return nullptr;
+    /* purecov: end */
+  }
+
   /* Assumes that the maximum length of a String is < INT_MAX32. */
   /* Set here so that rest of code sees out-of-bound value as such. */
   if ((ulonglong)count > INT_MAX32) count = INT_MAX32;
@@ -2501,8 +2514,8 @@ String *Item_func_rpad::val_str(String *str) {
                                           false,  // send warning
                                           true);  // truncate
     if (!well_formed_pad) {
-      null_value = true;
-      return NULL;
+      DBUG_ASSERT(current_thd->is_error());
+      return error_str();
     }
   }
 
@@ -2510,8 +2523,11 @@ String *Item_func_rpad::val_str(String *str) {
 
   if (count <=
       static_cast<longlong>(res_char_length)) {  // String to pad is big enough
-    res->length(res->charpos((int)count));       // Shorten result if longer
-    return (res);
+    int res_charpos = res->charpos((int)count);
+    if (tmp_value.alloc(res_charpos)) return nullptr;
+    (void)tmp_value.copy(*res);
+    tmp_value.length(res_charpos);  // Shorten result if longer
+    return &tmp_value;
   }
   const size_t pad_char_length = rpad->numchars();
 
@@ -2523,18 +2539,18 @@ String *Item_func_rpad::val_str(String *str) {
                         ER_THD(current_thd, ER_WARN_ALLOWED_PACKET_OVERFLOWED),
                         func_name(), current_thd->variables.max_allowed_packet);
     null_value = true;
-    return NULL;
+    return nullptr;
   }
-  if (args[2]->null_value || !pad_char_length) {
-    null_value = true;
-    return NULL;
-  }
+  if (!pad_char_length) return make_empty_result();
   /* Must be done before alloc_buffer */
   const size_t res_byte_length = res->length();
+  /*
+    alloc_buffer() doesn't modify 'res' because 'res' is guaranteed too short
+    at this stage.
+  */
   if (!(res = alloc_buffer(res, str, &tmp_value,
                            static_cast<size_t>(byte_count)))) {
-    null_value = true;
-    return NULL;
+    return error_str();
   }
 
   to = (char *)res->ptr() + res_byte_length;
@@ -2684,13 +2700,26 @@ String *Item_func_lpad::val_str(String *str) {
   /* must be longlong to avoid truncation */
   longlong count = args[1]->val_int();
   size_t byte_count;
+  /* Avoid modifying this string as it may affect args[0] */
   String *res = args[0]->val_str(&tmp_value);
   String *pad = args[2]->val_str(&lpad_str);
 
-  if (!res || args[1]->null_value || !pad ||
-      ((count < 0) && !args[1]->unsigned_flag))
-    goto err;
-  null_value = 0;
+  if ((null_value =
+           (args[0]->null_value || args[1]->null_value || args[2]->null_value)))
+    return nullptr;
+
+  if (count < 0 && !args[1]->unsigned_flag) {
+    return null_return_str();
+  }
+
+  if (!res || !pad) {
+    /* purecov: begind deadcode */
+    DBUG_ASSERT(false);
+    null_value = true;
+    return nullptr;
+    /* purecov: end */
+  }
+
   /* Assumes that the maximum length of a String is < INT_MAX32. */
   /* Set here so that rest of code sees out-of-bound value as such. */
   if ((ulonglong)count > INT_MAX32) count = INT_MAX32;
@@ -2714,14 +2743,20 @@ String *Item_func_lpad::val_str(String *str) {
         args[2]->check_well_formed_result(pad,
                                           false,  // send warning
                                           true);  // truncate
-    if (!well_formed_pad) goto err;
+    if (!well_formed_pad) {
+      DBUG_ASSERT(current_thd->is_error());
+      return error_str();
+    }
   }
 
   res_char_length = res->numchars();
 
   if (count <= static_cast<longlong>(res_char_length)) {
-    res->length(res->charpos((int)count));
-    return res;
+    int res_charpos = res->charpos((int)count);
+    if (tmp_value.alloc(res_charpos)) return nullptr;
+    (void)tmp_value.copy(*res);
+    tmp_value.length(res_charpos);  // Shorten result if longer
+    return &tmp_value;
   }
 
   pad_char_length = pad->numchars();
@@ -2732,11 +2767,15 @@ String *Item_func_lpad::val_str(String *str) {
                         ER_WARN_ALLOWED_PACKET_OVERFLOWED,
                         ER_THD(current_thd, ER_WARN_ALLOWED_PACKET_OVERFLOWED),
                         func_name(), current_thd->variables.max_allowed_packet);
-    goto err;
+    null_value = true;
+    return nullptr;
   }
 
-  if (args[2]->null_value || !pad_char_length || str->alloc(byte_count))
-    goto err;
+  if (!pad_char_length) return make_empty_result();
+  if (str->alloc(byte_count)) {
+    my_error(ER_OOM, MYF(0));
+    return error_str();
+  }
 
   str->length(0);
   str->set_charset(collation.collation);
@@ -2751,10 +2790,6 @@ String *Item_func_lpad::val_str(String *str) {
   str->append(*res);
   null_value = 0;
   return str;
-
-err:
-  null_value = 1;
-  return 0;
 }
 
 bool Item_func_conv::resolve_type(THD *) {
@@ -2923,7 +2958,8 @@ void Item_func_set_collation::print(String *str, enum_query_type query_type) {
   str->append(STRING_WITH_LEN(" collate "));
   DBUG_ASSERT(args[1]->basic_const_item() &&
               args[1]->type() == Item::STRING_ITEM);
-  args[1]->str_value.print(str);
+  String tmp;
+  args[1]->val_str(&tmp)->print(str);
   str->append(')');
 }
 
@@ -3237,8 +3273,7 @@ String *Item_char_typecast::val_str(String *str) {
         ER_THD(thd, ER_WARN_ALLOWED_PACKET_OVERFLOWED),
         cast_cs == &my_charset_bin ? "cast_as_binary" : func_name(),
         thd->variables.max_allowed_packet);
-    null_value = true;
-    return nullptr;
+    return error_str();
   }
 
   String *res = args[0]->val_str(str);
@@ -3860,8 +3895,7 @@ bool Item_func_uuid::itemize(Parse_context *pc, Item **res) {
   return false;
 }
 
-String *Item_func_uuid::val_str(String *str) {
-  DBUG_ASSERT(fixed == 1);
+String *mysql_generate_uuid(String *str) {
   char *s;
   THD *thd = current_thd;
 
@@ -3965,6 +3999,11 @@ String *Item_func_uuid::val_str(String *str) {
   DBUG_EXECUTE_IF("force_fake_uuid",
                   my_stpcpy(s, "a2d00942-b69c-11e4-a696-0020ff6fcbe6"););
   return str;
+}
+
+String *Item_func_uuid::val_str(String *str) {
+  DBUG_ASSERT(fixed == 1);
+  return mysql_generate_uuid(str);
 }
 
 bool Item_func_gtid_subtract::resolve_type(THD *) {
@@ -4114,127 +4153,140 @@ String *Item_func_get_dd_create_options::val_str(String *str) {
   String option;
   String *option_ptr;
   std::ostringstream oss("");
-  if ((option_ptr = args[0]->val_str(&option)) != nullptr) {
-    bool is_partitioned = args[1]->val_int();
 
-    // Read required values from properties
-    std::unique_ptr<dd::Properties> p(
-        dd::Properties::parse_properties(option_ptr->c_ptr_safe()));
+  if ((option_ptr = args[0]->val_str(&option)) == nullptr) {
+    str->copy(oss.str().c_str(), oss.str().length(), system_charset_info);
+    DBUG_RETURN(str);
+  }
 
-    // Read used_flags
-    uint opt_value = 0;
-    char option_buff[350], *ptr;
-    ptr = option_buff;
+  // Read required values from properties
+  std::unique_ptr<dd::Properties> p(
+      dd::Properties::parse_properties(option_ptr->c_ptr_safe()));
 
-    if (p->exists("max_rows")) {
-      p->get_uint32("max_rows", &opt_value);
-      if (opt_value != 0) {
-        ptr = my_stpcpy(ptr, " max_rows=");
-        ptr = longlong10_to_str(opt_value, ptr, 10);
-      }
-    }
+  // Warn if the property string is corrupt.
+  if (!p.get()) {
+    LogErr(WARNING_LEVEL, ER_WARN_PROPERTY_STRING_PARSE_FAILED,
+           option_ptr->c_ptr_safe());
+    if (DBUG_EVALUATE_IF("continue_on_property_string_parse_failure", 0, 1))
+      DBUG_ASSERT(false);
+    str->copy(oss.str().c_str(), oss.str().length(), system_charset_info);
+    DBUG_RETURN(str);
+  }
 
-    if (p->exists("min_rows")) {
-      p->get_uint32("min_rows", &opt_value);
-      if (opt_value != 0) {
-        ptr = my_stpcpy(ptr, " min_rows=");
-        ptr = longlong10_to_str(opt_value, ptr, 10);
-      }
-    }
+  // Read used_flags
+  uint opt_value = 0;
+  char option_buff[350], *ptr;
+  ptr = option_buff;
 
-    if (p->exists("avg_row_length")) {
-      p->get_uint32("avg_row_length", &opt_value);
-      if (opt_value != 0) {
-        ptr = my_stpcpy(ptr, " avg_row_length=");
-        ptr = longlong10_to_str(opt_value, ptr, 10);
-      }
-    }
-
-    if (p->exists("row_type")) {
-      p->get_uint32("row_type", &opt_value);
-      ptr = strxmov(ptr, " row_format=", ha_row_type[(uint)opt_value], NullS);
-    }
-
-    if (p->exists("stats_sample_pages")) {
-      p->get_uint32("stats_sample_pages", &opt_value);
-      if (opt_value != 0) {
-        ptr = my_stpcpy(ptr, " stats_sample_pages=");
-        ptr = longlong10_to_str(opt_value, ptr, 10);
-      }
-    }
-
-    if (p->exists("stats_auto_recalc")) {
-      p->get_uint32("stats_auto_recalc", &opt_value);
-      enum_stats_auto_recalc sar = (enum_stats_auto_recalc)opt_value;
-
-      if (sar == HA_STATS_AUTO_RECALC_ON)
-        ptr = my_stpcpy(ptr, " stats_auto_recalc=1");
-      else if (sar == HA_STATS_AUTO_RECALC_OFF)
-        ptr = my_stpcpy(ptr, " stats_auto_recalc=0");
-    }
-
-    if (p->exists("key_block_size"))
-      p->get_uint32("key_block_size", &opt_value);
-
+  if (p->exists("max_rows")) {
+    p->get("max_rows", &opt_value);
     if (opt_value != 0) {
-      ptr = my_stpcpy(ptr, " KEY_BLOCK_SIZE=");
+      ptr = my_stpcpy(ptr, " max_rows=");
       ptr = longlong10_to_str(opt_value, ptr, 10);
     }
-
-    if (p->exists("compress")) {
-      dd::String_type opt_value;
-      p->get("compress", opt_value);
-      if (!opt_value.empty()) {
-        if (opt_value.size() > 7) opt_value.erase(7, dd::String_type::npos);
-        ptr = my_stpcpy(ptr, " COMPRESSION=\"");
-        ptr = my_stpcpy(ptr, opt_value.c_str());
-        ptr = my_stpcpy(ptr, "\"");
-      }
-    }
-
-    if (p->exists("encrypt_type")) {
-      dd::String_type opt_value;
-      p->get("encrypt_type", opt_value);
-      if (!opt_value.empty()) {
-        ptr = my_stpcpy(ptr, " ENCRYPTION=\"");
-        ptr = my_stpcpy(ptr, opt_value.c_str());
-        ptr = my_stpcpy(ptr, "\"");
-      }
-    }
-
-    if (p->exists("stats_persistent")) {
-      p->get_uint32("stats_persistent", &opt_value);
-      if (opt_value)
-        ptr = my_stpcpy(ptr, " stats_persistent=1");
-      else
-        ptr = my_stpcpy(ptr, " stats_persistent=0");
-    }
-
-    if (p->exists("pack_keys")) {
-      p->get_uint32("pack_keys", &opt_value);
-      if (opt_value)
-        ptr = my_stpcpy(ptr, " pack_keys=1");
-      else
-        ptr = my_stpcpy(ptr, " pack_keys=0");
-    }
-
-    if (p->exists("checksum")) {
-      p->get_uint32("checksum", &opt_value);
-      if (opt_value) ptr = my_stpcpy(ptr, " checksum=1");
-    }
-
-    if (p->exists("delay_key_write")) {
-      p->get_uint32("delay_key_write", &opt_value);
-      if (opt_value) ptr = my_stpcpy(ptr, " delay_key_write=1");
-    }
-
-    if (is_partitioned) ptr = my_stpcpy(ptr, " partitioned");
-
-    if (ptr == option_buff)
-      oss << "";
-    else
-      oss << option_buff + 1;
   }
+
+  if (p->exists("min_rows")) {
+    p->get("min_rows", &opt_value);
+    if (opt_value != 0) {
+      ptr = my_stpcpy(ptr, " min_rows=");
+      ptr = longlong10_to_str(opt_value, ptr, 10);
+    }
+  }
+
+  if (p->exists("avg_row_length")) {
+    p->get("avg_row_length", &opt_value);
+    if (opt_value != 0) {
+      ptr = my_stpcpy(ptr, " avg_row_length=");
+      ptr = longlong10_to_str(opt_value, ptr, 10);
+    }
+  }
+
+  if (p->exists("row_type")) {
+    p->get("row_type", &opt_value);
+    ptr = strxmov(ptr, " row_format=", ha_row_type[(uint)opt_value], NullS);
+  }
+
+  if (p->exists("stats_sample_pages")) {
+    p->get("stats_sample_pages", &opt_value);
+    if (opt_value != 0) {
+      ptr = my_stpcpy(ptr, " stats_sample_pages=");
+      ptr = longlong10_to_str(opt_value, ptr, 10);
+    }
+  }
+
+  if (p->exists("stats_auto_recalc")) {
+    p->get("stats_auto_recalc", &opt_value);
+    enum_stats_auto_recalc sar = (enum_stats_auto_recalc)opt_value;
+
+    if (sar == HA_STATS_AUTO_RECALC_ON)
+      ptr = my_stpcpy(ptr, " stats_auto_recalc=1");
+    else if (sar == HA_STATS_AUTO_RECALC_OFF)
+      ptr = my_stpcpy(ptr, " stats_auto_recalc=0");
+  }
+
+  if (p->exists("key_block_size")) p->get("key_block_size", &opt_value);
+
+  if (opt_value != 0) {
+    ptr = my_stpcpy(ptr, " KEY_BLOCK_SIZE=");
+    ptr = longlong10_to_str(opt_value, ptr, 10);
+  }
+
+  if (p->exists("compress")) {
+    dd::String_type opt_value;
+    p->get("compress", &opt_value);
+    if (!opt_value.empty()) {
+      if (opt_value.size() > 7) opt_value.erase(7, dd::String_type::npos);
+      ptr = my_stpcpy(ptr, " COMPRESSION=\"");
+      ptr = my_stpcpy(ptr, opt_value.c_str());
+      ptr = my_stpcpy(ptr, "\"");
+    }
+  }
+
+  if (p->exists("encrypt_type")) {
+    dd::String_type opt_value;
+    p->get("encrypt_type", &opt_value);
+    if (!opt_value.empty()) {
+      ptr = my_stpcpy(ptr, " ENCRYPTION=\"");
+      ptr = my_stpcpy(ptr, opt_value.c_str());
+      ptr = my_stpcpy(ptr, "\"");
+    }
+  }
+
+  if (p->exists("stats_persistent")) {
+    p->get("stats_persistent", &opt_value);
+    if (opt_value)
+      ptr = my_stpcpy(ptr, " stats_persistent=1");
+    else
+      ptr = my_stpcpy(ptr, " stats_persistent=0");
+  }
+
+  if (p->exists("pack_keys")) {
+    p->get("pack_keys", &opt_value);
+    if (opt_value)
+      ptr = my_stpcpy(ptr, " pack_keys=1");
+    else
+      ptr = my_stpcpy(ptr, " pack_keys=0");
+  }
+
+  if (p->exists("checksum")) {
+    p->get("checksum", &opt_value);
+    if (opt_value) ptr = my_stpcpy(ptr, " checksum=1");
+  }
+
+  if (p->exists("delay_key_write")) {
+    p->get("delay_key_write", &opt_value);
+    if (opt_value) ptr = my_stpcpy(ptr, " delay_key_write=1");
+  }
+
+  bool is_partitioned = args[1]->val_int();
+  if (is_partitioned) ptr = my_stpcpy(ptr, " partitioned");
+
+  if (ptr == option_buff)
+    oss << "";
+  else
+    oss << option_buff + 1;
+
   str->copy(oss.str().c_str(), oss.str().length(), system_charset_info);
 
   DBUG_RETURN(str);
@@ -4270,15 +4322,31 @@ String *Item_func_internal_get_comment_or_error::val_str(String *str) {
     std::unique_ptr<dd::Properties> view_options(
         dd::Properties::parse_properties(options_ptr->c_ptr_safe()));
 
-    if (view_options->get_bool("view_valid", &is_view_valid))
+    // Warn if the property string is corrupt.
+    if (!view_options.get()) {
+      LogErr(WARNING_LEVEL, ER_WARN_PROPERTY_STRING_PARSE_FAILED,
+             options_ptr->c_ptr_safe());
+      DBUG_ASSERT(false);
       DBUG_RETURN(nullptr);
+    }
+
+    if (view_options->get("view_valid", &is_view_valid)) DBUG_RETURN(nullptr);
 
     if (is_view_valid == false && thd->lex->sql_command != SQLCOM_SHOW_TABLES) {
       push_view_warning_or_error(current_thd, schema_ptr->c_ptr_safe(),
                                  view_ptr->c_ptr_safe());
 
       // Append invalid view error message to comment.
-      oss << (thd->get_stmt_da()->sql_conditions()++)->message_text();
+      if (thd->variables.max_error_count > 0) {
+        oss << (thd->get_stmt_da()->sql_conditions()++)->message_text();
+      } else {
+        // If max_error_count is 0, we must prepare the error message
+        // ourselves.
+        char errbuf[MYSQL_ERRMSG_SIZE];
+        sprintf(errbuf, ER_THD(thd, ER_VIEW_INVALID), schema_ptr->c_ptr_safe(),
+                view_ptr->c_ptr_safe());
+        oss << errbuf;
+      }
     } else
       oss << "VIEW";
   } else if (!thd->lex->m_IS_table_stats.error().empty()) {
@@ -4315,12 +4383,20 @@ String *Item_func_get_partition_nodegroup::val_str(String *str) {
     std::unique_ptr<dd::Properties> view_options(
         dd::Properties::parse_properties(options_ptr->c_ptr_safe()));
 
-    // Do we have nodegroup id ?
+    // Warn if the property string is corrupt.
+    if (!view_options.get()) {
+      LogErr(WARNING_LEVEL, ER_WARN_PROPERTY_STRING_PARSE_FAILED,
+             options_ptr->c_ptr_safe());
+      DBUG_ASSERT(false);
+      str->copy(oss.str().c_str(), oss.str().length(), system_charset_info);
+      DBUG_RETURN(str);
+    }
+
     if (view_options->exists("nodegroup_id")) {
       uint32 value;
 
       // Fetch nodegroup id.
-      view_options->get_uint32("nodegroup_id", &value);
+      view_options->get("nodegroup_id", &value);
       oss << value;
     } else
       oss << "default";
@@ -4431,35 +4507,47 @@ String *Item_func_get_dd_tablespace_private_data::val_str(String *str) {
   String option;
   String *option_ptr;
   std::ostringstream oss("");
-  if ((option_ptr = args[0]->val_str(&option)) != nullptr) {
-    // Read required values from properties
-    std::unique_ptr<dd::Properties> p(
-        dd::Properties::parse_properties(option_ptr->c_ptr_safe()));
-
-    // Read used_flags
-    uint opt_value = 0;
-    char option_buff[350], *ptr;
-    ptr = option_buff;
-
-    if (strcmp(args[1]->val_str(&option)->ptr(), "id") == 0) {
-      if (p->exists("id")) {
-        p->get_uint32("id", &opt_value);
-        ptr = longlong10_to_str(opt_value, ptr, 10);
-      }
-    }
-
-    if (strcmp(args[1]->val_str(&option)->ptr(), "flags") == 0) {
-      if (p->exists("flags")) {
-        p->get_uint32("flags", &opt_value);
-        ptr = longlong10_to_str(opt_value, ptr, 10);
-      }
-    }
-
-    if (ptr == option_buff)
-      oss << "";
-    else
-      oss << option_buff;
+  if ((option_ptr = args[0]->val_str(&option)) == nullptr) {
+    str->copy(oss.str().c_str(), oss.str().length(), system_charset_info);
+    DBUG_RETURN(str);
   }
+
+  // Read required values from properties
+  std::unique_ptr<dd::Properties> p(
+      dd::Properties::parse_properties(option_ptr->c_ptr_safe()));
+
+  // Warn if the property string is corrupt.
+  if (!p.get()) {
+    LogErr(WARNING_LEVEL, ER_WARN_PROPERTY_STRING_PARSE_FAILED,
+           option_ptr->c_ptr_safe());
+    DBUG_ASSERT(false);
+    str->copy(oss.str().c_str(), oss.str().length(), system_charset_info);
+    DBUG_RETURN(str);
+  }
+
+  // Read used_flags
+  uint opt_value = 0;
+  char option_buff[350], *ptr;
+  ptr = option_buff;
+
+  if (strcmp(args[1]->val_str(&option)->ptr(), "id") == 0) {
+    if (p->exists("id")) {
+      p->get("id", &opt_value);
+      ptr = longlong10_to_str(opt_value, ptr, 10);
+    }
+  }
+
+  if (strcmp(args[1]->val_str(&option)->ptr(), "flags") == 0) {
+    if (p->exists("flags")) {
+      p->get("flags", &opt_value);
+      ptr = longlong10_to_str(opt_value, ptr, 10);
+    }
+  }
+
+  if (ptr == option_buff)
+    oss << "";
+  else
+    oss << option_buff;
 
   str->copy(oss.str().c_str(), oss.str().length(), system_charset_info);
 
@@ -4485,42 +4573,54 @@ String *Item_func_get_dd_index_private_data::val_str(String *str) {
   String option;
   String *option_ptr;
   std::ostringstream oss("");
-  if ((option_ptr = args[0]->val_str(&option)) != nullptr) {
-    // Read required values from properties
-    std::unique_ptr<dd::Properties> p(
-        dd::Properties::parse_properties(option_ptr->c_ptr_safe()));
-
-    // Read used_flags
-    uint opt_value = 0;
-    char option_buff[350], *ptr;
-    ptr = option_buff;
-
-    if (strcmp(args[1]->val_str(&option)->ptr(), "id") == 0) {
-      if (p->exists("id")) {
-        p->get_uint32("id", &opt_value);
-        ptr = longlong10_to_str(opt_value, ptr, 10);
-      }
-    }
-
-    if (strcmp(args[1]->val_str(&option)->ptr(), "root") == 0) {
-      if (p->exists("root")) {
-        p->get_uint32("root", &opt_value);
-        ptr = longlong10_to_str(opt_value, ptr, 10);
-      }
-    }
-
-    if (strcmp(args[1]->val_str(&option)->ptr(), "trx_id") == 0) {
-      if (p->exists("trx_id")) {
-        p->get_uint32("trx_id", &opt_value);
-        ptr = longlong10_to_str(opt_value, ptr, 10);
-      }
-    }
-
-    if (ptr == option_buff)
-      oss << "";
-    else
-      oss << option_buff;
+  if ((option_ptr = args[0]->val_str(&option)) == nullptr) {
+    str->copy(oss.str().c_str(), oss.str().length(), system_charset_info);
+    DBUG_RETURN(str);
   }
+
+  // Read required values from properties
+  std::unique_ptr<dd::Properties> p(
+      dd::Properties::parse_properties(option_ptr->c_ptr_safe()));
+
+  // Warn if the property string is corrupt.
+  if (!p.get()) {
+    LogErr(WARNING_LEVEL, ER_WARN_PROPERTY_STRING_PARSE_FAILED,
+           option_ptr->c_ptr_safe());
+    DBUG_ASSERT(false);
+    str->copy(oss.str().c_str(), oss.str().length(), system_charset_info);
+    DBUG_RETURN(str);
+  }
+
+  // Read used_flags
+  uint opt_value = 0;
+  char option_buff[350], *ptr;
+  ptr = option_buff;
+
+  if (strcmp(args[1]->val_str(&option)->ptr(), "id") == 0) {
+    if (p->exists("id")) {
+      p->get("id", &opt_value);
+      ptr = longlong10_to_str(opt_value, ptr, 10);
+    }
+  }
+
+  if (strcmp(args[1]->val_str(&option)->ptr(), "root") == 0) {
+    if (p->exists("root")) {
+      p->get("root", &opt_value);
+      ptr = longlong10_to_str(opt_value, ptr, 10);
+    }
+  }
+
+  if (strcmp(args[1]->val_str(&option)->ptr(), "trx_id") == 0) {
+    if (p->exists("trx_id")) {
+      p->get("trx_id", &opt_value);
+      ptr = longlong10_to_str(opt_value, ptr, 10);
+    }
+  }
+
+  if (ptr == option_buff)
+    oss << "";
+  else
+    oss << option_buff;
 
   str->copy(oss.str().c_str(), oss.str().length(), system_charset_info);
 
@@ -4539,13 +4639,16 @@ CHARSET_INFO *mysqld_collation_get_by_name(const char *name,
                                            CHARSET_INFO *name_cs) {
   CHARSET_INFO *cs;
   MY_CHARSET_LOADER loader;
+  char error[1024];
   my_charset_loader_init_mysys(&loader);
   if (!(cs = my_collation_get_by_name(&loader, name, MYF(0)))) {
     ErrConvString err(name, name_cs);
     my_error(ER_UNKNOWN_COLLATION, MYF(0), err.ptr());
-    if (loader.error[0])
+    if (loader.errcode) {
+      snprintf(error, sizeof(error) - 1, EE(loader.errcode), loader.errarg);
       push_warning_printf(current_thd, Sql_condition::SL_WARNING,
-                          ER_UNKNOWN_COLLATION, "%s", loader.error);
+                          ER_UNKNOWN_COLLATION, "%s", error);
+    }
   }
   return cs;
 }

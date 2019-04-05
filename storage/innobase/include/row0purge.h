@@ -24,8 +24,6 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
 *****************************************************************************/
 
-#include "my_compiler.h"
-
 /** @file include/row0purge.h
  Purge obsolete records
 
@@ -35,6 +33,8 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #ifndef row0purge_h
 #define row0purge_h
 
+#include "univ.i"
+
 #include "btr0pcur.h"
 #include "btr0types.h"
 #include "data0data.h"
@@ -42,7 +42,6 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "que0types.h"
 #include "row0types.h"
 #include "trx0types.h"
-#include "univ.i"
 #include "ut0vec.h"
 
 /** Create a purge node to a query graph.
@@ -161,6 +160,18 @@ struct purge_node_t {
 
   /** Undo recs to purge */
   Recs *recs;
+
+  /** Check if undo records of given table_id is there in this purge node.
+  @param[in]	table_id	look for undo records of this table id.
+  @return true if undo records of table id exists, false otherwise. */
+  bool is_table_id_exists(table_id_t table_id) const;
+
+#ifdef UNIV_DEBUG
+  /** Check if there are more than one undo record with same (trx_id, undo_no)
+  combination.
+  @return true when no duplicates are found, false otherwise. */
+  bool check_duplicate_undo_no() const;
+#endif /* UNIV_DEBUG */
 
   trx_rseg_t *rseg;
 #ifdef UNIV_DEBUG

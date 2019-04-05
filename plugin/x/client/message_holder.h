@@ -1,4 +1,4 @@
-/* Copyright (c) 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
 
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License, version 2.0,
@@ -20,8 +20,8 @@
  along with this program; if not, write to the Free Software
  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
-#ifndef X_CLIENT_MESSAGE_HOLDER_H_
-#define X_CLIENT_MESSAGE_HOLDER_H_
+#ifndef PLUGIN_X_CLIENT_MESSAGE_HOLDER_H_
+#define PLUGIN_X_CLIENT_MESSAGE_HOLDER_H_
 
 #include <algorithm>
 #include <memory>
@@ -67,7 +67,9 @@ class Message_holder {
       if (Mysqlx::ServerMessages::ERROR == m_message_id) {
         auto error_msg = reinterpret_cast<Mysqlx::Error *>(m_message.get());
 
-        return XError{static_cast<int>(error_msg->code()), error_msg->msg()};
+        return XError{static_cast<int>(error_msg->code()), error_msg->msg(),
+                      error_msg->severity() == Mysqlx::Error::FATAL,
+                      error_msg->sql_state()};
       }
 
       if (std::any_of(
@@ -94,7 +96,9 @@ class Message_holder {
       if (Mysqlx::ServerMessages::ERROR == m_message_id) {
         auto error_msg = reinterpret_cast<Mysqlx::Error *>(m_message.get());
 
-        return XError{static_cast<int>(error_msg->code()), error_msg->msg()};
+        return XError{static_cast<int>(error_msg->code()), error_msg->msg(),
+                      error_msg->severity() == Mysqlx::Error::FATAL,
+                      error_msg->sql_state()};
       }
 
       if (std::any_of(
@@ -137,4 +141,4 @@ class Message_holder {
 
 }  // namespace xcl
 
-#endif  // X_CLIENT_MESSAGE_HOLDER_H_
+#endif  // PLUGIN_X_CLIENT_MESSAGE_HOLDER_H_

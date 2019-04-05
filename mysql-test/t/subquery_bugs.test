@@ -245,3 +245,122 @@ FROM t1;
 eval EXPLAIN $query;
 
 DROP TABLE t1,t2;
+
+--echo #
+--echo # Bug#27665085 ASSERTION FAILED: JOIN == 0.
+--echo #
+
+SET sql_mode='';
+CREATE TABLE a(d INT,e BIGINT, KEY(e));
+INSERT a VALUES (0,0);
+CREATE TABLE b(f TIME);
+INSERT b VALUES (null),(null),(null);
+CREATE TABLE c(g DATETIME(6) NOT NULL);
+INSERT c(g) VALUES (now()+interval 1 day);
+INSERT c(g) VALUES (now()-interval 1 day);
+
+--error ER_SUBQUERY_NO_1_ROW
+SELECT 1 FROM a WHERE (SELECT f FROM b WHERE (SELECT 1 FROM c)) <=> e GROUP BY d;
+
+SET sql_mode=default;
+DROP TABLES a, b, c;
+
+--echo #
+--echo # Bug#27182010 SUBQUERY INCORRECTLY SHOWS DUPLICATE VALUES ON SUBQUERIES
+--echo #
+
+CREATE TABLE p (Id INT,PRIMARY KEY (Id));
+INSERT INTO p VALUES (1);
+
+--echo # Test UNIQUE KEY with NULL values
+CREATE TABLE s (Id INT, u INT, UNIQUE KEY o(Id, u) );
+INSERT INTO s VALUES (1, NULL),(1, NULL);
+
+let query1= SELECT p.Id FROM (p) WHERE p.Id IN (
+            SELECT s.Id FROM s WHERE Id=1 AND u IS NULL)ORDER BY Id DESC;
+let query2= SELECT p.Id FROM (p) WHERE p.Id IN (
+            SELECT s.Id FROM s WHERE Id=1 AND u IS NOT NULL) ORDER BY Id DESC;
+
+eval EXPLAIN $query1;
+eval EXPLAIN $query2;
+
+eval $query1;
+eval $query2;
+
+--echo # UNIQUE KEY without NULL values
+CREATE TABLE s1 (Id INT, u INT, UNIQUE KEY o(Id, u) );
+INSERT INTO s1 VALUES (1, 2),(1, 3);
+
+let query3= SELECT p.Id FROM (p) WHERE p.Id IN (
+            SELECT s1.Id FROM s1 WHERE Id=1 AND u IS NOT NULL) ORDER BY Id DESC;
+let query4= SELECT p.Id FROM (p) WHERE p.Id IN (
+            SELECT s1.Id FROM s1 WHERE Id=1 AND u != 1) ORDER BY Id DESC;
+
+eval EXPLAIN $query3;
+eval EXPLAIN $query4;
+
+eval $query3;
+eval $query4;
+
+--echo # NON UNIQUE KEY Scenario
+CREATE TABLE s2 (Id INT, u INT, KEY o(Id, u) );
+INSERT INTO s2 VALUES (1, NULL),(1, NULL);
+
+let query5= SELECT p.Id FROM (p) WHERE p.Id IN (
+            SELECT s.Id FROM s2 s WHERE Id=1 AND u IS NULL) ORDER BY Id DESC;
+
+--echo #UNIQUE KEY with NON NULL FIELDS
+CREATE TABLE s3 (Id INT NOT NULL, u INT NOT NULL, UNIQUE KEY o(Id, u));
+INSERT INTO s3 VALUES (1, 2),(1, 3);
+
+let query6= SELECT p.Id FROM (p) WHERE p.Id IN (
+            SELECT s.Id FROM s3 s WHERE Id=1 AND u IS NOT NULL)
+            ORDER BY Id DESC;
+
+eval EXPLAIN $query5;
+eval EXPLAIN $query6;
+
+eval $query5;
+eval $query6;
+
+DROP TABLE p, s, s1, s2, s3;
+--echo #
+--echo # Bug#28239008: WL#9571: SIG11 IN ITEM_FIELD::RESULT_TYPE() AT SQL/ITEM.H
+--echo #
+
+CREATE TABLE t1 (f1 varchar(1) DEFAULT NULL);
+
+INSERT INTO t1 VALUES ('5');
+
+CREATE TABLE t2 (f1 varchar(1) DEFAULT NULL);
+
+INSERT INTO t2 VALUES ('Y');
+
+PREPARE prep_stmt FROM "SELECT t2.f1 FROM (t2 LEFT JOIN t1
+ ON (1 = ANY (SELECT f1 FROM t1 WHERE 1 IS NULL)))" ;
+
+EXECUTE prep_stmt ;
+
+DROP TABLE t1,t2;
+
+CREATE TABLE t1 (f1 varchar(1) DEFAULT NULL);
+INSERT INTO t1 VALUES ('Z') ;
+CREATE TABLE t2 (f1 varchar(1) DEFAULT NULL);
+INSERT INTO t2 VALUES ('Z') ;
+
+PREPARE prep_stmt FROM "
+SELECT t2.f1 FROM t2 LEFT OUTER JOIN
+(SELECT  * FROM t2 WHERE ('y',1)
+ IN (SELECT alias1.f1 , 0 FROM t1 AS alias1 LEFT JOIN t2 ON 0)) AS alias ON 0";
+
+EXECUTE prep_stmt ;
+
+PREPARE prep_stmt FROM "
+SELECT t2.f1 FROM (t2 LEFT OUTER JOIN (SELECT  * FROM t2 WHERE ('y',1)
+ IN (SELECT alias1.f1 , 0 FROM
+     (t1 INNER JOIN  (t1 AS alias1 LEFT JOIN t2 ON 0) ON 0))) AS alias ON 0)";
+
+EXECUTE prep_stmt ;
+
+DROP TABLE t1,t2;
+

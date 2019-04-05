@@ -37,6 +37,7 @@
 #include "prealloced_array.h"
 #include "sql/enum_query_type.h"
 #include "sql/field.h"
+#include "sql/gis/geometries.h"
 #include "sql/gis/srid.h"
 /* This file defines all spatial functions */
 #include "sql/inplace_vector.h"
@@ -342,7 +343,7 @@ class Item_func_geometry_type : public Item_str_ascii_func {
     set_data_type_string(15, default_charset());
     maybe_null = true;
     return false;
-  };
+  }
 };
 
 /**
@@ -731,18 +732,15 @@ class Item_func_validate : public Item_geometry_func {
   String *val_str(String *) override;
 };
 
-class Item_func_simplify : public Item_geometry_func {
-  BG_result_buf_mgr bg_resbuf_mgr;
-  String arg_val;
-  template <typename Coordsys>
-  int simplify_basic(Geometry *geom, double max_dist, String *str,
-                     Gis_geometry_collection *gc = NULL, String *gcbuf = NULL);
-
+/// Item that implements function ST_Simplify, which simplifies a geometry using
+/// the Douglas-Peucker algorithm.
+class Item_func_st_simplify : public Item_geometry_func {
  public:
-  Item_func_simplify(const POS &pos, Item *a, Item *b)
+  Item_func_st_simplify(const POS &pos, Item *a, Item *b)
       : Item_geometry_func(pos, a, b) {}
-  const char *func_name() const override { return "st_simplify"; }
   String *val_str(String *) override;
+
+  const char *func_name() const override { return "st_simplify"; }
 };
 
 class Item_func_point : public Item_geometry_func {
@@ -788,7 +786,7 @@ class Item_func_pointfromgeohash : public Item_geometry_func {
   bool fix_fields(THD *thd, Item **ref) override;
   Field::geometry_type get_geometry_type() const override {
     return Field::GEOM_POINT;
-  };
+  }
 };
 
 class Item_func_spatial_decomp : public Item_geometry_func {
@@ -1431,56 +1429,163 @@ class Item_func_dimension : public Item_int_func {
   }
 };
 
-/**
-  This class updates the x coordinate of geometry class POINT.
-  The class handles the SQL function @<geometry@>= ST_X(@<point@>, @<double@>).
-*/
-class Item_func_set_x : public Item_geometry_func {
+/// The abstract superclass for all geometry coordinate mutator functions (ST_X,
+/// ST_Y, ST_Latitude and ST_Longitude with two parameters).
+///
+/// @see Item_func_coordinate_observer
+class Item_func_coordinate_mutator : public Item_geometry_func {
  public:
-  Item_func_set_x(const POS &pos, Item *a, Item *b)
-      : Item_geometry_func(pos, a, b) {}
-  const char *func_name() const override { return "st_x"; }
+  Item_func_coordinate_mutator(const POS &pos, Item *a, Item *b,
+                               bool geographic_only)
+      : Item_geometry_func(pos, a, b), m_geographic_only(geographic_only) {}
   String *val_str(String *) override;
+
+ protected:
+  const char *func_name() const override = 0;
+  /// Returns the coordinate number accessed by this item.
+  ///
+  /// @param[in] srs The spatial reference system of the point.
+  ///
+  /// @return The coordinate number to access.
+  virtual int coordinate_number(
+      const dd::Spatial_reference_system *srs) const = 0;
+
+ private:
+  /// Whether this item will accept only geographic geometries/SRSs.
+  bool m_geographic_only;
 };
 
-/**
-  This class updates the y coordinate of geometry class POINT.
-  The class handles the SQL function @<geometry@>= ST_Y(@<point@>, @<double@>).
-*/
-class Item_func_set_y : public Item_geometry_func {
+/// The abstract superclass for all geometry coordinate oberserver functions
+/// (ST_X, ST_Y, ST_Latitude, ST_Longitude with one parameter).
+///
+/// @see Item_func_coordinate_mutator
+class Item_func_coordinate_observer : public Item_real_func {
  public:
-  Item_func_set_y(const POS &pos, Item *a, Item *b)
-      : Item_geometry_func(pos, a, b) {}
-  const char *func_name() const override { return "st_y"; }
-  String *val_str(String *) override;
-};
-
-class Item_func_get_x : public Item_real_func {
-  String value;
-
- public:
-  Item_func_get_x(const POS &pos, Item *a) : Item_real_func(pos, a) {}
+  Item_func_coordinate_observer(const POS &pos, Item *a, bool geographic_only)
+      : Item_real_func(pos, a), m_geographic_only(geographic_only) {}
   double val_real() override;
-  const char *func_name() const override { return "st_x"; }
-  bool resolve_type(THD *thd) override {
-    if (Item_real_func::resolve_type(thd)) return true;
-    maybe_null = true;
-    return false;
+
+ protected:
+  const char *func_name() const override = 0;
+  /// Returns the coordinate number accessed by this item.
+  ///
+  /// @param[in] srs The spatial reference system of the point.
+  ///
+  /// @return The coordinate number to access.
+  virtual int coordinate_number(
+      const dd::Spatial_reference_system *srs) const = 0;
+
+ private:
+  /// Whether this item will accept only geographic geometries/SRSs.
+  bool m_geographic_only;
+};
+
+/// This class implements the two-parameter ST_Latitude function which sets the
+/// latitude of a geographic point.
+class Item_func_st_latitude_mutator final
+    : public Item_func_coordinate_mutator {
+ public:
+  Item_func_st_latitude_mutator(const POS &pos, Item *a, Item *b)
+      : Item_func_coordinate_mutator(pos, a, b, true) {}
+
+ protected:
+  const char *func_name() const override { return "st_latitude"; }
+  int coordinate_number(const dd::Spatial_reference_system *) const override {
+    return 1;
   }
 };
 
-class Item_func_get_y : public Item_real_func {
-  String value;
-
+/// This class implements the one-parameter ST_Latitude function which returns
+/// the latitude coordinate of a geographic point.
+class Item_func_st_latitude_observer final
+    : public Item_func_coordinate_observer {
  public:
-  Item_func_get_y(const POS &pos, Item *a) : Item_real_func(pos, a) {}
-  double val_real() override;
-  const char *func_name() const override { return "st_y"; }
-  bool resolve_type(THD *thd) override {
-    if (Item_real_func::resolve_type(thd)) return true;
-    maybe_null = true;
-    return false;
+  Item_func_st_latitude_observer(const POS &pos, Item *a)
+      : Item_func_coordinate_observer(pos, a, true) {}
+
+ protected:
+  const char *func_name() const override { return "st_latitude"; }
+  int coordinate_number(const dd::Spatial_reference_system *) const override {
+    return 1;
   }
+};
+
+/// This class implements the two-parameter ST_Longitude function which sets the
+/// longitude coordinate of a point.
+class Item_func_st_longitude_mutator final
+    : public Item_func_coordinate_mutator {
+ public:
+  Item_func_st_longitude_mutator(const POS &pos, Item *a, Item *b)
+      : Item_func_coordinate_mutator(pos, a, b, true) {}
+
+ protected:
+  const char *func_name() const override { return "st_longitude"; }
+  int coordinate_number(const dd::Spatial_reference_system *) const override {
+    return 0;
+  }
+};
+
+/// This class implements the one-parameter ST_Longitude function which returns
+/// the longitude coordinate of a geographic point.
+class Item_func_st_longitude_observer final
+    : public Item_func_coordinate_observer {
+ public:
+  Item_func_st_longitude_observer(const POS &pos, Item *a)
+      : Item_func_coordinate_observer(pos, a, true) {}
+
+ protected:
+  const char *func_name() const override { return "st_longitude"; }
+  int coordinate_number(const dd::Spatial_reference_system *) const override {
+    return 0;
+  }
+};
+
+/// This class implements the two-parameter ST_X function which sets the X
+/// coordinate of a point.
+class Item_func_st_x_mutator final : public Item_func_coordinate_mutator {
+ public:
+  Item_func_st_x_mutator(const POS &pos, Item *a, Item *b)
+      : Item_func_coordinate_mutator(pos, a, b, false) {}
+
+ protected:
+  const char *func_name() const override { return "st_x"; }
+  int coordinate_number(const dd::Spatial_reference_system *srs) const override;
+};
+
+/// This class implements the one-parameter ST_X function which returns the X
+/// coordinate of a point.
+class Item_func_st_x_observer final : public Item_func_coordinate_observer {
+ public:
+  Item_func_st_x_observer(const POS &pos, Item *a)
+      : Item_func_coordinate_observer(pos, a, false) {}
+
+ protected:
+  const char *func_name() const override { return "st_x"; }
+  int coordinate_number(const dd::Spatial_reference_system *srs) const override;
+};
+
+/// This class implements the two-parameter ST_Y function which sets the Y
+/// coordinate of a point.
+class Item_func_st_y_mutator final : public Item_func_coordinate_mutator {
+ public:
+  Item_func_st_y_mutator(const POS &pos, Item *a, Item *b)
+      : Item_func_coordinate_mutator(pos, a, b, false) {}
+
+ protected:
+  const char *func_name() const override { return "st_y"; }
+  int coordinate_number(const dd::Spatial_reference_system *srs) const override;
+};
+
+/// This class implements the one-parameter ST_Y function which returns the Y
+/// coordinate of a point.
+class Item_func_st_y_observer final : public Item_func_coordinate_observer {
+ public:
+  Item_func_st_y_observer(const POS &pos, Item *a)
+      : Item_func_coordinate_observer(pos, a, false) {}
+
+ protected:
+  const char *func_name() const override { return "st_y"; }
+  int coordinate_number(const dd::Spatial_reference_system *srs) const override;
 };
 
 class Item_func_swap_xy : public Item_geometry_func {
@@ -1532,18 +1637,13 @@ class Item_func_numpoints : public Item_int_func {
   }
 };
 
-class Item_func_area : public Item_real_func {
-  String value;
-
-  template <typename Coordsys>
-  double bg_area(const Geometry *geom);
-
+class Item_func_st_area : public Item_real_func {
  public:
-  Item_func_area(const POS &pos, Item *a) : Item_real_func(pos, a) {}
+  Item_func_st_area(const POS &pos, Item *a) : Item_real_func(pos, a) {}
   double val_real() override;
   const char *func_name() const override { return "st_area"; }
-  bool resolve_type(THD *thd) override {
-    if (Item_real_func::resolve_type(thd)) return true;
+  bool resolve_type(THD *) override {
+    // ST_Area returns NULL if the geometry is empty.
     maybe_null = true;
     return false;
   }
@@ -1563,44 +1663,28 @@ class Item_func_st_length : public Item_real_func {
   }
 };
 
-/**
-  Implements the one-parameter ST_SRID observer function. If used with a
-  valid geometry, it returns the SRID of the geometry object. Ex:
-
-  SELECT ST_SRID(geometry_column) FROM t1;
-
-  will return the SRIDs of the geometries in geometry_column
-  in table t1.
-*/
-class Item_func_get_srid : public Item_int_func {
-  String value;
-
+/// This class implements the two-parameter ST_SRID function which sets
+/// the SRID of a geometry.
+class Item_func_st_srid_mutator : public Item_geometry_func {
  public:
-  Item_func_get_srid(const POS &pos, Item *a) : Item_int_func(pos, a) {}
-  longlong val_int() override;
+  Item_func_st_srid_mutator(const POS &pos, Item *a, Item *b)
+      : Item_geometry_func(pos, a, b) {}
+  String *val_str(String *) override;
   const char *func_name() const override { return "st_srid"; }
-  bool resolve_type(THD *) override {
-    max_length = 10;
-    maybe_null = true;
-    return false;
-  }
 };
 
-/**
-  Updates the SRID of a geometry object without changing its content.
-  This extends the ST_SRID function to two parameters: a geometry and an
-  SRID. Can be used as follows:
-
-  UPDATE t1 SET geometry_column=ST_SRID(geometry_column, 4326);
-
-  This will update all geometries in geometry_column to have SRID 4326.
-*/
-class Item_func_set_srid : public Item_geometry_func {
+/// This class implements the one-parameter ST_SRID function which
+/// returns the SRID of a geometry.
+class Item_func_st_srid_observer : public Item_int_func {
  public:
-  Item_func_set_srid(const POS &pos, Item *a, Item *b)
-      : Item_geometry_func(pos, a, b){};
-  String *val_str(String *str) override;
+  Item_func_st_srid_observer(const POS &pos, Item *a) : Item_int_func(pos, a) {}
+  longlong val_int() override;
   const char *func_name() const override { return "st_srid"; }
+  bool resolve_type(THD *thd) override {
+    bool error = Item_int_func::resolve_type(thd);
+    max_length = 10;
+    return error;
+  }
 };
 
 class Item_func_distance : public Item_real_func {
@@ -1639,6 +1723,18 @@ class Item_func_st_distance_sphere : public Item_real_func {
       : Item_real_func(pos, ilist) {}
   double val_real() override;
   const char *func_name() const override { return "st_distance_sphere"; }
+};
+
+/// This class implements ST_Transform function that transforms a geometry from
+/// one SRS to another.
+class Item_func_st_transform final : public Item_geometry_func {
+ public:
+  Item_func_st_transform(const POS &pos, Item *a, Item *b)
+      : Item_geometry_func(pos, a, b) {}
+  String *val_str(String *str) override;
+
+ private:
+  const char *func_name() const override { return "st_transform"; }
 };
 
 #endif /*ITEM_GEOFUNC_INCLUDED*/

@@ -4,7 +4,7 @@ DROP TABLE IF EXISTS t1;
 #
 set names utf8;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 set collation_connection=utf32_unicode_ci;
 select hex('a'), hex('a ');
 hex('a')	hex('a ')
@@ -2607,7 +2607,7 @@ ZzŹźŻżŽž
 drop table t1;
 SET NAMES utf8;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 CREATE TABLE t1 (c varchar(150) CHARACTER SET utf32 COLLATE utf32_general_ci NOT NULL, INDEX (c));
 INSERT INTO t1 VALUES (_ucs2 0x039C03C903B403B11F770308);
 SELECT * FROM t1 WHERE c LIKE _utf32 0x0000039C00000025 COLLATE utf32_general_ci;
@@ -2615,7 +2615,7 @@ c
 Μωδαί̈
 INSERT INTO t1 VALUES (CONVERT(_ucs2 0x039C03C903B4 USING utf8));
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 SELECT * FROM t1 WHERE c LIKE _utf32 0x0000039C00000025
 COLLATE utf32_general_ci ORDER BY c;
 c
@@ -2641,7 +2641,7 @@ c
 Μωδαί̈
 INSERT INTO t1 VALUES (CONVERT(_ucs2 0x039C03C903B4 USING utf8));
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 SELECT * FROM t1 WHERE c LIKE CONVERT(_ucs2 0x039C0025 USING utf32)
 COLLATE utf32_unicode_ci ORDER BY c;
 c
@@ -2650,7 +2650,7 @@ c
 DROP TABLE t1;
 SET NAMES utf8;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 SET @test_character_set='utf32';
 SET @test_collation='utf32_swedish_ci';
 SET @safe_character_set_server= @@character_set_server;
@@ -2725,7 +2725,7 @@ select 1 from t1 order by cast(a as char(1));
 drop table t1;
 set names utf8;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 create table t1 (
 name varchar(10),
 level smallint unsigned);
@@ -2745,7 +2745,11 @@ USE test;
 SET character_set_server= @safe_character_set_server;
 SET collation_server= @safe_collation_server;
 SET character_set_client= @safe_character_set_client;
+Warnings:
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 SET character_set_results= @safe_character_set_results;
+Warnings:
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 SET collation_connection='utf32_unicode_ci';
 create table t1 select repeat('a',4000) a;
 delete from t1;
@@ -2788,6 +2792,9 @@ ii	8	ii	8	II	8
 İI	8	ii	8	İI	8
 İİ	8	ii	8	İİ	8
 II	8	ii	8	II	8
+Warnings:
+Warning	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
+Warning	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
 ALTER TABLE t1 MODIFY a VARCHAR(30) character set utf32 collate utf32_turkish_ci;
 SELECT a, length(a) la, @l:=lower(a) l, length(@l) ll, @u:=upper(a) u, length(@u) lu
 FROM t1 ORDER BY id;
@@ -2798,6 +2805,9 @@ ii	8	ii	8	İİ	8
 İI	8	iı	8	İI	8
 İİ	8	ii	8	İİ	8
 II	8	ıı	8	II	8
+Warnings:
+Warning	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
+Warning	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
 DROP TABLE t1;
 CREATE TABLE t1 (
 c1 text character set utf32 collate utf32_polish_ci NOT NULL
@@ -3231,7 +3241,7 @@ hex(weight_string(cast(_latin1 0xDF6368 as char),25, 4,0xC0))
 0FEA0FEA0EE202090209020902090209020902090209020902
 SET NAMES utf8;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 SET collation_connection=utf32_german2_ci;
 "BEGIN ctype_german.inc"
 drop table if exists t1;

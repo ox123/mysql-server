@@ -38,9 +38,6 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "ha_prototypes.h"
 #include "lock0lock.h"
 #include "log0log.h"
-#include "my_compiler.h"
-#include "my_dbug.h"
-#include "my_inttypes.h"
 #include "pars0types.h"
 #include "que0que.h"
 #include "row0ins.h"
@@ -51,6 +48,8 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "trx0roll.h"
 #include "trx0trx.h"
 #include "usr0sess.h"
+
+#include "my_dbug.h"
 
 /* Short introduction to query graphs
    ==================================
@@ -408,13 +407,14 @@ void que_graph_free_recursive(que_node_t *node) /*!< in: query graph node */
       que_graph_free_recursive(thr->child);
 
       break;
-    case QUE_NODE_UNDO:
 
+    case QUE_NODE_UNDO:
       undo = static_cast<undo_node_t *>(node);
 
+      /* Free the heap memory. */
       mem_heap_free(undo->heap);
-
       break;
+
     case QUE_NODE_SELECT:
 
       sel = static_cast<sel_node_t *>(node);

@@ -39,13 +39,13 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "ha_prototypes.h"
 #include "lock0lock.h"
 #include "lock0priv.h"
-#include "my_dbug.h"
-#include "my_inttypes.h"
 #include "os0thread-create.h"
 #include "que0que.h"
 #include "row0mysql.h"
 #include "srv0mon.h"
 #include "srv0start.h"
+
+#include "my_dbug.h"
 
 /** Print the contents of the lock_sys_t::waiting_threads array. */
 static void lock_wait_table_print(void) {
@@ -171,7 +171,6 @@ static srv_slot_t *lock_wait_table_reserve_slot(
   lock_wait_table_print();
 
   ut_error;
-  return (NULL);
 }
 
 /** Puts a user OS thread to wait for a lock to be released. If an error
@@ -374,8 +373,9 @@ void lock_wait_suspend_thread(
 }
 
 /** Releases a user OS thread waiting for a lock to be released, if the
- thread is already suspended. */
-void lock_wait_release_thread_if_suspended(
+ thread is already suspended. Please do not call it directly, but rather use the
+ lock_reset_wait_and_release_thread_if_suspended() wrapper. */
+static void lock_wait_release_thread_if_suspended(
     que_thr_t *thr) /*!< in: query thread associated with the
                     user OS thread	 */
 {
@@ -398,6 +398,30 @@ void lock_wait_release_thread_if_suspended(
     }
 
     os_event_set(thr->slot->event);
+  }
+}
+
+void lock_reset_wait_and_release_thread_if_suspended(lock_t *lock) {
+  ut_ad(lock_mutex_own());
+  ut_ad(trx_mutex_own(lock->trx));
+
+  /* Reset the wait flag and the back pointer to lock in trx */
+
+  lock_reset_lock_and_trx_wait(lock);
+
+  /* If we are resolving a deadlock by choosing another transaction
+  as a victim, then our original transaction may not be in the
+  TRX_QUE_LOCK_WAIT state, and there is no need to end the lock wait
+  for it */
+
+  if (lock->trx_que_state() == TRX_QUE_LOCK_WAIT) {
+    /* The following function releases the trx from lock wait */
+
+    que_thr_t *thr = que_thr_end_lock_wait(lock->trx);
+
+    if (thr != NULL) {
+      lock_wait_release_thread_if_suspended(thr);
+    }
   }
 }
 
@@ -443,9 +467,9 @@ static void lock_wait_check_and_cancel(
       lock_cancel_waiting_and_release(trx->lock.wait_lock, false);
     }
 
-    lock_mutex_exit();
-
     trx->owns_mutex = false;
+
+    lock_mutex_exit();
 
     trx_mutex_exit(trx);
   }

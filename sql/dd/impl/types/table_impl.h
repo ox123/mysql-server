@@ -1,4 +1,4 @@
-/* Copyright (c) 2014, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2014, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -29,12 +29,13 @@
 #include <string>
 
 #include "my_inttypes.h"
+#include "mysql_version.h"  // MYSQL_VERSION_ID
+#include "sql/dd/impl/properties_impl.h"
 #include "sql/dd/impl/raw/raw_record.h"
 #include "sql/dd/impl/types/abstract_table_impl.h"  // dd::Abstract_table_impl
 #include "sql/dd/impl/types/entity_object_impl.h"
 #include "sql/dd/impl/types/weak_object_impl.h"
 #include "sql/dd/object_id.h"
-#include "sql/dd/properties.h"
 #include "sql/dd/sdi_fwd.h"
 #include "sql/dd/string_type.h"
 #include "sql/dd/types/abstract_table.h"
@@ -109,6 +110,15 @@ class Table_impl : public Abstract_table_impl, virtual public Table {
 
  public:
   /////////////////////////////////////////////////////////////////////////
+  // is_temporary.
+  /////////////////////////////////////////////////////////////////////////
+
+  virtual bool is_temporary() const { return m_is_temporary; }
+  virtual void set_is_temporary(bool is_temporary) {
+    m_is_temporary = is_temporary;
+  }
+
+  /////////////////////////////////////////////////////////////////////////
   // collation.
   /////////////////////////////////////////////////////////////////////////
 
@@ -131,7 +141,7 @@ class Table_impl : public Abstract_table_impl, virtual public Table {
   virtual bool is_explicit_tablespace() const {
     bool is_explicit = false;
     if (options().exists("explicit_tablespace"))
-      options().get_bool("explicit_tablespace", &is_explicit);
+      options().get("explicit_tablespace", &is_explicit);
     return is_explicit;
   }
 
@@ -162,17 +172,34 @@ class Table_impl : public Abstract_table_impl, virtual public Table {
   virtual void set_comment(const String_type &comment) { m_comment = comment; }
 
   /////////////////////////////////////////////////////////////////////////
+  // last_checked_for_upgrade_version_id
+  /////////////////////////////////////////////////////////////////////////
+
+  virtual bool is_checked_for_upgrade() const {
+    return m_last_checked_for_upgrade_version_id == MYSQL_VERSION_ID;
+  }
+
+  virtual void mark_as_checked_for_upgrade() {
+    m_last_checked_for_upgrade_version_id = MYSQL_VERSION_ID;
+  }
+
+  /////////////////////////////////////////////////////////////////////////
   // se_private_data.
   /////////////////////////////////////////////////////////////////////////
 
   virtual const Properties &se_private_data() const {
-    return *m_se_private_data;
+    return m_se_private_data;
   }
 
-  virtual Properties &se_private_data() { return *m_se_private_data; }
+  virtual Properties &se_private_data() { return m_se_private_data; }
 
-  virtual bool set_se_private_data_raw(const String_type &se_private_data_raw);
-  virtual void set_se_private_data(const Properties &se_private_data);
+  virtual bool set_se_private_data(const String_type &se_private_data_raw) {
+    return m_se_private_data.insert_values(se_private_data_raw);
+  }
+
+  virtual bool set_se_private_data(const Properties &se_private_data) {
+    return m_se_private_data.insert_values(se_private_data);
+  }
 
   /////////////////////////////////////////////////////////////////////////
   // se_private_id.
@@ -389,8 +416,11 @@ class Table_impl : public Abstract_table_impl, virtual public Table {
     return Abstract_table_impl::options();
   }
   virtual Properties &options() { return Abstract_table_impl::options(); }
-  virtual bool set_options_raw(const String_type &options_raw) {
-    return Abstract_table_impl::set_options_raw(options_raw);
+  virtual bool set_options(const Properties &options) {
+    return Abstract_table_impl::set_options(options);
+  }
+  virtual bool set_options(const String_type &options_raw) {
+    return Abstract_table_impl::set_options(options_raw);
   }
   virtual ulonglong created(bool convert_time) const {
     return Abstract_table_impl::created(convert_time);
@@ -478,8 +508,15 @@ class Table_impl : public Abstract_table_impl, virtual public Table {
 
   String_type m_engine;
   String_type m_comment;
-  std::unique_ptr<Properties> m_se_private_data;
+
+  // Setting this to 0 means that every table will be checked by CHECK
+  // TABLE FOR UPGRADE once, even if it was created in this version.
+  // If we instead initialize to MYSQL_VERSION_ID, it will only run
+  // CHECK TABLE FOR UPGRADE after a real upgrade.
+  uint m_last_checked_for_upgrade_version_id = 0;
+  Properties_impl m_se_private_data;
   enum_row_format m_row_format;
+  bool m_is_temporary;
 
   // - Partitioning related fields.
 

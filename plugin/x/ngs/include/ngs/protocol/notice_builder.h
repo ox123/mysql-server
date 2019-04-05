@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2018, Oracle and/or its affiliates. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0,
@@ -22,8 +22,8 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
-#ifndef _NGS_NOTICE_BUILDER_H_
-#define _NGS_NOTICE_BUILDER_H_
+#ifndef PLUGIN_X_NGS_INCLUDE_NGS_PROTOCOL_NOTICE_BUILDER_H_
+#define PLUGIN_X_NGS_INCLUDE_NGS_PROTOCOL_NOTICE_BUILDER_H_
 
 #include <string>
 
@@ -35,11 +35,11 @@ class Output_buffer;
 
 class Notice_builder : public Message_builder {
  public:
-  void encode_frame(Output_buffer *out_buffer, uint32 type,
+  void encode_frame(Page_output_stream *out_buffer, uint32 type,
                     const std::string &data, int scope);
 
-  void encode_rows_affected(Output_buffer *out_buffer, uint64 value);
+  void encode_rows_affected(Page_output_stream *out_buffer, uint64 value);
 };
 }  // namespace ngs
 
-#endif  //  _NGS_NOTICE_BUILDER_H_
+#endif  // PLUGIN_X_NGS_INCLUDE_NGS_PROTOCOL_NOTICE_BUILDER_H_

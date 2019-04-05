@@ -94,8 +94,9 @@ class plist_node_t {
       : m_frame(frame), m_node(node), m_mtr(mtr) {}
 
   /** Copy constructor. */
-  plist_node_t(const plist_node_t &other)
-      : m_frame(other.m_frame), m_node(other.m_node), m_mtr(other.m_mtr) {}
+  plist_node_t(const plist_node_t &other) = default;
+
+  plist_node_t &operator=(const plist_node_t &) = default;
 
   /** Check if the current node is before the given node in the
   page (w.r.t the offset).
@@ -606,10 +607,17 @@ struct z_frag_entry_t {
     set_big_free_len(0);
   }
 
+  /** Set the current fragment entry to null. */
+  void set_null() { m_node = nullptr; }
+
+  /** Check if the current fragment entry is null.
+  @return true if the current fragment entry is null, false otherwise. */
+  bool is_null() const { return (m_node == nullptr); }
+
   fil_addr_t get_self_addr() const {
     page_t *frame = page_align(m_node);
     page_no_t page_no = mach_read_from_4(frame + FIL_PAGE_OFFSET);
-    ulint offset = m_node - frame;
+    uint16_t offset = static_cast<uint16_t>(m_node - frame);
     ut_ad(offset < UNIV_PAGE_SIZE);
     return (fil_addr_t(page_no, offset));
   }
@@ -806,15 +814,17 @@ struct z_index_page_t {
   }
 
   /** Get the page number. */
-  ulint get_page_no() const {
+  page_no_t get_page_no() const {
     return (mach_read_from_4(frame() + FIL_PAGE_OFFSET));
   }
 
   /** Get the next page number. */
-  ulint get_next_page_no() const {
+  page_no_t get_next_page_no() const {
     return (mach_read_from_4(frame() + FIL_PAGE_NEXT));
   }
 
+  /** Allocate an ZLOB index page.
+  @return the buffer block of the allocated zlob index page. */
   buf_block_t *alloc(z_first_page_t &first, bool bulk);
 
   void import(trx_id_t trx_id);
@@ -1023,15 +1033,17 @@ struct z_frag_node_page_t {
   }
 
   /** Get the page number. */
-  ulint get_page_no() const {
+  page_no_t get_page_no() const {
     return (mach_read_from_4(frame() + FIL_PAGE_OFFSET));
   }
 
   /** Get the next page number. */
-  ulint get_next_page_no() const {
+  page_no_t get_next_page_no() const {
     return (mach_read_from_4(frame() + FIL_PAGE_NEXT));
   }
 
+  /** Allocate a fragment nodes page.
+  @return buffer block of the allocated fragment nodes page or nullptr. */
   buf_block_t *alloc(z_first_page_t &first, bool bulk);
 
   void dealloc() {
@@ -1683,7 +1695,8 @@ struct z_frag_page_t {
   /** Allocate a fragment with the given payload.
   @param[in]  size  the payload size.
   @param[in]  entry the index entry of the given frag page.
-  @return the frag_id of the allocated fragment. */
+  @return the frag_id of the allocated fragment.
+  @return FRAG_ID_NULL if fragment could not be allocated. */
   frag_id_t alloc_fragment(ulint size, z_frag_entry_t &entry);
 
   plist_base_node_t free_list() const {
@@ -1701,23 +1714,19 @@ struct z_frag_page_t {
     mlog_write_ulint(ptr, FIL_PAGE_TYPE_ZLOB_FRAG, MLOG_2BYTES, m_mtr);
   }
 
-  ulint get_page_type() const {
+  page_type_t get_page_type() const {
     return (mach_read_from_2(frame() + FIL_PAGE_TYPE));
   }
 
   const char *get_page_type_str() const {
-    ulint type = get_page_type();
+    page_type_t type = get_page_type();
     ut_a(type == FIL_PAGE_TYPE_ZLOB_FRAG);
     return ("FIL_PAGE_TYPE_ZLOB_FRAG");
   }
 
   /** The maximum free space available in a fragment page. Adjustment
   needs to be done with the frag_node_t::overhead().*/
-  ulint payload() {
-    page_size_t page_size(dict_table_page_size(m_index->table));
-    return (page_size.physical() - OFFSET_FRAGS_BEGIN -
-            OFFSET_PAGE_DIR_ENTRY_COUNT);
-  }
+  ulint payload() { return (z_frag_page_t::max_payload(m_index)); }
 
   /** The maximum free space available in a fragment page. Adjustment
   needs to be done with the frag_node_t::overhead().*/
@@ -1820,7 +1829,7 @@ struct z_frag_page_t {
   /** Determine if the given fragment node is the last fragment
   node adjacent to the directory.
   @return true if it is last fragment node, false otherwise. */
-  bool is_last_frag(frag_node_t &node) const {
+  bool is_last_frag(const frag_node_t &node) const {
     return (node.end_ptr() == slots_end_ptr());
   }
 

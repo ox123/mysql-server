@@ -1,4 +1,4 @@
-/* Copyright (c) 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -151,14 +151,20 @@ bool plugin_var_memalloc_session_update(THD *thd, SYS_VAR *var, char **dest,
 }
 
 SHOW_TYPE pluginvar_show_type(SYS_VAR *plugin_var) {
-  switch (plugin_var->flags & PLUGIN_VAR_TYPEMASK) {
+  switch (plugin_var->flags & PLUGIN_VAR_WITH_SIGN_TYPEMASK) {
     case PLUGIN_VAR_BOOL:
       return SHOW_MY_BOOL;
     case PLUGIN_VAR_INT:
+      return SHOW_SIGNED_INT;
+    case PLUGIN_VAR_INT | PLUGIN_VAR_UNSIGNED:
       return SHOW_INT;
     case PLUGIN_VAR_LONG:
+      return SHOW_SIGNED_LONG;
+    case PLUGIN_VAR_LONG | PLUGIN_VAR_UNSIGNED:
       return SHOW_LONG;
     case PLUGIN_VAR_LONGLONG:
+      return SHOW_SIGNED_LONGLONG;
+    case PLUGIN_VAR_LONGLONG | PLUGIN_VAR_UNSIGNED:
       return SHOW_LONGLONG;
     case PLUGIN_VAR_STR:
       return SHOW_CHAR_PTR;
@@ -270,9 +276,10 @@ bool sys_var_pluginvar::check_update_type(Item_result type) {
 }
 
 uchar *sys_var_pluginvar::real_value_ptr(THD *thd, enum_var_type type) {
-  DBUG_ASSERT(thd || (type == OPT_GLOBAL));
+  DBUG_ASSERT(thd || (type == OPT_GLOBAL) || (type == OPT_PERSIST));
   if (plugin_var->flags & PLUGIN_VAR_THDLOCAL) {
-    if (type == OPT_GLOBAL) thd = NULL;
+    /* scope of OPT_PERSIST is always GLOBAL */
+    if (type == OPT_GLOBAL || type == OPT_PERSIST) thd = NULL;
 
     return intern_sys_var_ptr(thd, *(int *)(plugin_var + 1), false);
   }
@@ -535,6 +542,85 @@ bool sys_var_pluginvar::on_check_pluginvar(sys_var *self MY_ATTRIBUTE((unused)),
               PLUGIN_VAR_NODEFAULT);
 
   return (!var->value);
+}
+
+void sys_var_pluginvar::saved_value_to_string(THD *, set_var *var,
+                                              char *def_val) {
+  if (!var->value) {
+    switch (plugin_var->flags & (PLUGIN_VAR_TYPEMASK | PLUGIN_VAR_THDLOCAL)) {
+      case PLUGIN_VAR_INT:
+        var->save_result.ulonglong_value =
+            ((sysvar_uint_t *)plugin_var)->def_val;
+        longlong10_to_str(var->save_result.ulonglong_value, def_val, -10);
+        return;
+      case PLUGIN_VAR_LONG:
+        var->save_result.ulonglong_value =
+            ((sysvar_ulong_t *)plugin_var)->def_val;
+        longlong10_to_str(var->save_result.ulonglong_value, def_val, -10);
+        return;
+      case PLUGIN_VAR_LONGLONG:
+        var->save_result.ulonglong_value =
+            ((sysvar_ulonglong_t *)plugin_var)->def_val;
+        longlong10_to_str(var->save_result.ulonglong_value, def_val, 10);
+        return;
+      case PLUGIN_VAR_ENUM:
+        var->save_result.ulonglong_value =
+            ((sysvar_enum_t *)plugin_var)->def_val;
+        longlong10_to_str(var->save_result.ulonglong_value, def_val, 10);
+        return;
+      case PLUGIN_VAR_BOOL:
+        var->save_result.ulonglong_value =
+            ((sysvar_bool_t *)plugin_var)->def_val;
+        longlong10_to_str(var->save_result.ulonglong_value, def_val, 10);
+        return;
+      case PLUGIN_VAR_STR:
+        if (((sysvar_str_t *)plugin_var)->def_val != NULL)
+          strcpy(def_val, ((sysvar_str_t *)plugin_var)->def_val);
+        else /* no default: consider empty */
+          def_val[0] = 0;
+        return;
+      case PLUGIN_VAR_DOUBLE:
+        var->save_result.double_value =
+            ((sysvar_double_t *)plugin_var)->def_val;
+        my_fcvt(var->save_result.double_value, 6, def_val, NULL);
+        return;
+      case PLUGIN_VAR_INT | PLUGIN_VAR_THDLOCAL:
+        var->save_result.ulonglong_value =
+            ((thdvar_uint_t *)plugin_var)->def_val;
+        longlong10_to_str(var->save_result.ulonglong_value, def_val, -10);
+        return;
+      case PLUGIN_VAR_LONG | PLUGIN_VAR_THDLOCAL:
+        var->save_result.ulonglong_value =
+            ((thdvar_ulong_t *)plugin_var)->def_val;
+        longlong10_to_str(var->save_result.ulonglong_value, def_val, -10);
+        return;
+      case PLUGIN_VAR_LONGLONG | PLUGIN_VAR_THDLOCAL:
+        var->save_result.ulonglong_value =
+            ((thdvar_ulonglong_t *)plugin_var)->def_val;
+        longlong10_to_str(var->save_result.ulonglong_value, def_val, -10);
+        return;
+      case PLUGIN_VAR_ENUM | PLUGIN_VAR_THDLOCAL:
+        var->save_result.ulonglong_value =
+            ((thdvar_enum_t *)plugin_var)->def_val;
+        longlong10_to_str(var->save_result.ulonglong_value, def_val, 10);
+        return;
+      case PLUGIN_VAR_BOOL | PLUGIN_VAR_THDLOCAL:
+        var->save_result.ulonglong_value =
+            ((thdvar_bool_t *)plugin_var)->def_val;
+        longlong10_to_str(var->save_result.ulonglong_value, def_val, 10);
+        return;
+      case PLUGIN_VAR_STR | PLUGIN_VAR_THDLOCAL:
+        strcpy(def_val, ((thdvar_str_t *)plugin_var)->def_val);
+        return;
+      case PLUGIN_VAR_DOUBLE | PLUGIN_VAR_THDLOCAL:
+        var->save_result.double_value =
+            ((thdvar_double_t *)plugin_var)->def_val;
+        my_fcvt(var->save_result.double_value, 6, def_val, NULL);
+        return;
+      default:
+        DBUG_ASSERT(0);
+    }
+  }
 }
 
 /****************************************************************************

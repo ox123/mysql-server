@@ -28,6 +28,7 @@
 
 #include "plugin/group_replication/include/gcs_logger.h"
 #include "plugin/group_replication/include/gcs_plugin_messages.h"
+#include "plugin/group_replication/include/gcs_view_modification_notifier.h"
 #include "plugin/group_replication/libmysqlgcs/include/mysql/gcs/gcs_interface.h"
 
 /**
@@ -98,6 +99,17 @@ class Gcs_operations {
   enum enum_gcs_error configure(const Gcs_interface_parameters &parameters);
 
   /**
+    Reconfigure the GCS interface, i.e. update its configuration parameters.
+
+    @param[in] parameters The configuration parameters
+
+    @return the operation status
+      @retval 0      OK
+      @retval !=0    Error
+  */
+  enum enum_gcs_error reconfigure(const Gcs_interface_parameters &parameters);
+
+  /**
     Configure the debug options that shall be used by GCS.
 
     @param debug_options Set of debug options separated by comma
@@ -113,6 +125,8 @@ class Gcs_operations {
 
     @param[in] communication_event_listener The communication event listener
     @param[in] control_event_listener       The control event listener
+    @param[in] view_notifier  A view change notifier to know the response
+
 
     @return the operation status
       @retval 0      OK
@@ -120,7 +134,8 @@ class Gcs_operations {
   */
   enum enum_gcs_error join(
       const Gcs_communication_event_listener &communication_event_listener,
-      const Gcs_control_event_listener &control_event_listener);
+      const Gcs_control_event_listener &control_event_listener,
+      Plugin_gcs_view_modification_notifier *view_notifier);
 
   /**
     Returns true if this server belongs to the group.
@@ -129,6 +144,9 @@ class Gcs_operations {
 
   /**
     Request GCS interface to leave the group.
+
+    @param[in] view_notifier  A view change notifier to know the response.
+                              Pass a null pointer if you don't want to wait
 
     Note: This method only asks to leave, it does not know if request was
           successful
@@ -139,7 +157,35 @@ class Gcs_operations {
       @retval ALREADY_LEFT        The member already left
       @retval ERROR_WHEN_LEAVING  An error happened when trying to leave
   */
-  enum_leave_state leave();
+  enum_leave_state leave(Plugin_gcs_view_modification_notifier *view_notifier);
+
+  /**
+    Notify all listeners that a view changed.
+  */
+  void notify_of_view_change_end();
+
+  /**
+    Notify all listeners that a view was canceled.
+
+    @param[in] errnr  The error associated to this view
+  */
+  void notify_of_view_change_cancellation(
+      int errnr = GROUP_REPLICATION_CONFIGURATION_ERROR);
+
+  /**
+    Checks if the view modification is a injected one.
+
+    @return
+      @retval true  if the current view modification is a injected one
+      @retval false otherwise
+   */
+  bool is_injected_view_modification();
+
+  /**
+    Removes the notifier from the list
+  */
+  void remove_view_notifer(
+      Plugin_gcs_view_modification_notifier *view_notifier);
 
   /**
     Declare the member as being already out of the group.
@@ -187,6 +233,44 @@ class Gcs_operations {
   int force_members(const char *members);
 
   /**
+    Retrieves the minimum supported "write concurrency" value.
+  */
+  uint32_t get_minimum_write_concurrency() const;
+
+  /**
+    Retrieves the maximum supported "write concurrency" value.
+  */
+  uint32_t get_maximum_write_concurrency() const;
+
+  /**
+    Retrieves the group's "write concurrency" value.
+
+    @param[out] write_concurrency A reference to where the group's "write
+                concurrency" will be written to
+
+    @retval GCS_OK if successful
+    @retval GCS_NOK if unsuccessful
+  */
+  enum enum_gcs_error get_write_concurrency(uint32_t &write_concurrency);
+
+  /**
+    Reconfigures the group's "write concurrency" value.
+
+    The caller should ensure that the supplied value is between @c
+    minimum_write_concurrency and @c maximum_write_concurrency.
+
+    The method is non-blocking, meaning that it shall only send the
+    request to an underlying GCS. The final result can be polled via @c
+    get_write_concurrency.
+
+    @param write_concurrency The desired "write concurrency" value.
+
+    @retval GCS_OK if successful
+    @retval GCS_NOK if unsuccessful
+  */
+  enum enum_gcs_error set_write_concurrency(uint32_t new_write_concurrency);
+
+  /**
    * @return the communication engine being used
    */
   static const std::string &get_gcs_engine();
@@ -197,11 +281,14 @@ class Gcs_operations {
     GCS.
   */
   enum enum_gcs_error do_set_debug_options(std::string &debug_options) const;
+  Gcs_group_management_interface *get_gcs_group_manager() const;
 
   static const std::string gcs_engine;
   Gcs_gr_logger_impl gcs_logger;
   Gcs_interface *gcs_interface;
 
+  /** Was this view change injected */
+  bool injected_view_modification;
   /** Is the member leaving*/
   bool leave_coordination_leaving;
   /** Did the member already left*/
@@ -209,7 +296,12 @@ class Gcs_operations {
   /** Is finalize ongoing*/
   bool finalize_ongoing;
 
+  /** List of associated view change notifiers waiting */
+  std::list<Plugin_gcs_view_modification_notifier *> view_change_notifier_list;
+
   Checkable_rwlock *gcs_operations_lock;
+  /** Lock for the list of waiters on a view change */
+  Checkable_rwlock *view_observers_lock;
   Checkable_rwlock *finalize_ongoing_lock;
 };
 

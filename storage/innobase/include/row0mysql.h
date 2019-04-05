@@ -38,15 +38,51 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "ha_prototypes.h"
 #endif /* !UNIV_HOTBACKUP */
 
+#include <stddef.h>
+#include <sys/types.h>
+
 #include "btr0pcur.h"
 #include "data0data.h"
-#include "dict0dd.h"
+#include "data0type.h"
+#include "db0err.h"
 #include "dict0types.h"
+#include "fts0fts.h"
+#include "gis0type.h"
+#include "lob0undo.h"
+#include "lock0types.h"
+#include "mem0mem.h"
+#include "my_compiler.h"
+#include "my_inttypes.h"
 #include "que0types.h"
+#include "rem0types.h"
 #include "row0types.h"
 #include "sess0sess.h"
 #include "sql_cmd.h"
 #include "trx0types.h"
+#include "univ.i"
+
+class THD;
+class ha_innobase;
+class innodb_session_t;
+namespace dd {
+class Table;
+}
+struct TABLE;
+struct btr_pcur_t;
+struct dfield_t;
+struct dict_field_t;
+struct dict_foreign_t;
+struct dict_index_t;
+struct dict_table_t;
+struct dict_v_col_t;
+struct dtuple_t;
+struct ins_node_t;
+struct mtr_t;
+struct que_fork_t;
+struct que_thr_t;
+struct trx_t;
+struct upd_node_t;
+struct upd_t;
 
 #ifndef UNIV_HOTBACKUP
 extern ibool row_rollback_on_timeout;
@@ -353,41 +389,32 @@ dberr_t row_mysql_lock_table(
     const char *op_info) /*!< in: string for trx->op_info */
     MY_ATTRIBUTE((warn_unused_result));
 
-/** Drop a single-table tablespace as part of dropping or renaming a table.
+/** Drop a tablespace as part of dropping or renaming a table.
 This deletes the fil_space_t if found and the file on disk.
 @param[in]	space_id	Tablespace ID
-@param[in]	tablename	Table name, same as the tablespace name
 @param[in]	filepath	File path of tablespace to delete
 @return error code or DB_SUCCESS */
-dberr_t row_drop_single_table_tablespace(space_id_t space_id,
-                                         const char *tablename,
-                                         const char *filepath);
+dberr_t row_drop_tablespace(space_id_t space_id, const char *filepath);
 
 /** Drop a table for MySQL. If the data dictionary was not already locked
 by the transaction, the transaction will be committed.  Otherwise, the
 data dictionary will remain locked.
 @param[in]	name		table name
 @param[in,out]	trx		data dictionary transaction
-@param[in]	sqlcom		SQL command
 @param[in]	nonatomic	whether it is permitted
 to release and reacquire dict_operation_lock
 @param[in,out]	handler		intrinsic temporary table handle, or NULL
 @return error code or DB_SUCCESS */
-dberr_t row_drop_table_for_mysql(const char *name, trx_t *trx,
-                                 enum enum_sql_command sqlcom, bool nonatomic,
+dberr_t row_drop_table_for_mysql(const char *name, trx_t *trx, bool nonatomic,
                                  dict_table_t *handler = NULL);
 /** Drop a table for MySQL. If the data dictionary was not already locked
 by the transaction, the transaction will be committed.  Otherwise, the
 data dictionary will remain locked.
 @param[in]	name		table name
 @param[in,out]	trx		data dictionary transaction
-@param[in]	drop_db		whether the database is being dropped
-(ignore certain foreign key constraints)
 @return error code or DB_SUCCESS */
-inline dberr_t row_drop_table_for_mysql(const char *name, trx_t *trx,
-                                        bool drop_db) {
-  return (row_drop_table_for_mysql(
-      name, trx, drop_db ? SQLCOM_DROP_DB : SQLCOM_DROP_TABLE, true, NULL));
+inline dberr_t row_drop_table_for_mysql(const char *name, trx_t *trx) {
+  return (row_drop_table_for_mysql(name, trx, true, NULL));
 }
 
 /** Discards the tablespace of a table which stored in an .ibd file. Discarding
@@ -418,26 +445,26 @@ dberr_t row_drop_database_for_mysql(const char *name, trx_t *trx, ulint *found);
 @param[in]	new_name	new table name
 @param[in]	dd_table	dd::Table for new table
 @param[in,out]	trx		transaction
-@param[in]	log		whether to write rename table log
+@param[in]      replay          whether in replay stage
 @return error code or DB_SUCCESS */
 dberr_t row_rename_table_for_mysql(const char *old_name, const char *new_name,
                                    const dd::Table *dd_table, trx_t *trx,
-                                   bool log) MY_ATTRIBUTE((warn_unused_result));
+                                   bool replay)
+    MY_ATTRIBUTE((warn_unused_result));
 
 /** Scans an index for either COOUNT(*) or CHECK TABLE.
- If CHECK TABLE; Checks that the index contains entries in an ascending order,
- unique constraint is not broken, and calculates the number of index entries
- in the read view of the current transaction.
- @return DB_SUCCESS or other error */
-dberr_t row_scan_index_for_mysql(
-    row_prebuilt_t *prebuilt,  /*!< in: prebuilt struct
-                               in MySQL handle */
-    const dict_index_t *index, /*!< in: index */
-    bool check_keys,           /*!< in: true=check for mis-
-                               ordered or duplicate records,
-                               false=count the rows only */
-    ulint *n_rows)             /*!< out: number of entries
-                               seen in the consistent read */
+If CHECK TABLE; Checks that the index contains entries in an ascending order,
+unique constraint is not broken, and calculates the number of index entries
+in the read view of the current transaction.
+@param[in,out]  prebuilt    Prebuilt struct in MySQL handle.
+@param[in,out]  index       Index to scan.
+@param[in]      n_threads   Number of threads to use for the scan
+@param[in]      check_keys  True if called form check table.
+@param[out]     n_rows      Number of entries seen in the consistent read.
+@return DB_SUCCESS or other error */
+dberr_t row_scan_index_for_mysql(row_prebuilt_t *prebuilt, dict_index_t *index,
+                                 size_t n_threads, bool check_keys,
+                                 ulint *n_rows)
     MY_ATTRIBUTE((warn_unused_result));
 /** Initialize this module */
 void row_mysql_init(void);
@@ -652,25 +679,43 @@ struct row_prebuilt_t {
                                 This eliminates lock waits in some
                                 cases; note that this breaks
                                 serializability. */
-  ulint new_rec_locks;          /*!< normally 0; if session is using
-                                READ COMMITTED or READ UNCOMMITTED
-                                isolation level, set in
-                                row_search_for_mysql() if we set a new
-                                record lock on the secondary
-                                or clustered index; this is
-                                used in row_unlock_for_mysql()
-                                when releasing the lock under
-                                the cursor if we determine
-                                after retrieving the row that
-                                it does not need to be locked
-                                ('mini-rollback') */
-  ulint mysql_prefix_len;       /*!< byte offset of the end of
-                               the last requested column */
-  ulint mysql_row_len;          /*!< length in bytes of a row in the
-                                MySQL format */
-  ulint n_rows_fetched;         /*!< number of rows fetched after
-                                positioning the current cursor */
-  ulint fetch_direction;        /*!< ROW_SEL_NEXT or ROW_SEL_PREV */
+
+  enum {
+    LOCK_PCUR,
+    LOCK_CLUST_PCUR,
+    LOCK_COUNT,
+  };
+
+  bool new_rec_lock[LOCK_COUNT]; /*!< normally false; if
+                        session is using READ COMMITTED or READ UNCOMMITTED
+                        isolation level, set in row_search_for_mysql() if we set
+                        a new record lock on the secondary or clustered index;
+                        this is used in row_unlock_for_mysql() when releasing
+                        the lock under the cursor if we determine after
+                        retrieving the row that it does not need to be locked
+                        ('mini-rollback')
+                        [LOCK_PCUR] corresponds to pcur, the first index we
+                        looked up (can be secondary or clustered!)
+
+                        [LOCK_CLUST_PCUR] corresponds to clust_pcur, which if
+                        used at all, is always the clustered index.
+
+                        The meaning of these booleans is:
+                        true = we've created a rec lock, which we might
+                               release as we "own" it
+                        false = we should not release any lock for this
+                               index as we either reused some existing
+                               lock, or there is some other reason, we
+                               should keep it
+                        */
+  ulint mysql_prefix_len;        /*!< byte offset of the end of
+                                 the last requested column */
+  ulint mysql_row_len;           /*!< length in bytes of a row in the
+                                 MySQL format */
+  ulint n_rows_fetched;          /*!< number of rows fetched after
+                                 positioning the current cursor */
+  ulint fetch_direction;         /*!< ROW_SEL_NEXT or ROW_SEL_PREV */
+
   byte *fetch_cache[MYSQL_FETCH_CACHE_SIZE];
   /*!< a cache for fetched rows if we
   fetch many rows from the same cursor:
@@ -758,9 +803,8 @@ struct row_prebuilt_t {
   for this MySQL TABLE object */
   bool m_temp_read_shared;
 
-  /** Whether there is tree modifying operation happened on a
-  temprorary(intrinsic) table index tree. In this case, it could be split,
-  but no shrink. */
+  /** Whether tree modifying operation happened on a temporary (intrinsic)
+  table index tree. In this case, it could be split, but no shrink. */
   bool m_temp_tree_modified;
 
   /** The MySQL table object */
@@ -774,6 +818,13 @@ struct row_prebuilt_t {
 
   /** True if exceeded the end_range while filling the prefetch cache. */
   bool m_end_range;
+
+  /** Undo information for LOB mvcc */
+  lob::undo_vers_t m_lob_undo;
+
+  lob::undo_vers_t *get_lob_undo() { return (&m_lob_undo); }
+
+  void lob_undo_reset() { m_lob_undo.reset(); }
 
   /** Can a record buffer or a prefetch cache be utilized for prefetching
   records in this scan?
@@ -789,7 +840,7 @@ struct SysIndexCallback {
   /** Callback method
   @param mtr current mini transaction
   @param pcur persistent cursor. */
-  virtual void operator()(mtr_t *mtr, btr_pcur_t *pcur) throw() = 0;
+  virtual void operator()(mtr_t *mtr, btr_pcur_t *pcur) noexcept = 0;
 };
 
 /** Get the computed value by supplying the base column values.

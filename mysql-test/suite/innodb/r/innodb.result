@@ -215,10 +215,10 @@ Table	Op	Msg_type	Msg_text
 test.t1	optimize	note	Table does not support optimize, doing recreate + analyze instead
 test.t1	optimize	status	OK
 show keys from t1;
-Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible
-t1	0	PRIMARY	1	id	A	#	NULL	NULL		BTREE			YES
-t1	1	parent_id	1	parent_id	A	#	NULL	NULL		BTREE			YES
-t1	1	level	1	level	A	#	NULL	NULL		BTREE			YES
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t1	0	PRIMARY	1	id	A	#	NULL	NULL		BTREE			YES	NULL
+t1	1	parent_id	1	parent_id	A	#	NULL	NULL		BTREE			YES	NULL
+t1	1	level	1	level	A	#	NULL	NULL		BTREE			YES	NULL
 drop table t1;
 CREATE TABLE t1 (
 gesuchnr int(11) DEFAULT '0' NOT NULL,
@@ -259,8 +259,8 @@ analyze table t1;
 Table	Op	Msg_type	Msg_text
 test.t1	analyze	status	OK
 show keys from t1;
-Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible
-t1	1	skr	1	a	A	#	NULL	NULL	YES	BTREE			YES
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t1	1	skr	1	a	A	#	NULL	NULL	YES	BTREE			YES	NULL
 drop table t1;
 create table t1 (a int,b varchar(20),key(a)) engine=innodb;
 insert into t1 values (1,""), (2,"testing");
@@ -449,13 +449,13 @@ key(a),primary key(a,b), unique(c),key(a),unique(b));
 Warnings:
 Warning	1831	Duplicate index 'a_2' defined on the table 'test.t1'. This is deprecated and will be disallowed in a future release.
 show index from t1;
-Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible
-t1	0	PRIMARY	1	a	A	#	NULL	NULL		BTREE			YES
-t1	0	PRIMARY	2	b	A	#	NULL	NULL		BTREE			YES
-t1	0	c	1	c	A	#	NULL	NULL		BTREE			YES
-t1	0	b	1	b	A	#	NULL	NULL		BTREE			YES
-t1	1	a	1	a	A	#	NULL	NULL		BTREE			YES
-t1	1	a_2	1	a	A	#	NULL	NULL		BTREE			YES
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t1	0	PRIMARY	1	a	A	#	NULL	NULL		BTREE			YES	NULL
+t1	0	PRIMARY	2	b	A	#	NULL	NULL		BTREE			YES	NULL
+t1	0	c	1	c	A	#	NULL	NULL		BTREE			YES	NULL
+t1	0	b	1	b	A	#	NULL	NULL		BTREE			YES	NULL
+t1	1	a	1	a	A	#	NULL	NULL		BTREE			YES	NULL
+t1	1	a_2	1	a	A	#	NULL	NULL		BTREE			YES	NULL
 drop table t1;
 create table t1 (col1 int not null, col2 char(4) not null, primary key(col1));
 alter table t1 engine=innodb;
@@ -794,8 +794,8 @@ Table	Op	Msg_type	Msg_text
 test.t1	optimize	note	Table does not support optimize, doing recreate + analyze instead
 test.t1	optimize	status	OK
 show keys from t1;
-Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible
-t1	0	PRIMARY	1	a	A	#	NULL	NULL		BTREE			YES
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t1	0	PRIMARY	1	a	A	#	NULL	NULL		BTREE			YES	NULL
 drop table t1;
 create table t1 (i int, j int ) ENGINE=innodb;
 insert into t1 values (1,2);
@@ -1309,6 +1309,8 @@ create table t1 (a int not null, b int not null, key (a));
 insert into t1 values (1,1),(1,2),(1,3),(3,1),(3,2),(3,3),(3,1),(3,2),(3,3),(2,1),(2,2),(2,3);
 SET @tmp=0;
 update t1 set b=(@tmp:=@tmp+1) order by a;
+Warnings:
+Warning	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
 update t1 set b=99 where a=1 order by b asc limit 1;
 update t1 set b=100 where a=1 order by b desc limit 2;
 update t1 set a=a+10+b where a=1 order by b;
@@ -1378,7 +1380,6 @@ INSERT INTO t2 VALUES (10, 'old'), (20, 'other');
 UPDATE t1 SET c1 = 'other' WHERE c1 = 'old';
 ERROR 23000: Foreign key constraint for table 't1', record 'other-somevalu' would lead to a duplicate entry in table 't2', key 'c1'
 DROP TABLE t2,t1;
-call mtr.add_suppression("Cannot delete/update rows with cascading foreign key constraints that exceed max depth of 15. Please drop excessive foreign constraints and try again");
 create table t1(
 id int primary key,
 pid int,
@@ -1754,7 +1755,7 @@ variable_value - @innodb_rows_deleted_orig
 1830
 SELECT variable_value - @innodb_rows_inserted_orig FROM performance_schema.global_status WHERE LOWER(variable_name) = 'innodb_rows_inserted';
 variable_value - @innodb_rows_inserted_orig
-2737
+2733
 SELECT variable_value - @innodb_rows_updated_orig FROM performance_schema.global_status WHERE LOWER(variable_name) = 'innodb_rows_updated';
 variable_value - @innodb_rows_updated_orig
 2635
@@ -2013,7 +2014,7 @@ id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered
 1	SIMPLE	t1	NULL	ref	v,v_2	#	13	const	#	100.00	NULL
 Warnings:
 Note	1003	/* select#1 */ select `test`.`t1`.`v` AS `v`,`test`.`t1`.`c` AS `c`,`test`.`t1`.`t` AS `t` from `test`.`t1` where (`test`.`t1`.`v` = 'a')
-select TRIM(v),count(*) from t1 group by TRIM(v) asc limit 10;
+select TRIM(v),count(*) from t1 group by TRIM(v) order by TRIM(v) limit 10;
 TRIM(v)	count(*)
 a	1
 a	10
@@ -2025,7 +2026,7 @@ f	10
 g	10
 h	10
 i	10
-select TRIM(v),count(t) from t1 group by TRIM(v) asc limit 10;
+select TRIM(v),count(t) from t1 group by TRIM(v) order by TRIM(v) limit 10;
 TRIM(v)	count(t)
 a	1
 a	10
@@ -2037,7 +2038,7 @@ f	10
 g	10
 h	10
 i	10
-select TRIM(v),count(c) from t1 group by TRIM(v) asc limit 10;
+select TRIM(v),count(c) from t1 group by TRIM(v) order by TRIM(v) limit 10;
 TRIM(v)	count(c)
 a	1
 a	10
@@ -2049,7 +2050,7 @@ f	10
 g	10
 h	10
 i	10
-select sql_big_result TRIM(v),count(t) from t1 group by TRIM(v) asc limit 10;
+select sql_big_result TRIM(v),count(t) from t1 group by TRIM(v) order by TRIM(v) limit 10;
 TRIM(v)	count(t)
 a	1
 a	10
@@ -2061,7 +2062,7 @@ f	10
 g	10
 h	10
 i	10
-select sql_big_result TRIM(v),count(c) from t1 group by TRIM(v) asc limit 10;
+select sql_big_result TRIM(v),count(c) from t1 group by TRIM(v) order by TRIM(v) limit 10;
 TRIM(v)	count(c)
 a	1
 a	10
@@ -2073,7 +2074,7 @@ f	10
 g	10
 h	10
 i	10
-select c,count(*) from t1 group by c asc limit 10;
+select c,count(*) from t1 group by c order by c limit 10;
 c	count(*)
 a	1
 a	10
@@ -2085,7 +2086,7 @@ f	10
 g	10
 h	10
 i	10
-select c,count(t) from t1 group by c asc limit 10;
+select c,count(t) from t1 group by c order by c limit 10;
 c	count(t)
 a	1
 a	10
@@ -2109,7 +2110,7 @@ f	10
 g	10
 h	10
 i	10
-select t,count(*) from t1 group by t asc limit 10;
+select t,count(*) from t1 group by t order by t limit 10;
 t	count(*)
 a	1
 a	10
@@ -2121,7 +2122,7 @@ f	10
 g	10
 h	10
 i	10
-select t,count(t) from t1 group by t asc limit 10;
+select t,count(t) from t1 group by t order by t limit 10;
 t	count(t)
 a	1
 a	10
@@ -2133,7 +2134,7 @@ f	10
 g	10
 h	10
 i	10
-select sql_big_result t,count(t) from t1 group by t asc limit 10;
+select sql_big_result t,count(t) from t1 group by t order by t limit 10;
 t	count(t)
 a	1
 a	10
@@ -2199,7 +2200,7 @@ id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered
 1	SIMPLE	t1	NULL	ref	v	v	303	const	#	100.00	NULL
 Warnings:
 Note	1003	/* select#1 */ select `test`.`t1`.`v` AS `v`,`test`.`t1`.`c` AS `c`,`test`.`t1`.`t` AS `t` from `test`.`t1` where (`test`.`t1`.`v` = 'a')
-select v,count(*) from t1 group by v asc limit 10;
+select v,count(*) from t1 group by v order by v limit 10;
 v	count(*)
 a	1
 a	10
@@ -2211,7 +2212,7 @@ f	10
 g	10
 h	10
 i	10
-select TRIM(v),count(t) from t1 group by v asc limit 10;
+select TRIM(v),count(t) from t1 group by v order by v limit 10;
 TRIM(v)	count(t)
 a	1
 a	10
@@ -2223,7 +2224,7 @@ f	10
 g	10
 h	10
 i	10
-select sql_big_result TRIM(v),count(t) from t1 group by v asc limit 10;
+select sql_big_result TRIM(v),count(t) from t1 group by v order by v limit 10;
 TRIM(v)	count(t)
 a	1
 a	10
@@ -2289,7 +2290,7 @@ id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered
 1	SIMPLE	t1	NULL	ref	v	v	33	const	#	100.00	Using where
 Warnings:
 Note	1003	/* select#1 */ select `test`.`t1`.`v` AS `v`,`test`.`t1`.`c` AS `c`,`test`.`t1`.`t` AS `t` from `test`.`t1` where (`test`.`t1`.`v` = 'a')
-select TRIM(v),count(*) from t1 group by v asc limit 10;
+select TRIM(v),count(*) from t1 group by v order by v limit 10;
 TRIM(v)	count(*)
 a	1
 a	10
@@ -2301,7 +2302,7 @@ f	10
 g	10
 h	10
 i	10
-select TRIM(v),count(t) from t1 group by v asc limit 10;
+select TRIM(v),count(t) from t1 group by v order by v limit 10;
 TRIM(v)	count(t)
 a	1
 a	10
@@ -2313,7 +2314,7 @@ f	10
 g	10
 h	10
 i	10
-select sql_big_result TRIM(v),count(t) from t1 group by v asc limit 10;
+select sql_big_result TRIM(v),count(t) from t1 group by v order by v limit 10;
 TRIM(v)	count(t)
 a	1
 a	10
@@ -2336,7 +2337,7 @@ t1	CREATE TABLE `t1` (
   KEY `t` (`t`(10)),
   KEY `v` (`v`)
 ) /*!50100 TABLESPACE `innodb_system` */ ENGINE=InnoDB DEFAULT CHARSET=latin1 STATS_PERSISTENT=0
-select TRIM(v),count(*) from t1 group by v asc limit 10;
+select TRIM(v),count(*) from t1 group by v order by v limit 10;
 TRIM(v)	count(*)
 a	1
 a	10
@@ -2348,7 +2349,7 @@ f	10
 g	10
 h	10
 i	10
-select TRIM(v),count(t) from t1 group by v asc limit 10;
+select TRIM(v),count(t) from t1 group by v order by v limit 10;
 TRIM(v)	count(t)
 a	1
 a	10
@@ -2360,7 +2361,7 @@ f	10
 g	10
 h	10
 i	10
-select sql_big_result TRIM(v),count(t) from t1 group by v asc limit 10;
+select sql_big_result TRIM(v),count(t) from t1 group by v order by v limit 10;
 TRIM(v)	count(t)
 a	1
 a	10
@@ -2419,7 +2420,7 @@ t1	CREATE TABLE `t1` (
 drop table t1;
 create table t1 (v char(10) character set utf8);
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 show create table t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
@@ -2459,9 +2460,12 @@ a	b
 20	NULL
 drop table t1;
 set session old_alter_table=0;
-SET sql_mode = 'NO_ENGINE_SUBSTITUTION';
+SET sql_mode = 'NO_ENGINE_SUBSTITUTION,STRICT_TRANS_TABLES';
+Warnings:
+Warning	3135	'NO_ZERO_DATE', 'NO_ZERO_IN_DATE' and 'ERROR_FOR_DIVISION_BY_ZERO' sql modes should be used with strict mode. They will be merged with strict mode in a future release.
 create table t1 (v varchar(65530), key(v)) charset latin1 ROW_FORMAT=COMPACT;
 Got one of the listed errors
+SET sql_mode = 'NO_ENGINE_SUBSTITUTION';
 create table t1 (v varchar(65536));
 Warnings:
 Note	1246	Converting column 'v' from VARCHAR to TEXT
@@ -2473,7 +2477,7 @@ t1	CREATE TABLE `t1` (
 drop table t1;
 create table t1 (v varchar(65530) character set utf8);
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 Note	1246	Converting column 'v' from VARCHAR to TEXT
 show create table t1;
 Table	Create Table
@@ -2620,7 +2624,7 @@ INSERT INTO t2 VALUES(1);
 DELETE FROM t1 WHERE id = 1;
 ERROR 23000: Cannot delete or update a parent row: a foreign key constraint fails (`test`.`t2`, CONSTRAINT `c1` FOREIGN KEY (`v`) REFERENCES `t1` (`id`))
 DROP TABLE t1;
-ERROR 23000: Cannot delete or update a parent row: a foreign key constraint fails
+ERROR HY000: Cannot drop table 't1' referenced by a foreign key constraint 'c1' on table 't2'.
 SET FOREIGN_KEY_CHECKS=0;
 DROP TABLE t1;
 SET FOREIGN_KEY_CHECKS=1;
@@ -2656,23 +2660,41 @@ Table	Checksum
 test.t1	2050879373
 drop table t1;
 set foreign_key_checks=0;
+create table t2 (a int primary key, b int, foreign key (b) references t1(a)) engine = innodb;
+create table t1(a char(10) primary key, b varchar(20)) engine = innodb;
+ERROR HY000: Referencing column 'b' and referenced column 'a' in foreign key constraint 't2_ibfk_1' are incompatible.
+set foreign_key_checks=1;
+drop table t2;
+set foreign_key_checks=0;
 create table t1(a varchar(10) primary key) engine = innodb DEFAULT CHARSET=latin1;
 create table t2 (a varchar(10), foreign key (a) references t1(a)) engine = innodb DEFAULT CHARSET=utf8;
-ERROR HY000: Cannot add foreign key constraint
+ERROR HY000: Referencing column 'a' and referenced column 'a' in foreign key constraint 't2_ibfk_1' are incompatible.
 set foreign_key_checks=1;
 drop table t1;
-NewDD_FK: Re-enabel this test after fixing Bug 25722927 - NEWDD
-FK: ALTER TABLE CHANGE COLUMN TYPE SHOULD CHECK FK CONSTRAINT"
+set foreign_key_checks=0;
+create table t2 (a varchar(10), foreign key (a) references t1(a)) engine = innodb;
+create table t1(a varchar(10) primary key) engine = innodb;
+alter table t1 modify column a int;
+ERROR HY000: Referencing column 'a' and referenced column 'a' in foreign key constraint 't2_ibfk_1' are incompatible.
+set foreign_key_checks=1;
+drop table t2,t1;
 set foreign_key_checks=0;
 create table t2 (a varchar(10), foreign key (a) references t1(a)) engine = innodb DEFAULT CHARSET=latin1;
 create table t1(a varchar(10) primary key) engine = innodb DEFAULT CHARSET=latin1;
 alter table t1 convert to character set utf8;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 set foreign_key_checks=1;
 drop table t2,t1;
-NewDD_FK: Re-enabel this test after fixing Bug 25722927 - NEWDD
-FK: ALTER TABLE CHANGE COLUMN TYPE SHOULD CHECK FK CONSTRAINT"
+set foreign_key_checks=0;
+create table t2 (a varchar(10), foreign key (a) references t1(a)) engine = innodb DEFAULT CHARSET=latin1;
+create table t3(a varchar(10) primary key) engine = innodb DEFAULT CHARSET=utf8;
+Warnings:
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+rename table t3 to t1;
+ERROR HY000: Referencing column 'a' and referenced column 'a' in foreign key constraint 't2_ibfk_1' are incompatible.
+set foreign_key_checks=1;
+drop table t2,t3;
 create table t1(a int primary key) row_format=redundant engine=innodb;
 create table t2(a int primary key,constraint foreign key(a)references t1(a)) row_format=compact engine=innodb;
 create table t3(a int primary key) row_format=compact engine=innodb;
@@ -3025,7 +3047,7 @@ a BIGINT(20) NOT NULL,
 PRIMARY KEY  (a)
 ) ENGINE=INNODB DEFAULT CHARSET=UTF8;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 CREATE TABLE t2 (
 a BIGINT(20) NOT NULL,
 b VARCHAR(128) NOT NULL,
@@ -3036,7 +3058,7 @@ CONSTRAINT t_fk FOREIGN KEY (a) REFERENCES t1 (a)
 ON DELETE CASCADE
 ) ENGINE=INNODB DEFAULT CHARSET=UTF8;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 INSERT INTO t1 VALUES (1);
 INSERT INTO t2 VALUES (1, 'bar', 'vbar');
 INSERT INTO t2 VALUES (1, 'BAR2', 'VBAR');
@@ -3090,11 +3112,13 @@ INSERT INTO t1 VALUES (1);
 INSERT INTO t2 VALUES (1);
 ALTER TABLE t2 ADD FOREIGN KEY (a) REFERENCES t1 (a) ON DELETE SET NULL;
 ALTER TABLE t2 MODIFY a INT NOT NULL;
-ERROR HY000: Column 'a' cannot be NOT NULL: needed in a foreign key constraint 'test/t2_ibfk_1' SET NULL
+ERROR HY000: Column 'a' cannot be NOT NULL: needed in a foreign key constraint 't2_ibfk_1' SET NULL
 DELETE FROM t1;
 DROP TABLE t2,t1;
 CREATE TABLE t1 (a VARCHAR(5) COLLATE utf8_unicode_ci PRIMARY KEY)
 ENGINE=InnoDB;
+Warnings:
+Warning	3778	'utf8_unicode_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 INSERT INTO t1 VALUES (0xEFBCA4EFBCA4EFBCA4);
 DELETE FROM t1;
 INSERT INTO t1 VALUES ('DDD');
@@ -3178,14 +3202,14 @@ c2 VARCHAR(128) NOT NULL,
 PRIMARY KEY(c1)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 AUTO_INCREMENT=100;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 CREATE TABLE t2 (
 c1 INT(10) UNSIGNED NOT NULL AUTO_INCREMENT,
 c2 INT(10) UNSIGNED DEFAULT NULL,
 PRIMARY KEY(c1)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 AUTO_INCREMENT=200;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 ANALYZE TABLE t2;
 Table	Op	Msg_type	Msg_text
 test.t2	analyze	status	OK

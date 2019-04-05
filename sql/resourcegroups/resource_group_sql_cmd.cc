@@ -49,6 +49,7 @@
 #include "sql/dd/dd_resource_group.h"        // resource_group_exists, etc.
 #include "sql/dd/string_type.h"              // String_type
 #include "sql/derror.h"                      // ER_THD
+#include "sql/lock.h"                        // acquire_shared_global...
 #include "sql/mdl.h"
 #include "sql/mysqld_thd_manager.h"  // Find_thd_with_id
 #include "sql/parse_tree_helpers.h"
@@ -80,14 +81,12 @@ static bool acquire_exclusive_mdl_for_resource_group(THD *thd,
                                                      const char *res_grp_name) {
   DBUG_ENTER("acquire_exclusive_mdl_for_resource_group");
 
-  char lc_name[NAME_CHAR_LEN + 1];
-  my_stpncpy(lc_name, res_grp_name, NAME_CHAR_LEN);
-  lc_name[NAME_CHAR_LEN] = '\0';
-  my_casedn_str(system_charset_info, lc_name);
+  MDL_key mdl_key;
+  dd::Resource_group::create_mdl_key(res_grp_name, &mdl_key);
 
   MDL_request mdl_request;
-  MDL_REQUEST_INIT(&mdl_request, MDL_key::RESOURCE_GROUPS, "", lc_name,
-                   MDL_EXCLUSIVE, MDL_TRANSACTION);
+  MDL_REQUEST_INIT_BY_KEY(&mdl_request, &mdl_key, MDL_EXCLUSIVE,
+                          MDL_TRANSACTION);
   if (thd->mdl_context.acquire_lock(&mdl_request,
                                     thd->variables.lock_wait_timeout))
     DBUG_RETURN(true);
@@ -216,7 +215,8 @@ bool resourcegroups::Sql_cmd_create_resource_group::execute(THD *thd) {
                                  num_vcpus))
     DBUG_RETURN(true);
 
-  if (acquire_shared_backup_lock(thd, thd->variables.lock_wait_timeout))
+  if (acquire_shared_global_read_lock(thd, thd->variables.lock_wait_timeout) ||
+      acquire_shared_backup_lock(thd, thd->variables.lock_wait_timeout))
     DBUG_RETURN(true);
 
   // Acquire exclusive lock on the resource group name.
@@ -329,7 +329,8 @@ bool resourcegroups::Sql_cmd_alter_resource_group::execute(THD *thd) {
     DBUG_RETURN(true);
   }
 
-  if (acquire_shared_backup_lock(thd, thd->variables.lock_wait_timeout))
+  if (acquire_shared_global_read_lock(thd, thd->variables.lock_wait_timeout) ||
+      acquire_shared_backup_lock(thd, thd->variables.lock_wait_timeout))
     DBUG_RETURN(true);
 
   // Acquire exclusive lock on the resource group name.
@@ -445,7 +446,8 @@ bool resourcegroups::Sql_cmd_drop_resource_group::execute(THD *thd) {
     DBUG_RETURN(true);
   }
 
-  if (acquire_shared_backup_lock(thd, thd->variables.lock_wait_timeout))
+  if (acquire_shared_global_read_lock(thd, thd->variables.lock_wait_timeout) ||
+      acquire_shared_backup_lock(thd, thd->variables.lock_wait_timeout))
     DBUG_RETURN(true);
 
   // Acquire exclusive lock on the resource group name.
@@ -600,16 +602,29 @@ static inline bool check_and_apply_resource_grp(
   return false;
 }
 
-bool resourcegroups::Sql_cmd_set_resource_group::execute(THD *thd) {
-  DBUG_ENTER("resourcegroups::Sql_cmd_set_resource_group::execute");
+/**
+  Check if user has sufficient privilege to exercise SET RESOURCE GROUP.
 
-  Security_context *sctx = thd->security_context();
+  @param sctx Pointer to security context.
+
+  @return true if sufficient privilege exists for SET RESOURCE GROUP else false.
+*/
+
+static bool check_resource_group_set_privilege(Security_context *sctx) {
   if (!(sctx->has_global_grant(STRING_WITH_LEN("RESOURCE_GROUP_ADMIN")).first ||
         sctx->has_global_grant(STRING_WITH_LEN("RESOURCE_GROUP_USER")).first)) {
     my_error(ER_SPECIFIC_ACCESS_DENIED_ERROR, MYF(0),
              "RESOURCE_GROUP_ADMIN OR RESOURCE_GROUP_USER");
-    DBUG_RETURN(true);
+    return true;
   }
+  return false;
+}
+
+bool resourcegroups::Sql_cmd_set_resource_group::execute(THD *thd) {
+  DBUG_ENTER("resourcegroups::Sql_cmd_set_resource_group::execute");
+
+  Security_context *sctx = thd->security_context();
+  if (check_resource_group_set_privilege(sctx)) DBUG_RETURN(true);
 
   // Acquire exclusive lock on the resource group name to synchronize with hint.
   if (acquire_exclusive_mdl_for_resource_group(thd, m_name.str))
@@ -696,4 +711,14 @@ bool resourcegroups::Sql_cmd_set_resource_group::execute(THD *thd) {
 
   my_ok(thd);
   DBUG_RETURN(false);
+}
+
+bool resourcegroups::Sql_cmd_set_resource_group::prepare(THD *thd) {
+  DBUG_ENTER("Sql_cmd_set_resource_group::prepare");
+
+  if (Sql_cmd::prepare(thd)) DBUG_RETURN(true);
+
+  bool rc = check_resource_group_set_privilege(thd->security_context());
+
+  DBUG_RETURN(rc);
 }

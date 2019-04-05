@@ -563,7 +563,8 @@ static inline bool is_early_option(const char *cur_arg) {
          strncmp(cur_arg, "verbose", strlen("verbose")) == 0 ||
          strncmp(cur_arg, "version", strlen("version")) == 0 ||
          strncmp(cur_arg, "help", strlen("help")) == 0 ||
-         strncmp(cur_arg, "gdb", strlen("gdb")) == 0;
+         strncmp(cur_arg, "gdb", strlen("gdb")) == 0 ||
+         strncmp(cur_arg, "no-monitor", strlen("no-monitor")) == 0;
 }
 
 bool is_early_option(int argc, char **argv) {
@@ -694,9 +695,6 @@ int start_monitor() {
     std::string arg;
     arg.resize(wcslen(argv_tmp[i]));  // Do not copy null
     wcstombs(&arg[0], argv_tmp[i], arg.size());
-    if ((i == 2 || i == 1) && get_win_service_ptr()->IsService(arg.c_str()))
-      break;
-
     argv_vec.push_back(arg);
   }
   LocalFree(argv_tmp);

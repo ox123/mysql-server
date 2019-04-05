@@ -1,4 +1,4 @@
-/* Copyright (c) 2002, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2002, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -26,9 +26,11 @@
 #include <sys/types.h>
 #include <algorithm>
 #include <atomic>
+#include <memory>
 
 #include "m_ctype.h"
 #include "m_string.h"
+#include "my_alloc.h"
 #include "my_base.h"
 #include "my_bitmap.h"
 #include "my_dbug.h"
@@ -45,7 +47,8 @@
 #include "sql/opt_range.h"  // SQL_SELECT
 #include "sql/opt_trace.h"  // Opt_trace_object
 #include "sql/protocol.h"
-#include "sql/records.h"   // init_read_record, end_read_record
+#include "sql/records.h"  // init_read_record
+#include "sql/row_iterator.h"
 #include "sql/sql_base.h"  // REPORT_ALL_ERRORS
 #include "sql/sql_bitmap.h"
 #include "sql/sql_class.h"
@@ -57,8 +60,6 @@
 #include "sql_string.h"
 #include "thr_lock.h"
 #include "typelib.h"
-
-struct MEM_ROOT;
 
 struct st_find_field {
   const char *table_name, *field_name;
@@ -131,6 +132,8 @@ static bool init_fields(THD *thd, TABLE_LIST *tables,
                                                     false,  // No priv checking
                                                     true)))
       DBUG_RETURN(1);
+    find_fields->field->table->pos_in_table_list->select_lex =
+        thd->lex->select_lex;
     bitmap_set_bit(find_fields->field->table->read_set,
                    find_fields->field->field_index);
     /* To make life easier when setting values in keys */
@@ -216,18 +219,17 @@ static int search_topics(THD *thd, QEP_TAB *topics,
   READ_RECORD read_record_info;
   DBUG_ENTER("search_topics");
 
-  if (init_read_record(&read_record_info, thd, NULL, topics, 1, 0, false))
+  if (init_read_record(&read_record_info, thd, NULL, topics, false,
+                       /*ignore_not_found_rows=*/false))
     DBUG_RETURN(0);
 
-  while (!read_record_info.read_record(&read_record_info)) {
+  while (!read_record_info->Read()) {
     if (!topics->condition()->val_int())  // Doesn't match like
       continue;
     memorize_variant_topic(thd, count, find_fields, names, name, description,
                            example);
     count++;
   }
-  end_read_record(&read_record_info);
-
   DBUG_RETURN(count);
 }
 
@@ -256,10 +258,11 @@ static int search_keyword(THD *thd, QEP_TAB *keywords,
   READ_RECORD read_record_info;
   DBUG_ENTER("search_keyword");
 
-  if (init_read_record(&read_record_info, thd, NULL, keywords, 1, 0, false))
+  if (init_read_record(&read_record_info, thd, NULL, keywords, false,
+                       /*ignore_not_found_rows=*/false))
     DBUG_RETURN(0);
 
-  while (!read_record_info.read_record(&read_record_info) && count < 2) {
+  while (!read_record_info->Read() && count < 2) {
     if (!keywords->condition()->val_int())  // Dosn't match like
       continue;
 
@@ -267,8 +270,6 @@ static int search_keyword(THD *thd, QEP_TAB *keywords,
 
     count++;
   }
-  end_read_record(&read_record_info);
-
   DBUG_RETURN(count);
 }
 
@@ -381,10 +382,11 @@ static int search_categories(THD *thd, QEP_TAB *categories,
 
   DBUG_ENTER("search_categories");
 
-  if (init_read_record(&read_record_info, thd, NULL, categories, 1, 0, false))
+  if (init_read_record(&read_record_info, thd, NULL, categories, false,
+                       /*ignore_not_found_rows=*/false))
     DBUG_RETURN(0);
 
-  while (!read_record_info.read_record(&read_record_info)) {
+  while (!read_record_info->Read()) {
     if (categories->condition() && !categories->condition()->val_int())
       continue;
     String *lname = new (thd->mem_root) String;
@@ -392,8 +394,6 @@ static int search_categories(THD *thd, QEP_TAB *categories,
     if (++count == 1 && res_id) *res_id = (int16)pcat_id->val_int();
     names->push_back(lname);
   }
-  end_read_record(&read_record_info);
-
   DBUG_RETURN(count);
 }
 
@@ -414,16 +414,15 @@ static void get_all_items_for_category(THD *thd, QEP_TAB *items, Field *pfname,
   READ_RECORD read_record_info;
   DBUG_ENTER("get_all_items_for_category");
 
-  if (init_read_record(&read_record_info, thd, NULL, items, 1, 0, false))
+  if (init_read_record(&read_record_info, thd, NULL, items, false,
+                       /*ignore_not_found_rows=*/false))
     DBUG_VOID_RETURN;
-  while (!read_record_info.read_record(&read_record_info)) {
+  while (!read_record_info->Read()) {
     if (!items->condition()->val_int()) continue;
     String *name = new (thd->mem_root) String();
     get_field(thd->mem_root, pfname, name);
     res->push_back(name);
   }
-  end_read_record(&read_record_info);
-
   DBUG_VOID_RETURN;
 }
 
@@ -592,9 +591,10 @@ static bool prepare_simple_select(THD *thd, Item *cond, TABLE *table,
   Opt_trace_object wrapper(&thd->opt_trace);
   Key_map keys_to_use(Key_map::ALL_BITS), needed_reg_dummy;
   QUICK_SELECT_I *qck;
-  const bool impossible = test_quick_select(thd, keys_to_use, 0, HA_POS_ERROR,
-                                            false, ORDER_NOT_RELEVANT, tab,
-                                            cond, &needed_reg_dummy, &qck) < 0;
+  const bool impossible =
+      test_quick_select(thd, keys_to_use, 0, HA_POS_ERROR, false,
+                        ORDER_NOT_RELEVANT, tab, cond, &needed_reg_dummy, &qck,
+                        tab->table()->force_index) < 0;
   tab->set_quick(qck);
 
   return impossible || (tab->quick() && tab->quick()->reset());
@@ -619,7 +619,7 @@ static bool prepare_select_for_name(THD *thd, const char *mask, size_t mlen,
   Item *cond = new Item_func_like(
       new Item_field(pfname), new Item_string(mask, mlen, pfname->charset()),
       new Item_string("\\", 1, &my_charset_latin1), false);
-  if (thd->is_fatal_error) return true; /* purecov: inspected */
+  if (thd->is_fatal_error()) return true; /* purecov: inspected */
   return prepare_simple_select(thd, cond, table, tab);
 }
 

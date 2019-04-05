@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2006, 2017, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2006, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include <sys/types.h>
 #include <algorithm>
+#include <cctype>
 #include <functional>
 #include <iostream>
 #include <memory>
@@ -82,6 +83,14 @@ namespace Upgrade {
 using std::string;
 using std::stringstream;
 using std::vector;
+
+static inline std::string rtrim(std::string s) {
+  s.erase(std::find_if(s.rbegin(), s.rend(),
+                       [](int ch) { return !std::isspace(ch); })
+              .base(),
+          s.end());
+  return s;
+}
 
 enum exit_codes {
   EXIT_INIT_ERROR = 1,
@@ -244,8 +253,8 @@ class Program : public Base::Abstract_connection_program {
       return this->print_error(
           EXIT_UPGRADING_QUERIES_ERROR,
           "The mysql.session exists but is not correctly configured."
-          " The mysql.session needs SELECT privileges in the"
-          " performance_schema database and the mysql.db table and also"
+          " On previous versions the mysql.session must have SELECT privileges"
+          " in the performance_schema database and the mysql.db table and also"
           " SUPER privileges.");
     }
 
@@ -594,8 +603,9 @@ class Program : public Base::Abstract_connection_program {
         message.get_message_type() == Message_type_error) {
       message.print_error(this->get_name());
     }
-    if (this->m_ignore_errors == false &&
-        message.get_message_type() == Message_type_error) {
+    if ((this->m_ignore_errors == false &&
+         message.get_message_type() == Message_type_error) ||
+        (message.is_fatal())) {
       return message.get_code();
     }
     return 0;
@@ -649,7 +659,10 @@ class Program : public Base::Abstract_connection_program {
            strcmp(*(query_ptr + 1), "SHOW WARNINGS;\n") == 0);
 
       result = runner.run_query(*query_ptr);
-      if (!this->m_ignore_errors && result != 0) {
+      if (result != 0) {
+        stringstream ss;
+        ss << "Error executing SQL statement: " << *query_ptr;
+        this->print_error(EXIT_UPGRADING_QUERIES_ERROR, rtrim(ss.str()));
         return result;
       }
     }
@@ -681,7 +694,10 @@ class Program : public Base::Abstract_connection_program {
     for (query_ptr = &mysql_system_tables_data_fix[0]; *query_ptr != NULL;
          query_ptr++) {
       result = runner.run_query(*query_ptr);
-      if (!this->m_ignore_errors && result != 0) {
+      if (result != 0) {
+        stringstream ss;
+        ss << "Error executing SQL statement: " << *query_ptr;
+        this->print_error(EXIT_UPGRADING_QUERIES_ERROR, rtrim(ss.str()));
         return result;
       }
     }
@@ -709,7 +725,10 @@ class Program : public Base::Abstract_connection_program {
 
     for (query_ptr = &mysql_sys_schema[0]; *query_ptr != NULL; query_ptr++) {
       result = runner.run_query(*query_ptr);
-      if (!this->m_ignore_errors && result != 0) {
+      if (result != 0) {
+        stringstream ss;
+        ss << "Error executing SQL statement: " << *query_ptr;
+        this->print_error(EXIT_UPGRADING_QUERIES_ERROR, rtrim(ss.str()));
         return result;
       }
     }
@@ -909,9 +928,11 @@ class Program : public Base::Abstract_connection_program {
    */
   bool is_expected_error(int64 error_no) {
     static const int64 expected_errors[] = {
-        ER_DUP_FIELDNAME,   /* Duplicate column name */
-        ER_DUP_KEYNAME,     /* Duplicate key name */
-        ER_BAD_FIELD_ERROR, /* Unknown column */
+        ER_DUP_FIELDNAME,                           /* Duplicate column name */
+        ER_DUP_KEYNAME,                             /* Duplicate key name */
+        ER_BAD_FIELD_ERROR,                         /* Unknown column */
+        ER_COL_COUNT_DOESNT_MATCH_PLEASE_UPDATE_V2, /* Please use mysql_upgrade
+                                                       to fix this error */
         0};
 
     const int64 *expected_error = expected_errors;

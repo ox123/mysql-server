@@ -50,9 +50,6 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "log0log.h"
 #include "m_string.h"
 #include "mach0data.h"
-#include "my_compiler.h"
-#include "my_dbug.h"
-#include "my_inttypes.h"
 #include "que0que.h"
 #include "rem0cmp.h"
 #include "row0ins.h"
@@ -63,6 +60,8 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "trx0rec.h"
 #include "trx0undo.h"
 #include "usr0sess.h"
+
+#include "my_dbug.h"
 
 /*************************************************************************
 IMPORTANT NOTE: Any operation that generates redo MUST check that there
@@ -326,7 +325,7 @@ static MY_ATTRIBUTE((warn_unused_result)) dberr_t
 {
   const rec_t *rec;
   upd_t *update;
-  dberr_t err;
+  dberr_t err = DB_SUCCESS;
   btr_cur_t *cursor = btr_pcur_get_btr_cur(pcur);
   TABLE *mysql_table = NULL;
   ut_ad(cursor->index->is_clustered());
@@ -343,9 +342,12 @@ static MY_ATTRIBUTE((warn_unused_result)) dberr_t
     ut_ad(thr->prebuilt->trx == thr_get_trx(thr));
   }
 
-  update =
-      row_upd_build_difference_binary(cursor->index, entry, rec, NULL, true,
-                                      thr_get_trx(thr), heap, mysql_table);
+  update = row_upd_build_difference_binary(cursor->index, entry, rec, NULL,
+                                           true, thr_get_trx(thr), heap,
+                                           mysql_table, &err);
+  if (err != DB_SUCCESS) {
+    return (err);
+  }
   if (mode != BTR_MODIFY_TREE) {
     ut_ad((mode & ~BTR_ALREADY_S_LATCHED) == BTR_MODIFY_LEAF);
 
@@ -922,8 +924,10 @@ func_exit:
 /** Perform referential actions or checks when a parent row is deleted or
  updated and the constraint had an ON DELETE or ON UPDATE condition which was
  not RESTRICT.
- @return DB_SUCCESS, DB_LOCK_WAIT, or error code */
-static MY_ATTRIBUTE((warn_unused_result)) dberr_t
+ @return DB_SUCCESS, DB_LOCK_WAIT, or error code
+ Disable inlining because of a bug in gcc8 which may lead to stack exhaustion.
+*/
+static NO_INLINE MY_ATTRIBUTE((warn_unused_result)) dberr_t
     row_ins_foreign_check_on_constraint(
         que_thr_t *thr,          /*!< in: query thread whose run_node
                                  is an update node */
@@ -1123,6 +1127,10 @@ static MY_ATTRIBUTE((warn_unused_result)) dberr_t
   if (table->fts) {
     doc_id = fts_get_doc_id_from_rec(table, clust_rec, clust_index, tmp_heap);
   }
+  if (cascade->is_delete && foreign->v_cols != NULL &&
+      foreign->v_cols->size() > 0 && table->vc_templ == NULL) {
+    innobase_init_vc_templ(table);
+  }
 
   if (node->is_delete ? (foreign->type & DICT_FOREIGN_ON_DELETE_SET_NULL)
                       : (foreign->type & DICT_FOREIGN_ON_UPDATE_SET_NULL)) {
@@ -1245,7 +1253,7 @@ static MY_ATTRIBUTE((warn_unused_result)) dberr_t
 
   mtr_commit(mtr);
 
-  ut_a(cascade->pcur->rel_pos == BTR_PCUR_ON);
+  ut_a(cascade->pcur->m_rel_pos == BTR_PCUR_ON);
 
   cascade->state = UPD_NODE_UPDATE_CLUSTERED;
 
@@ -1703,6 +1711,11 @@ do_possible_lock_wait:
 
     lock_wait_suspend_thread(thr);
 
+    if (trx->error_state != DB_SUCCESS) {
+      err = trx->error_state;
+      goto exit_func;
+    }
+
     thr->lock_state = QUE_THR_LOCK_NOLOCK;
 
     DBUG_PRINT("to_be_dropped", ("table: %s", check_table->name.m_name));
@@ -1755,6 +1768,9 @@ static MY_ATTRIBUTE((warn_unused_result)) dberr_t
 
   trx = thr_get_trx(thr);
 
+  if (trx->check_foreigns == FALSE) {
+    return (DB_SUCCESS);
+  }
   DEBUG_SYNC_C_IF_THD(thr_get_trx(thr)->mysql_thd,
                       "foreign_constraint_check_for_ins");
 
@@ -2745,7 +2761,6 @@ static MY_ATTRIBUTE((warn_unused_result)) bool row_ins_sec_mtr_start_and_check_i
   }
 
   ut_error;
-  return (true);
 }
 
 /** Tries to insert an entry into a secondary index. If a record with exactly
@@ -2817,7 +2832,13 @@ dberr_t row_ins_sec_index_entry_low(ulint flags, ulint mode,
   This prevents a concurrent change of index->online_status.
   The memory object cannot be freed as long as we have an open
   reference to the table, or index->table->n_ref_count > 0. */
-  const bool check = !index->is_committed();
+  bool check = !index->is_committed();
+
+  DBUG_EXECUTE_IF("idx_mimic_not_committed", {
+    check = true;
+    mode = BTR_MODIFY_TREE;
+  });
+
   if (check) {
     DEBUG_SYNC_C("row_ins_sec_index_enter");
     if (mode == BTR_MODIFY_LEAF) {

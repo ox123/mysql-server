@@ -1,4 +1,4 @@
-/* Copyright (c) 2012, 2018, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2012, 2019, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -22,6 +22,7 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <signal.h>
 #include <stdio.h>
@@ -248,8 +249,8 @@
 #include "plugin/group_replication/libmysqlgcs/src/bindings/xcom/xcom/x_platform.h"
 
 #ifndef _WIN32
+#include <arpa/inet.h>
 #include <net/if.h>
-#include <netdb.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #ifndef __linux__
@@ -312,15 +313,6 @@
 /* {{{ Defines and constants */
 
 #define SYS_STRERROR_SIZE 512
-unsigned int event_horizon = EVENT_HORIZON_MIN;
-
-static void set_event_horizon(unsigned int eh) MY_ATTRIBUTE((unused));
-/* purecov: begin deadcode */
-static void set_event_horizon(unsigned int eh) {
-  DBGOUT(FN; NDBG(eh, u));
-  event_horizon = eh;
-}
-/* purecov: end */
 
 /* Skip prepare for first ballot */
 #ifdef ALWAYS_THREEPHASE
@@ -432,10 +424,94 @@ static struct {
 
 synode_no get_max_synode() { return max_synode; }
 
+static bool_t is_latest_config(site_def const *const config) {
+  site_def const *const latest_config = get_site_def();
+  assert(latest_config != NULL);
+  return config == latest_config;
+}
+
+/**
+ * Get the first pending configuration that reconfigures the event horizon.
+ *
+ * Retrieve the first pending site_def, i.e. with the smallest start synod that
+ * is greater than executed_msg, that reconfigures the event horizon.
+ */
+static site_def const *first_event_horizon_reconfig() {
+  site_def const *active_config = find_site_def(executed_msg);
+  xcom_event_horizon active_event_horizon = active_config->event_horizon;
+  site_def const *first_event_horizon_reconfig = NULL;
+  site_def const *next_config = NULL;
+  for (next_config = find_next_site_def(active_config->start);
+       next_config != NULL && first_event_horizon_reconfig == NULL;
+       next_config = find_next_site_def(next_config->start)) {
+    if (active_event_horizon != next_config->event_horizon) {
+      first_event_horizon_reconfig = next_config;
+    }
+  }
+  return first_event_horizon_reconfig;
+}
+
+/**
+ * Get the latest pending configuration that reconfigures the event horizon.
+ *
+ * Retrieve the last pending site_def, i.e. with the greatest start synod that
+ * is greater than executed_msg, that reconfigures the event horizon.
+ */
+static site_def const *latest_event_horizon_reconfig() {
+  site_def const *active_config = find_site_def(executed_msg);
+  xcom_event_horizon previous_event_horizon = active_config->event_horizon;
+  site_def const *last_event_horizon_reconfig = NULL;
+  site_def const *next_config = NULL;
+  for (next_config = find_next_site_def(active_config->start);
+       next_config != NULL;
+       next_config = find_next_site_def(next_config->start)) {
+    if (previous_event_horizon != next_config->event_horizon) {
+      previous_event_horizon = next_config->event_horizon;
+      last_event_horizon_reconfig = next_config;
+    }
+  }
+  return last_event_horizon_reconfig;
+}
+
+/**
+ * Add the event horizon to the given base synod s.
+ *
+ * We are assuming right now that this function is used solely in the context of
+ * "we have received a reconfiguration command at synod s, when should it be
+ * scheduled to take effect?"
+ * The result of this function is *when* it should take effect.
+ *
+ * Common case: there are no configurations pending, or if there are, none of
+ * them reconfigure the event horizon. The common case result is:
+ *
+ *   s + event_horizon(active_config) + 1
+ *
+ *
+ * If an event horizon reconfiguration R is pending, it means that the command C
+ * proposed for synod s is concurrent with R, i.e., s falls in the interval
+ * ]proposed(R), start(R)[.
+ *
+ * In this situation we apply the command C proposed for synod s *after* taking
+ * into account R's event horizon.
+ *
+ * This means that the result is:
+ *
+ *   start(R) + event_horizon(R) + 1
+ */
 static synode_no add_event_horizon(synode_no s) {
-  s.msgno += event_horizon + 1;
-  s.node = 0;
-  return s;
+  synode_no result = s;
+  site_def const *active_config = find_site_def(executed_msg);
+  assert(active_config != NULL);
+  site_def const *pending_config = latest_event_horizon_reconfig();
+  bool_t const no_event_horizon_reconfig_pending = (pending_config == NULL);
+  if (is_latest_config(active_config) || no_event_horizon_reconfig_pending) {
+    result.msgno = s.msgno + active_config->event_horizon + 1;
+  } else {
+    result.msgno =
+        pending_config->start.msgno + pending_config->event_horizon + 1;
+  }
+  result.node = 0;
+  return result;
 }
 
 void set_max_synode_from_unified_boot(synode_no unified_boot_synode) {
@@ -478,9 +554,7 @@ static bool_t is_dead_site(uint32_t id) {
   return FALSE;
 }
 
-define_xdr_funcs(node_no)
-
-    extern node_set *init_node_set(node_set *set, u_int n);
+extern node_set *init_node_set(node_set *set, u_int n);
 extern node_set *alloc_node_set(node_set *set, u_int n);
 
 #if 0
@@ -961,6 +1035,7 @@ int xcom_taskmain(xcom_port listen_port) {
 
   {
     result fd = {0, 0};
+
     if ((fd = announce_tcp(listen_port)).val < 0) {
       MAY_DBG(FN; STRLIT("cannot annonunce tcp "); NDBG(listen_port, d));
       task_dump_err(fd.funerr);
@@ -991,6 +1066,8 @@ static xcom_state_change_cb xcom_run_cb = 0;
 static xcom_state_change_cb xcom_terminate_cb = 0;
 static xcom_state_change_cb xcom_comms_cb = 0;
 static xcom_state_change_cb xcom_exit_cb = 0;
+static xcom_state_change_cb xcom_expel_cb = 0;
+static xcom_input_try_pop_cb xcom_try_pop_from_input_cb = NULL;
 
 void set_xcom_run_cb(xcom_state_change_cb x) { xcom_run_cb = x; }
 
@@ -1000,6 +1077,170 @@ void set_xcom_terminate_cb(xcom_state_change_cb x) { xcom_terminate_cb = x; }
 /* purecov: end */
 void set_xcom_exit_cb(xcom_state_change_cb x) { xcom_exit_cb = x; }
 
+void set_xcom_expel_cb(xcom_state_change_cb x) { xcom_expel_cb = x; }
+
+void set_xcom_input_try_pop_cb(xcom_input_try_pop_cb pop) {
+  xcom_try_pop_from_input_cb = pop;
+}
+
+static xcom_port local_server_port = 0;
+
+static connection_descriptor *input_signal_connection = NULL;
+
+#ifdef XCOM_HAVE_OPENSSL
+static connection_descriptor *connect_xcom(char *server, xcom_port port,
+                                           bool use_ssl);
+bool xcom_input_new_signal_connection() {
+  assert(local_server_port != 0);
+  assert(input_signal_connection == NULL);
+  input_signal_connection =
+      connect_xcom((char *)"::1", local_server_port, false);
+
+  if (input_signal_connection == NULL) {
+    input_signal_connection =
+        connect_xcom((char *)"127.0.0.1", local_server_port, false);
+  }
+
+  return (input_signal_connection != NULL);
+}
+#else
+static connection_descriptor *connect_xcom(char *server, xcom_port port);
+void xcom_input_new_signal_connection(void) {
+  assert(local_server_port != 0);
+  assert(input_signal_connection == NULL);
+  input_signal_connection = connect_xcom((char *)"::1", local_server_port);
+  if (input_signal_connection == NULL) {
+    input_signal_connection =
+        connect_xcom((char *)"127.0.0.1", local_server_port, false);
+  }
+  assert(input_signal_connection != NULL);
+}
+#endif
+static int64_t socket_write(connection_descriptor *wfd, void *_buf, uint32_t n);
+bool xcom_input_signal() {
+  bool successful = false;
+  if (input_signal_connection != NULL) {
+    unsigned char tiny_buf[1] = {0};
+    int64_t error_code = socket_write(input_signal_connection, tiny_buf, 1);
+    successful = (error_code == 1);
+  }
+  return successful;
+}
+void xcom_input_free_signal_connection() {
+  if (input_signal_connection != NULL) {
+    xcom_close_client_connection(input_signal_connection);
+    input_signal_connection = NULL;
+  }
+}
+
+/* Listen for connections on socket and create a handler task */
+int local_server(task_arg arg) {
+  DECL_ENV
+  int fd;
+  connection_descriptor rfd;
+  unsigned char buf[1024];  // arbitrary size
+  int64_t nr_read;
+  xcom_input_request_ptr request;
+  xcom_input_request_ptr next_request;
+  pax_msg *request_pax_msg;
+  pax_msg *reply_payload;
+  linkage internal_reply_queue;
+  msg_link *internal_reply;
+  END_ENV;
+  TASK_BEGIN
+  assert(xcom_try_pop_from_input_cb != NULL);
+  assert(ep->fd >= 0);
+  ep->fd = get_int_arg(arg);
+  unblock_fd(ep->fd);
+  DBGOUT(FN; NDBG(ep->fd, d););
+  /* Wait for input signalling connection. */
+  TASK_CALL(accept_tcp(ep->fd, &ep->rfd.fd));
+#ifdef XCOM_HAVE_OPENSSL
+  ep->rfd.ssl_fd = 0;
+#endif
+  assert(ep->rfd.fd != -1);
+  /* Close the server socket. */
+  shut_close_socket(&ep->fd);
+  /* Make socket non-blocking and add socket to the event loop. */
+  unblock_fd(ep->rfd.fd);
+  set_nodelay(ep->rfd.fd);
+  wait_io(stack, ep->rfd.fd, 'r');
+  TASK_YIELD;
+  set_connected(&ep->rfd, CON_FD);
+  memset(ep->buf, 0, 1024);
+  ep->nr_read = 0;
+  ep->request = NULL;
+  ep->next_request = NULL;
+  ep->request_pax_msg = NULL;
+  ep->reply_payload = NULL;
+  link_init(&ep->internal_reply_queue, type_hash("msg_link"));
+  ep->internal_reply = NULL;
+
+  while (!xcom_shutdown) {
+    /* Wait for signal that there is work to consume from the queue. */
+    TASK_CALL(task_read(&ep->rfd, ep->buf, 1024, &ep->nr_read));
+    if (ep->nr_read == 0) {
+      /* purecov: begin inspected */
+      G_WARNING("local_server: client closed the signalling connection?");
+      break;
+      /* purecov: end */
+    } else if (ep->nr_read < 0) {
+      /* purecov: begin inspected */
+      DBGOUT(FN; NDBG64(ep->nr_read));
+      G_WARNING("local_server: error reading from the signalling connection?");
+      break;
+      /* purecov: end */
+    }
+    /* Pop, dispatch, and reply. */
+    ep->request = xcom_try_pop_from_input_cb();
+    while (ep->request != NULL) {
+      /* Take ownership of the tail of the list, otherwise we lose it when we
+         free ep->request. */
+      ep->next_request = xcom_input_request_extract_next(ep->request);
+      unchecked_replace_pax_msg(&ep->request_pax_msg,
+                                pax_msg_new_0(null_synode));
+      assert(ep->request_pax_msg->refcnt == 1);
+      ep->request_pax_msg->op = client_msg;
+      /* Take ownership of the request's app_data, otherwise the app_data is
+         freed with ep->request. */
+      ep->request_pax_msg->a = xcom_input_request_extract_app_data(ep->request);
+      ep->request_pax_msg->to = VOID_NODE_NO;
+      ep->request_pax_msg->force_delivery =
+          (ep->request_pax_msg->a->body.c_t == force_config_type);
+      dispatch_op(NULL, ep->request_pax_msg, &ep->internal_reply_queue);
+      if (!link_empty(&ep->internal_reply_queue)) {
+        ep->internal_reply =
+            (msg_link *)(link_extract_first(&ep->internal_reply_queue));
+        assert(ep->internal_reply->p);
+        assert(ep->internal_reply->p->refcnt == 1);
+        /* We are going to take ownership of the pax_msg which has the reply
+           payload, so we bump its reference count so that it is not freed by
+           msg_link_delete. */
+        ep->reply_payload = ep->internal_reply->p;
+        ep->reply_payload->refcnt++;
+        msg_link_delete(&ep->internal_reply);
+        // There should only have been one reply.
+        assert(link_empty(&ep->internal_reply_queue));
+      } else {
+        ep->reply_payload = NULL;
+      }
+      // Reply to the request.
+      xcom_input_request_reply(ep->request, ep->reply_payload);
+      xcom_input_request_free(ep->request);
+      ep->request = ep->next_request;
+    }
+  }
+  FINALLY
+  MAY_DBG(FN; STRLIT(" shutdown "); NDBG(ep->rfd.fd, d); NDBG(task_now(), f));
+  /* Close the signalling connection. */
+  shutdown_connection(&ep->rfd);
+  unchecked_replace_pax_msg(&ep->request_pax_msg, NULL);
+  DBGOUT(FN; NDBG(xcom_shutdown, d));
+  TASK_END;
+}
+
+static bool local_server_needed() { return xcom_try_pop_from_input_cb != NULL; }
+
 int xcom_taskmain2(xcom_port listen_port) {
   init_xcom_transport(listen_port);
 
@@ -1007,10 +1248,13 @@ int xcom_taskmain2(xcom_port listen_port) {
   ignoresig(SIGPIPE);
 
   {
-    result fd = {0, 0};
-    if ((fd = announce_tcp(listen_port)).val < 0) {
+    /* Setup tcp_server socket */
+    result tcp_fd = {0, 0};
+
+    if ((tcp_fd = announce_tcp(listen_port)).val < 0) {
+      /* purecov: begin inspected */
       MAY_DBG(FN; STRLIT("cannot annonunce tcp "); NDBG(listen_port, d));
-      task_dump_err(fd.funerr);
+      task_dump_err(tcp_fd.funerr);
       g_critical("Unable to announce tcp port %d. Port already in use?",
                  listen_port);
       if (xcom_comms_cb) {
@@ -1020,6 +1264,46 @@ int xcom_taskmain2(xcom_port listen_port) {
         xcom_terminate_cb(0);
       }
       return 1;
+      /* purecov: end */
+    }
+
+    /* Setup local_server socket */
+    result local_fd = {0, 0};
+    if (local_server_needed()) {
+      if ((local_fd = announce_tcp_local_server()).val < 0) {
+        /* purecov: begin inspected */
+        MAY_DBG(FN; STRLIT("cannot annonunce tcp "); NDBG(listen_port, d));
+        task_dump_err(local_fd.funerr);
+        g_critical("Unable to announce local tcp port %d. Port already in use?",
+                   listen_port);
+        if (xcom_comms_cb) {
+          xcom_comms_cb(XCOM_COMMS_ERROR);
+        }
+        if (xcom_terminate_cb) {
+          xcom_terminate_cb(0);
+        }
+        return 1;
+        /* purecov: end */
+      }
+      /* Get the port local_server bound to. */
+      struct sockaddr_in6 bound_addr;
+      socklen_t bound_addr_len = sizeof(bound_addr);
+      int const error_code = getsockname(
+          local_fd.val, (struct sockaddr *)&bound_addr, &bound_addr_len);
+      if (error_code != 0) {
+        /* purecov: begin inspected */
+        task_dump_err(error_code);
+        g_critical("Unable to retrieve the tcp port local_server bound to");
+        if (xcom_comms_cb) {
+          xcom_comms_cb(XCOM_COMMS_ERROR);
+        }
+        if (xcom_terminate_cb) {
+          xcom_terminate_cb(0);
+        }
+        return 1;
+        /* purecov: end */
+      }
+      local_server_port = ntohs(bound_addr.sin6_port);
     }
 
     if (xcom_comms_cb) {
@@ -1029,7 +1313,11 @@ int xcom_taskmain2(xcom_port listen_port) {
     MAY_DBG(FN; STRLIT("Creating tasks"));
     /* task_new(generator_task, null_arg, "generator_task", XCOM_THREAD_DEBUG);
      */
-    task_new(tcp_server, int_arg(fd.val), "tcp_server", XCOM_THREAD_DEBUG);
+    if (local_server_needed()) {
+      task_new(local_server, int_arg(local_fd.val), "local_server",
+               XCOM_THREAD_DEBUG);
+    }
+    task_new(tcp_server, int_arg(tcp_fd.val), "tcp_server", XCOM_THREAD_DEBUG);
     task_new(tcp_reaper_task, null_arg, "tcp_reaper_task", XCOM_THREAD_DEBUG);
     /* task_new(xcom_statistics, null_arg, "xcom_statistics",
      * XCOM_THREAD_DEBUG); */
@@ -1285,8 +1573,10 @@ void site_install_action(site_def *site, cargo_type operation) {
     update_servers(site, operation);
   }
   site->install_time = task_now();
-  G_INFO("Installed site start=" SY_FMT " boot_key=" SY_FMT " node %u",
-         SY_MEM(site->start), SY_MEM(site->boot_key), get_nodeno(site));
+  G_INFO("Installed site start=" SY_FMT " boot_key=" SY_FMT
+         " event_horizon=%" PRIu32 " node %u",
+         SY_MEM(site->start), SY_MEM(site->boot_key), site->event_horizon,
+         get_nodeno(site));
   DBGOUT(FN; SYCEXP(site->start); SYCEXP(site->boot_key));
   DBGOUT(FN; NDBG(get_nodeno(site), u));
   DBGOUT(FN; SYCEXP(site->start); SYCEXP(site->boot_key);
@@ -1410,8 +1700,99 @@ static uint64_t assign_lsn() {
 
 static void propose_noop(synode_no find, pax_machine *p);
 
+/**
+ * Checks if the given synod s is outside the event horizon.
+ *
+ * Common case: there are no configurations pending, or if there are, none of
+ * them reconfigure the event horizon. The common case threshold is:
+ *
+ *   last_executed_synod + event_horizon(active_config)
+ *
+ *
+ * If an event horizon reconfiguration R is pending, it is possible that it
+ * reduces the event horizon. In that case, it is possible that the threshold
+ * above falls outside the new event horizon.
+ *
+ * For example, consider last_executed_synod = 42 and
+ * event_horizon(active_config) = 10.
+ * At this point this member participates in synods up to 52.
+ * Now consider an event horizon reconfiguration that takes effect at synod 45,
+ * which modifies the event horizon to 2. This means that when
+ * last_executed_synod = 45, event_horizon(active_config) = 2. At this point
+ * this member should only be able to participate in synods up to 47. The member
+ * may have previously started processing messages directed to synods between 47
+ * and 52, but will now ignore messages directed to those same synods.
+ *
+ * We do not want to start processing messages that will eventually fall out
+ * of the event horizon. More importantly, the threshold above may not be safe
+ * due to the exit logic of executor_task.
+ *
+ * When a node removes itself from the group on configuration C starting at
+ * synod start(C), the exit logic relies on knowing *when* a majority has
+ * executed synod start(C) - 1, i.e. the last message of the last configuration
+ * to contain the leaving node.
+ *
+ * With a constant event horizon, we know that when synod
+ * start(C) + event_horizon is learnt, it is because a majority already executed
+ * or is ready to execute (and thus learned) synod start(C). This implies that a
+ * majority already executed start(C) - 1.
+ *
+ * With a dynamic event horizon, we cannot be sure that when synod
+ * start(C) + event_horizon(C) is learnt, a majority already executed or is
+ * ready to execute synod start(C).
+ * This is because it is possible for a new, smaller, event horizon to take
+ * effect between start(C) and start(C) + event_horizon(C).
+ * If that happens, the threshold above allows nodes to participate in synods
+ * which are possibly beyond start(C) + event_horizon(C), which can lead to the
+ * value of synod start(C) + event_horizon(C) being learnt without a majority
+ * already having executed or being ready to execute synod start(C).
+ *
+ * In order to maintain the assumption made by the executor_task's exit logic,
+ * when an event horizon reconfiguration R is pending we set the threshold to
+ * the minimum between:
+ *
+ *   last_executed_synod + event_horizon(active_config)
+ *
+ * and:
+ *
+ *   start(R) - 1 + event_horizon(R)
+ */
+static uint64_t too_far_threshold(xcom_event_horizon active_event_horizon) {
+  return executed_msg.msgno + active_event_horizon;
+}
+static uint64_t too_far_threshold_new_event_horizon_pending(
+    site_def const *new_config) {
+  uint64_t last_executed = executed_msg.msgno;
+  // compute normal threshold
+  uint64_t possibly_unsafe_threshold;
+  site_def const *active_config = find_site_def(executed_msg);
+  xcom_event_horizon active_event_horizon = active_config->event_horizon;
+  possibly_unsafe_threshold = last_executed + active_event_horizon;
+  // compute threshold taking into account new event horizon
+  uint64_t maximum_safe_threshold;
+  xcom_event_horizon new_event_horizon;
+  uint64_t start_new_event_horizon = new_config->start.msgno;
+  new_event_horizon = new_config->event_horizon;
+  maximum_safe_threshold = start_new_event_horizon - 1 + new_event_horizon;
+  // use the minimum of both for safety
+  return MIN(possibly_unsafe_threshold, maximum_safe_threshold);
+}
 static inline int too_far(synode_no s) {
-  return s.msgno >= executed_msg.msgno + event_horizon;
+  uint64_t threshold = 0;
+  site_def const *active_config = find_site_def(executed_msg);
+  if (active_config != NULL) {
+    site_def const *pending_config = first_event_horizon_reconfig();
+    bool_t const no_event_horizon_reconfig_pending = (pending_config == NULL);
+    if (is_latest_config(active_config) || no_event_horizon_reconfig_pending) {
+      threshold = too_far_threshold(active_config->event_horizon);
+    } else {
+      threshold = too_far_threshold_new_event_horizon_pending(pending_config);
+    }
+  } else {
+    // we have no configs, resort to default
+    threshold = too_far_threshold(EVENT_HORIZON_MIN);
+  }
+  return s.msgno >= threshold;
 }
 
 #define GOTO(x)                          \
@@ -1424,8 +1805,11 @@ static inline int is_view(cargo_type x) { return x == view_msg; }
 
 static inline int is_config(cargo_type x) {
   return x == unified_boot_type || x == add_node_type ||
-         x == remove_node_type || x == force_config_type;
+         x == remove_node_type || x == set_event_horizon_type ||
+         x == force_config_type;
 }
+
+static int wait_for_cache(pax_machine **pm, synode_no synode, double timeout);
 
 /* Send messages by fetching from the input queue and trying to get it accepted
    by a Paxos instance */
@@ -1459,7 +1843,6 @@ static int proposer_task(task_arg arg) {
   MAY_DBG(FN; NDBG(ep->self, d); NDBG(task_now(), f));
 
   while (!xcom_shutdown) { /* Loop until no more work to do */
-    int MY_ATTRIBUTE((unused)) lock = 0;
     /* Wait for client message */
     assert(!ep->client_msg);
     CHANNEL_GET(&prop_input_queue, &ep->client_msg, msg_link);
@@ -1560,12 +1943,21 @@ static int proposer_task(task_arg arg) {
 
     for (;;) { /* Loop until the client message has been learned */
       /* Get a Paxos instance to send the client message */
-      ep->p = get_cache(ep->msgno);
+
+      TASK_CALL(wait_for_cache(&ep->p, ep->msgno, 60));
+      if (!ep->p) {
+        G_MESSAGE("Could not get a pax_machine for msgno %lu. Retrying",
+                  (unsigned long)ep->msgno.msgno);
+        goto retry_new;
+      }
+
       assert(ep->p);
       if (ep->client_msg->p->force_delivery)
         ep->p->force_delivery = ep->client_msg->p->force_delivery;
-      lock = lock_pax_machine(ep->p);
-      assert(!lock);
+      {
+        int MY_ATTRIBUTE((unused)) lock = lock_pax_machine(ep->p);
+        assert(!lock);
+      }
 
       /* Set the client message as current proposal */
       assert(ep->client_msg->p);
@@ -1628,7 +2020,7 @@ static int proposer_task(task_arg arg) {
       }
       /* When we get here, we know the value for this message number,
          but it may not be the value we tried to push,
-         so loop until we have a successfull push. */
+         so loop until we have a successful push. */
       unlock_pax_machine(ep->p);
       MAY_DBG(FN; STRLIT(" found finished message "); SYCEXP(ep->msgno);
               STRLIT("seconds since last push ");
@@ -1772,7 +2164,7 @@ int get_xcom_message(pax_machine **p, synode_no msgno, int n) {
 
   ep->wait = 0;
   ep->delay = 0.0;
-  *p = get_cache(msgno);
+  *p = force_get_cache(msgno);
 
   while (!finished(*p)) {
     MAY_DBG(FN; STRLIT("before find_value"); SYCEXP(msgno); PTREXP(*p);
@@ -1800,7 +2192,7 @@ int get_xcom_message(pax_machine **p, synode_no msgno, int n) {
 
   ep->wait = 0;
   ep->delay = 0.0;
-  *p = get_cache(msgno);
+  *p = force_get_cache(msgno);
 
   while (!finished(*p)) {
     site_def const *site = find_site_def(msgno);
@@ -1965,8 +2357,15 @@ static void send_value(site_def const *site, node_no to, synode_no synode) {
   }
 }
 
-/* Peturn message number where it is safe for nodes in prev config to exit */
-static synode_no compute_delay(synode_no start) {
+/**
+ * Returns the message number where it is safe for nodes in previous
+ * configuration to exit.
+ *
+ * @param start start synod of the next configuration
+ * @param event_horizon event horizon of the next configuration
+ */
+static synode_no compute_delay(synode_no start,
+                               xcom_event_horizon event_horizon) {
   start.msgno += event_horizon;
   return start;
 }
@@ -1994,7 +2393,7 @@ static void inform_removed(int index, int all) {
         if (ps->nodeno != i &&
             !node_exists(&ps->nodes.node_list_val[i], &s->nodes)) {
           synode_no synode = s->start;
-          synode_no end = compute_delay(s->start);
+          synode_no end = compute_delay(s->start, s->event_horizon);
           while (!synode_gt(synode, end)) { /* Loop over relevant messages */
             send_value(ps, i, synode);
             synode = incr_synode(synode);
@@ -2008,7 +2407,155 @@ static void inform_removed(int index, int all) {
   }
 }
 
+static bool_t backwards_compatible(xcom_event_horizon event_horizon) {
+  return event_horizon == EVENT_HORIZON_MIN;
+}
+
+static xcom_proto const first_event_horizon_aware_protocol = x_1_4;
+
+static bool_t reconfigurable_event_horizon(xcom_proto protocol_version) {
+  return protocol_version >= first_event_horizon_aware_protocol;
+}
+
+static bool_t config_unsafe_against_nr_cache_entries(
+    u_int nr_nodes, xcom_event_horizon event_horizon) {
+  return CACHED <= event_horizon * nr_nodes;
+}
+
+static bool_t add_node_unsafe_against_nr_cache_entries(app_data_ptr a) {
+  assert(a->body.c_t == add_node_type);
+  site_def const *latest_config = get_site_def();
+  xcom_event_horizon const event_horizon = latest_config->event_horizon;
+  u_int const nr_nodes_in_config = latest_config->nodes.node_list_len;
+  u_int const nr_nodes_to_add = a->body.app_u_u.nodes.node_list_len;
+  u_int const nr_nodes_in_new_config = nr_nodes_in_config + nr_nodes_to_add;
+  if (config_unsafe_against_nr_cache_entries(nr_nodes_in_new_config,
+                                             event_horizon)) {
+    /*
+     * We should revisit the log message when add_node_type messages contain
+     * more than one address.
+     */
+    assert(a->body.app_u_u.nodes.node_list_len > 0);
+    G_INFO(
+        "The request to add %s to the group was rejected because the invariant "
+        "event_horizon * nr_members < nr_cache_entries would be violated: "
+        "%" PRIu32 " * %u < %d",
+        a->body.app_u_u.nodes.node_list_val[0].address, event_horizon,
+        nr_nodes_in_new_config, CACHED);
+    return TRUE;
+  }
+  return FALSE;
+}
+
+static bool_t add_node_unsafe_against_ipv4_old_nodes(app_data_ptr a) {
+  assert(a->body.c_t == add_node_type);
+
+  site_def const *latest_config = get_site_def();
+  if (latest_config && latest_config->x_proto >= minimum_ipv6_version())
+    return FALSE;
+
+  u_int const nr_nodes_to_add = a->body.app_u_u.nodes.node_list_len;
+  node_address *nodes_to_add = a->body.app_u_u.nodes.node_list_val;
+
+  u_int i = 0;
+  xcom_port node_port = 0;
+  char node_addr[IP_MAX_SIZE];
+
+  for (; i < nr_nodes_to_add; i++) {
+    if (get_ip_and_port(nodes_to_add[i].address, node_addr, &node_port)) {
+      G_ERROR(
+          "Error parsing address from a joining node. Join operation will be "
+          "rejected");
+      return TRUE;
+    }
+
+    if (!is_node_v4_reachable(node_addr)) return TRUE;
+  }
+
+  return FALSE;
+}
+
+/**
+ * Check if a node is compatible with the group's event horizon.
+ *
+ * A node is compatible with the group's configuration if:
+ *
+ *    a) The node supports event horizon reconfigurations, or
+ *    b) The group's event horizon is, or is scheduled to be, the default event
+ *       horizon.
+ */
+static bool_t unsafe_against_event_horizon(node_address const *node) {
+  site_def const *latest_config = get_site_def();
+  xcom_proto node_max_protocol_version = node->proto.max_proto;
+  bool_t const compatible =
+      reconfigurable_event_horizon(node_max_protocol_version) ||
+      backwards_compatible(latest_config->event_horizon);
+
+  if (!compatible) {
+    /*
+     * The node that wants to join does not support event horizon
+     * reconfigurations and the group's event horizon is, or is scheduled to
+     * be, different from the default.
+     * The node can not safely join the group so we deny its attempt to join.
+     */
+    G_INFO(
+        "%s's request to join the group was rejected because the group's event "
+        "horizon is, or will be %" PRIu32 " and %s only supports %" PRIu32,
+        node->address, get_site_def()->event_horizon, node->address,
+        EVENT_HORIZON_MIN);
+    return TRUE;
+  }
+  return FALSE;
+}
+
+static bool_t add_node_unsafe_against_event_horizon(app_data_ptr a) {
+  assert(a->body.c_t == add_node_type);
+  u_int nodes_len = a->body.app_u_u.nodes.node_list_len;
+  node_address *nodes_to_add = a->body.app_u_u.nodes.node_list_val;
+  u_int i = 0;
+  for (; i < nodes_len; i++) {
+    if (unsafe_against_event_horizon(&nodes_to_add[i])) return TRUE;
+  }
+  return FALSE;
+}
+
+/**
+ * Reconfigure the group membership: add new member(s).
+ *
+ * It is possible that concurrent reconfigurations take effect between the time
+ * this reconfiguration was proposed and now.
+ *
+ * Particularly, it is possible that any of the concurrent reconfigurations
+ * modified the event horizon and that the new member(s) do not support event
+ * horizon reconfigurations.
+ *
+ * We account for these situations by validating if adding the new members is
+ * still possible under the current state.
+ *
+ * If it is not, this reconfiguration does not produce any effect, i.e. no new
+ * configuration is installed.
+ */
 site_def *handle_add_node(app_data_ptr a) {
+  if (add_node_unsafe_against_event_horizon(a)) {
+    /*
+     * Note that the result of this function is only applicable to
+     * unused and not-fully-implemented code paths where add_node_type is used
+     * forcibly.
+     * Should this fact change, this obviously does not work.
+     */
+    return NULL;
+  }
+
+  if (add_node_unsafe_against_nr_cache_entries(a)) {
+    /*
+     * Note that the result of this function is only applicable to
+     * unused and not-fully-implemented code paths where add_node_type is used
+     * forcibly.
+     * Should this fact change, this obviously does not work.
+     */
+    return NULL;
+  }
+
   site_def *site = clone_site_def(get_site_def());
   DBGOUT(FN; COPY_AND_FREE_GOUT(dbg_list(&a->body.app_u_u.nodes)););
   MAY_DBG(FN; COPY_AND_FREE_GOUT(dbg_list(&a->body.app_u_u.nodes)););
@@ -2024,9 +2571,136 @@ site_def *handle_add_node(app_data_ptr a) {
   return site;
 }
 
+/**
+ * Check if we can reconfigure the event horizon.
+ *
+ * We can reconfigure the event horizon if all group members support
+ * reconfiguring the event horizon, and the new event horizon in the domain
+ * [EVENT_HORIZON_MIN, EVENT_HORIZON_MAX].
+ *
+ * We use the group's latest common XCom protocol as a proxy to decide if all
+ * members support reconfiguring the event horizon.
+ *
+ * If the common protocol is at least version 5 (x_1_4) then all members run
+ * compatible server instances.
+ *
+ * Otherwise there are older instances, and it follows that the event horizon
+ * must be the default and cannot be reconfigured.
+ */
+enum allow_event_horizon_result {
+  EVENT_HORIZON_ALLOWED,
+  EVENT_HORIZON_INVALID,
+  EVENT_HORIZON_UNCHANGEABLE,
+  EVENT_HORIZON_UNSAFE_AGAINST_CACHE
+};
+typedef enum allow_event_horizon_result allow_event_horizon_result;
+
+static void log_event_horizon_reconfiguration_failure(
+    allow_event_horizon_result error_code,
+    xcom_event_horizon attempted_event_horizon) {
+  switch (error_code) {
+    case EVENT_HORIZON_INVALID:
+      G_WARNING("The event horizon was not reconfigured to %" PRIu32
+                "because its domain is [%" PRIu32 ", %" PRIu32 "]",
+                attempted_event_horizon, xcom_get_minimum_event_horizon(),
+                xcom_get_maximum_event_horizon());
+      break;
+    case EVENT_HORIZON_UNCHANGEABLE:
+      G_WARNING("The event horizon was not reconfigured to %" PRIu32
+                " because some of the group's members do not support "
+                "reconfiguring the event horizon",
+                attempted_event_horizon);
+      break;
+    case EVENT_HORIZON_UNSAFE_AGAINST_CACHE:
+      G_WARNING("The event horizon was not reconfigured to %" PRIu32
+                " because the invariant "
+                "event_horizon * nr_members < nr_cache_entries would be "
+                "violated: %" PRIu32 " * %u < %d",
+                attempted_event_horizon, attempted_event_horizon,
+                get_site_def()->nodes.node_list_len, CACHED);
+      break;
+    case EVENT_HORIZON_ALLOWED:
+      break;
+  }
+}
+
+static allow_event_horizon_result allow_event_horizon(
+    xcom_event_horizon event_horizon) {
+  if (event_horizon < EVENT_HORIZON_MIN || event_horizon > EVENT_HORIZON_MAX)
+    return EVENT_HORIZON_INVALID;
+
+  const site_def *latest_config = get_site_def();
+  if (!reconfigurable_event_horizon(latest_config->x_proto)) {
+    assert(backwards_compatible(latest_config->event_horizon));
+    return EVENT_HORIZON_UNCHANGEABLE;
+  }
+
+  u_int const nr_nodes = latest_config->nodes.node_list_len;
+  if (config_unsafe_against_nr_cache_entries(nr_nodes, event_horizon))
+    return EVENT_HORIZON_UNSAFE_AGAINST_CACHE;
+
+  return EVENT_HORIZON_ALLOWED;
+}
+
+static bool_t unsafe_event_horizon_reconfiguration(app_data_ptr a) {
+  assert(a->body.c_t == set_event_horizon_type);
+  xcom_event_horizon new_event_horizon = a->body.app_u_u.event_horizon;
+  bool_t result = FALSE;
+  allow_event_horizon_result error_code;
+  error_code = allow_event_horizon(new_event_horizon);
+  switch (error_code) {
+    case EVENT_HORIZON_INVALID:
+    case EVENT_HORIZON_UNCHANGEABLE:
+    case EVENT_HORIZON_UNSAFE_AGAINST_CACHE:
+      log_event_horizon_reconfiguration_failure(error_code, new_event_horizon);
+      result = TRUE;
+      break;
+    case EVENT_HORIZON_ALLOWED:
+      break;
+  }
+  return result;
+}
+
+/**
+ * Reconfigure the event horizon.
+ *
+ * It is possible that concurrent reconfigurations take effect between the
+ * time this reconfiguration was proposed and now.
+ *
+ * Particularly, it is possible that any of the concurrent reconfigurations
+ * added a new member which does not support reconfiguring the event
+ * horizon.
+ *
+ * We account for these situations by validating if the event horizon
+ * reconfiguration is still possible under the current state.
+ *
+ * If it is not, this reconfiguration does not produce any effect, i.e. no
+ * new configuration is installed.
+ */
+bool_t handle_event_horizon(app_data_ptr a) {
+  if (unsafe_event_horizon_reconfiguration(a)) return FALSE;
+
+  xcom_event_horizon new_event_horizon = a->body.app_u_u.event_horizon;
+  const site_def *latest_config = get_site_def();
+  site_def *new_config = clone_site_def(latest_config);
+  DBGOUT(FN; NDBG(new_event_horizon, u));
+  MAY_DBG(FN; NDBG(new_event_horizon, u));
+  ADD_EVENTS(add_event(string_arg("a->app_key"));
+             add_synode_event(a->app_key););
+  assert(get_site_def());
+  assert(new_config);
+  new_config->event_horizon = new_event_horizon;
+  new_config->start = getstart(a);
+  new_config->boot_key = a->app_key;
+  site_install_action(new_config, a->body.c_t);
+  G_INFO("The event horizon was reconfigured to %" PRIu32, new_event_horizon);
+  return TRUE;
+}
+
 static void terminate_and_exit() {
   XCOM_FSM(xa_terminate, int_arg(0)); /* Tell xcom to stop */
   XCOM_FSM(xa_exit, int_arg(0));      /* Tell xcom to exit */
+  if (xcom_expel_cb) xcom_expel_cb(0);
 }
 
 int terminator_task(task_arg arg) {
@@ -2069,27 +2743,38 @@ site_def *handle_remove_node(app_data_ptr a) {
   return site;
 }
 
-void handle_config(app_data_ptr a) {
-  while (a) {
-    switch (a->body.c_t) {
-      case unified_boot_type:
-        install_node_group(a);
-        break;
-      case add_node_type:
-        handle_add_node(a);
-        break;
-      case remove_node_type:
-        handle_remove_node(a);
-        if (xcom_shutdown) return;
-        break;
-      case force_config_type:
-        install_node_group(a);
-        break;
-      default:
-        break;
-    }
-    a = a->next;
+bool_t handle_config(app_data_ptr a) {
+  assert(a->next == NULL); /* Reconfiguration commands are not batched. */
+  bool_t success = FALSE;
+  switch (a->body.c_t) {
+    case unified_boot_type:
+      success = (install_node_group(a) != NULL);
+      assert(success);
+      break;
+    case add_node_type:
+      /*
+       * May fail if meanwhile the event horizon was reconfigured and the
+       * node is incompatible.
+       */
+      success = (handle_add_node(a) != NULL);
+      break;
+    case remove_node_type:
+      success = (handle_remove_node(a) != NULL);
+      assert(success);
+      break;
+    case set_event_horizon_type:
+      /* May fail if meanwhile an incompatible node joined. */
+      success = handle_event_horizon(a);
+      break;
+    case force_config_type:
+      success = (install_node_group(a) != NULL);
+      assert(success);
+      break;
+    default:
+      assert(FALSE); /* Boy oh boy, something is really wrong... */
+      break;
   }
+  return success;
 }
 
 enum exec_state { FETCH = 0, EXECUTE = 1 };
@@ -2270,71 +2955,72 @@ static int executor_task(task_arg arg MY_ATTRIBUTE((unused))) {
           DBGOUT(FN; STRLIT("got message "); SYCEXP(ep->p->synode);
                  COPY_AND_FREE_GOUT(dbg_app_data(XAPP)));
           /* Execute unified_boot immediately, but do not deliver site message
-           * until we */
-          /* are ready to execute messages from the new site definition. */
-          /* At that point we can be certain that a majority have learned */
-          /* everything from the old site. */
-
+           * until we are ready to execute messages from the new site
+           * definition. At that point we can be certain that a majority have
+           * learned everything from the old site. */
           if ((XAPP) && is_config((XAPP)->body.c_t) &&
               synode_gt(executed_msg, get_site_def()->boot_key)) /* Redo test */
           {
             site_def *site = 0;
-            set_last_received_config(executed_msg);
-            handle_config(XAPP);
-            garbage_collect_site_defs(delivered_msg);
-            site = get_site_def_rw();
-            if (site == 0) {
-              TERMINATE;
-            }
-            DBGFIX2(FN; STRLIT("new config "); SYCEXP(site->boot_key););
-
-            /* If site is empty, increase start to allow nodes to terminate
-             * before start */
-            if (is_empty_site(site)) {
-              site->start = compute_delay(compute_delay(site->start));
-            }
-            if (ep->exit_type ==
-                no_exit) { /* We have not yet set the exit trigger */
-              synode_no delay_until;
-              if (is_member(site)) {
-                delay_until = compute_delay(site->start);
-              } else { /* Not in this site */
-                       /*
-                               See if site will be empty when we leave.
-                               If the new site is empty, we should exit after having
-                               delivered the last message from the old site.
-                       */
-                if (is_empty_site(site)) {
-                  ep->exit_synode = decr_synode(site->start);
-                  ep->exit_type = empty_exit;
-                  delay_until = ep->exit_synode;
-                  DBGFIX2(FN; SYCEXP(ep->exit_synode); SYCEXP(executed_msg);
-                          SYCEXP(max_synode));
-                } else {
-                  /*
-                          If we are not a member of the new site, we should exit
-                     after having
-                          seen enough messages from the new site.
-                   */
-                  ep->exit_synode = compute_delay(site->start);
-                  ep->exit_type = not_member_exit;
-                  if (!synode_lt(ep->exit_synode, max_synode)) {
-                    /* We need messages from the next site, so set max_synode
-                     * accordingly. */
-                    set_max_synode(incr_synode(ep->exit_synode));
-                  }
-                  delay_until = ep->exit_synode;
-                  DBGFIX2(FN; SYCEXP(delay_until); SYCEXP(executed_msg);
-                          SYCEXP(max_synode));
-                  DBGFIX2(FN; SYCEXP(ep->exit_synode); SYCEXP(executed_msg);
-                          SYCEXP(max_synode));
-                }
+            bool_t reconfiguration_successful = handle_config(XAPP);
+            if (reconfiguration_successful) {
+              /* If the reconfiguration failed then it does not have any
+               * effect. What follows only makes sense if the reconfiguration
+               * took effect. */
+              set_last_received_config(executed_msg);
+              garbage_collect_site_defs(delivered_msg);
+              site = get_site_def_rw();
+              if (site == 0) {
+                TERMINATE;
               }
+              DBGFIX2(FN; STRLIT("new config "); SYCEXP(site->boot_key););
 
-              if (synode_gt(delay_until, max_synode))
-                set_max_synode(delay_until);
-              fifo_insert(delay_until);
-              ep->inform_index++;
+              /* If site is empty, increase start to allow nodes to terminate
+               * before start */
+              if (is_empty_site(site)) {
+                site->start = compute_delay(
+                    compute_delay(site->start, site->event_horizon),
+                    site->event_horizon);
+              }
+              if (ep->exit_type ==
+                  no_exit) { /* We have not yet set the exit trigger */
+                synode_no delay_until;
+                if (is_member(site)) {
+                  delay_until = compute_delay(site->start, site->event_horizon);
+                } else { /* Not in this site */
+                  /* See if site will be empty when we leave. If the new site
+                   * is empty, we should exit after having delivered the last
+                   * message from the old site. */
+                  if (is_empty_site(site)) {
+                    ep->exit_synode = decr_synode(site->start);
+                    ep->exit_type = empty_exit;
+                    delay_until = ep->exit_synode;
+                    DBGFIX2(FN; SYCEXP(ep->exit_synode); SYCEXP(executed_msg);
+                            SYCEXP(max_synode));
+                  } else {
+                    /* If we are not a member of the new site, we should exit
+                     * after having seen enough messages from the new site. */
+                    ep->exit_synode =
+                        compute_delay(site->start, site->event_horizon);
+                    ep->exit_type = not_member_exit;
+                    if (!synode_lt(ep->exit_synode, max_synode)) {
+                      /* We need messages from the next site, so set
+                       * max_synode accordingly. */
+                      set_max_synode(incr_synode(ep->exit_synode));
+                    }
+                    delay_until = ep->exit_synode;
+                    DBGFIX2(FN; SYCEXP(delay_until); SYCEXP(executed_msg);
+                            SYCEXP(max_synode));
+                    DBGFIX2(FN; SYCEXP(ep->exit_synode); SYCEXP(executed_msg);
+                            SYCEXP(max_synode));
+                  }
+                }
+
+                if (synode_gt(delay_until, max_synode))
+                  set_max_synode(delay_until);
+                fifo_insert(delay_until);
+                ep->inform_index++;
+              }
             }
           } else {
             DBGOUT(FN; SYCEXP(executed_msg); SYCEXP(get_site_def()->boot_key));
@@ -2385,6 +3071,8 @@ static int executor_task(task_arg arg MY_ATTRIBUTE((unused))) {
         DBGOUT(FN; NDBG(ep->state, d); SYCEXP(delivered_msg);
                SYCEXP(delivered_msg); SYCEXP(executed_msg);
                SYCEXP(ep->exit_synode); NDBG(ep->exit_type, d));
+        assert(is_cached(delivered_msg) &&
+               "delivered_msg should have been cached");
         ep->p = get_cache(delivered_msg);
         if (LOSER(delivered_msg, x_site)) {
 #ifdef IGNORE_LOSERS
@@ -2619,7 +3307,7 @@ static void read_missing_values(int n) {
     return;
 
   while (!synode_gt(find, end) && i < n && !too_far(find)) {
-    pax_machine *p = get_cache(find);
+    pax_machine *p = force_get_cache(find);
     ADD_EVENTS(add_synode_event(find); add_synode_event(end);
                add_event(string_arg("active "));
                add_event(int_arg(recently_active(p)));
@@ -2649,7 +3337,7 @@ static void propose_missing_values(int n) {
   MAY_DBG(FN; SYCEXP(find); SYCEXP(end));
   i = 0;
   while (!synode_gt(find, end) && i < n && !too_far(find)) {
-    pax_machine *p = get_cache(find);
+    pax_machine *p = force_get_cache(find);
     if (wait_forced_config) {
       force_pax_machine(p, 1);
     }
@@ -2862,7 +3550,7 @@ static void do_learn(site_def const *site MY_ATTRIBUTE((unused)),
      it is only necessary to compute the added memory when we
      record the outcome of a consensus round.
   */
-  add_cache_size(pax_machine_size(p));
+  add_cache_size(p);
   /* Shrink the cache size if necessary */
   shrink_cache();
 }
@@ -2889,6 +3577,15 @@ static void handle_ack_prepare(site_def const *site, pax_machine *p,
   MAY_DBG(FN; if (p->proposer.msg) BALCEXP(p->proposer.msg->proposal);
           BALCEXP(p->proposer.bal); BALCEXP(m->reply_to);
           BALCEXP(p->proposer.sent_prop); SYCEXP(m->synode));
+  /*
+    If the node is preparing a Noop for another node's slot, it is possible
+    that the leader of the slot has since proposed a value. Hence, there is
+    no need to move forward if we know that the value has been accepted. This
+    also prevents changing the size of a learned pax_machine, which would
+    cause inconsistent reporting of memory usage in P_S.
+  */
+  if (finished(p)) return;
+
   if (m->from != VOID_NODE_NO &&
       eq_ballot(p->proposer.bal, m->reply_to)) { /* answer to my prepare */
     handle_simple_ack_prepare(site, p, m);
@@ -3116,8 +3813,8 @@ static int accept_site(site_def const *site) {
       MAY_DBG(FN; PTREXP(site); PTREXP(mysite); PTREXP(prev);
               SYCEXP(site->boot_key); if (prev) { SYCEXP(prev->boot_key); });
       if (!prev) {
-        /** alive when no site, no known previous definition, and present in new
-         * is accepted */
+        /** alive when no site, no known previous definition, and present in
+         * new is accepted */
         return (site->boot_key.group_id == 0
                     ? 1
                     : (xcom_find_node_index((node_list *)&site->nodes) !=
@@ -3242,17 +3939,60 @@ void add_to_cache(app_data_ptr a, synode_no synode) {
 
 static int clicnt = 0;
 
+xcom_event_horizon xcom_get_minimum_event_horizon() {
+  return EVENT_HORIZON_MIN;
+}
+
+xcom_event_horizon xcom_get_maximum_event_horizon() {
+  return EVENT_HORIZON_MAX;
+}
+
+/**
+ * Retrieves the latest event horizon.
+ *
+ * There is no specific reason for this method to return the latest event
+ * horizon instead of the current one. Both would be acceptable results of
+ * this function, but we had to make a decision of one over the other.
+ *
+ * @param[out] event_horizon the latest event horizon
+ * @retval REQUEST_FAIL XCom is not initialized yet
+ * @retval REQUEST_OK function was successful and event_horizon contains the
+ *                    latest event horizon
+ */
+static client_reply_code xcom_get_event_horizon(
+    xcom_event_horizon *event_horizon) {
+  site_def const *latest_config = get_site_def();
+  if (latest_config == NULL) return REQUEST_FAIL;
+  *event_horizon = latest_config->event_horizon;
+  return REQUEST_OK;
+}
+
 static u_int allow_add_node(app_data_ptr a) {
   /* Get information on the current site definition */
   const site_def *new_site_def = get_site_def();
+  u_int const nr_nodes_in_config = new_site_def->nodes.node_list_len;
+  xcom_event_horizon const event_horizon = new_site_def->event_horizon;
   const site_def *valid_site_def = find_site_def(executed_msg);
 
   /* Get information on the nodes to be added */
-  u_int nodes_len = a->body.app_u_u.nodes.node_list_len;
+  u_int nr_nodes_to_add = a->body.app_u_u.nodes.node_list_len;
   node_address *nodes_to_change = a->body.app_u_u.nodes.node_list_val;
 
+  if (add_node_unsafe_against_event_horizon(a)) return 0;
+
+  if (add_node_unsafe_against_nr_cache_entries(a)) return 0;
+
+  if (add_node_unsafe_against_ipv4_old_nodes(a)) {
+    G_MESSAGE(
+        "This server is unable to join the group as the NIC used is configured "
+        "with IPv6 only and there are members in the group that are unable to "
+        "communicate using IPv6, only IPv4.Please configure this server to "
+        "join the group using an IPv4 address instead.");
+    return 0;
+  }
+
   u_int i = 0;
-  for (; i < nodes_len; i++) {
+  for (; i < nr_nodes_to_add; i++) {
     if (node_exists(&nodes_to_change[i], &new_site_def->nodes) ||
         node_exists(&nodes_to_change[i], &valid_site_def->nodes)) {
       /*
@@ -3330,18 +4070,73 @@ static u_int allow_remove_node(app_data_ptr a) {
   return 1;
 }
 
+/**
+ * Logs the fact that an add/remove node request is aimed at another group.
+ *
+ * @param a a pointer to the app_data of the configuration command
+ * @param message_fmt a formatted message to log, containing a single %s that
+ * will be replaced by the node's address
+ */
+static void log_cfgchange_wrong_group(app_data_ptr a,
+                                      const char *const message_fmt) {
+  u_int const nr_nodes = a->body.app_u_u.nodes.node_list_len;
+  u_int i;
+  for (i = 0; i < nr_nodes; i++) {
+    char const *const address = a->body.app_u_u.nodes.node_list_val[i].address;
+    G_WARNING(message_fmt, address);
+  }
+}
+
+/**
+ * Validates if a configuration command can be executed.
+ * Checks whether the configuration command is aimed at the correct group.
+ * Checks whether the configuration command pertains to a node reincarnation.
+ *
+ * @param p a pointer to the pax_msg of the configuration command
+ * @retval REQUEST_OK if the reconfiguration command can be executed
+ * @retval REQUEST_RETRY if XCom is still booting
+ * @retval REQUEST_FAIL if the configuration command cannot be executed
+ */
 static client_reply_code can_execute_cfgchange(pax_msg *p) {
   app_data_ptr a = p->a;
 
   if (executed_msg.msgno <= 2) return REQUEST_RETRY;
 
-  if (a && a->group_id != 0 && a->group_id != executed_msg.group_id)
+  if (a && a->group_id != 0 && a->group_id != executed_msg.group_id) {
+    switch (a->body.c_t) {
+      case add_node_type:
+        log_cfgchange_wrong_group(
+            a,
+            "The request to add %s to the group has been rejected because it "
+            "is aimed at another group");
+        break;
+      case remove_node_type:
+        log_cfgchange_wrong_group(
+            a,
+            "The request to remove %s from the group has been rejected because "
+            "it is aimed at another group");
+        break;
+      case force_config_type:
+        G_WARNING(
+            "The request to force the group membership has been rejected "
+            "because it is aimed at another group");
+        break;
+      default:
+        assert(0 &&
+               "A cargo_type different from {add_node_type, remove_node_type, "
+               "force_config_type} should not have hit this code path");
+    }
     return REQUEST_FAIL;
+  }
 
   if (a && a->body.c_t == add_node_type && !allow_add_node(a))
     return REQUEST_FAIL;
 
   if (a && a->body.c_t == remove_node_type && !allow_remove_node(a))
+    return REQUEST_FAIL;
+
+  if (a && a->body.c_t == set_event_horizon_type &&
+      unsafe_event_horizon_reconfiguration(a))
     return REQUEST_FAIL;
 
   return REQUEST_OK;
@@ -3353,6 +4148,15 @@ static void activate_sweeper() {
                add_synode_event(max_synode););
     task_activate(sweeper);
   }
+}
+
+void dispatch_get_event_horizon(site_def const *site, pax_msg *p,
+                                linkage *reply_queue) {
+  DBGOUT(FN; STRLIT("Got get_event_horizon from client"); SYCEXP(p->synode););
+  CREATE_REPLY(p);
+  reply->op = xcom_client_reply;
+  reply->cli_err = xcom_get_event_horizon(&reply->event_horizon);
+  SEND_REPLY;
 }
 
 pax_msg *dispatch_op(site_def const *site, pax_msg *p, linkage *reply_queue) {
@@ -3426,9 +4230,14 @@ pax_msg *dispatch_op(site_def const *site, pax_msg *p, linkage *reply_queue) {
         terminate_and_exit();
         break;
       }
+      if (p->a && (p->a->body.c_t == get_event_horizon_type)) {
+        dispatch_get_event_horizon(site, p, reply_queue);
+        break;
+      }
       if (p->a && (p->a->body.c_t == add_node_type ||
                    p->a->body.c_t == remove_node_type ||
-                   p->a->body.c_t == force_config_type)) {
+                   p->a->body.c_t == force_config_type ||
+                   p->a->body.c_t == set_event_horizon_type)) {
         client_reply_code cli_err;
         CREATE_REPLY(p);
         reply->op = xcom_client_reply;
@@ -3453,6 +4262,13 @@ pax_msg *dispatch_op(site_def const *site, pax_msg *p, linkage *reply_queue) {
       if (p->a && p->a->body.c_t == remove_node_type) {
         DBGOUT(FN; STRLIT("Got remove_node from client"); SYCEXP(p->synode););
         DBGOUT(FN; COPY_AND_FREE_GOUT(dbg_list(&p->a->body.app_u_u.nodes)););
+        DBGOUT(STRLIT("handle_client_msg "); NDBG(p->a->group_id, x));
+        assert(get_site_def());
+      }
+      if (p->a && p->a->body.c_t == set_event_horizon_type) {
+        DBGOUT(FN; STRLIT("Got set_event_horizon from client");
+               SYCEXP(p->synode););
+        DBGOUT(FN; NDBG(p->a->body.app_u_u.event_horizon, u));
         DBGOUT(STRLIT("handle_client_msg "); NDBG(p->a->group_id, x));
         assert(get_site_def());
       }
@@ -3632,10 +4448,10 @@ pax_msg *dispatch_op(site_def const *site, pax_msg *p, linkage *reply_queue) {
       */
       if (!synode_lt(p->synode, executed_msg)) {
         g_critical(
-            "Node %u unable to get message, process will now exit. Please "
-            "ensure that the process is restarted",
+            "Node %u is unable to get messages, since the group is too far "
+            "ahead. Node will now exit.",
             get_nodeno(site));
-        exit(1);
+        terminate_and_exit();
       }
     default:
       break;
@@ -3663,6 +4479,33 @@ pax_msg *dispatch_op(site_def const *site, pax_msg *p, linkage *reply_queue) {
   }                                                              \
   ep->buf = NULL;
 
+static int wait_for_cache(pax_machine **pm, synode_no synode, double timeout) {
+  DECL_ENV
+  double now;
+  END_ENV;
+
+  TASK_BEGIN
+  ep->now = task_now();
+  while ((*pm = get_cache(synode)) == NULL) {
+    // Wait for executor to make progress
+    TIMED_TASK_WAIT(&exec_wait, 0.5);
+    if (task_now() - ep->now > timeout) break;  // Timeout, return NULL.
+  }
+  FINALLY
+  TASK_END;
+}
+
+/*
+  Verify if we need to poll the cache before calling dispatch_op.
+  Avoid waiting for a machine if it is not going to be used.
+ */
+static bool_t should_poll_cache(pax_op op) {
+  if (op == die_op || op == gcs_snapshot_op || op == snapshot_op ||
+      op == initial_op || op == client_msg)
+    return FALSE;
+  return TRUE;
+}
+
 int acceptor_learner_task(task_arg arg) {
   DECL_ENV
   connection_descriptor rfd;
@@ -3674,6 +4517,8 @@ int acceptor_learner_task(task_arg arg) {
   linkage reply_queue;
   int errors;
   server *srv;
+  site_def const *site;
+  int behind;
   END_ENV;
 
   TASK_BEGIN
@@ -3689,6 +4534,7 @@ int acceptor_learner_task(task_arg arg) {
   ep->buf = NULL;
   ep->errors = 0;
   ep->srv = 0;
+  ep->behind = FALSE;
 
   /* We have a connection, make socket non-blocking and wait for request */
   unblock_fd(ep->rfd.fd);
@@ -3740,8 +4586,8 @@ int acceptor_learner_task(task_arg arg) {
 
 again:
   while (!xcom_shutdown) {
-    int64_t n = 0;
-    site_def const *site = 0;
+    int64_t n;
+    ep->site = 0;
     unchecked_replace_pax_msg(&ep->p, pax_msg_new_0(null_synode));
 
     if (use_buffered_read) {
@@ -3759,7 +4605,7 @@ again:
     if (n <= 0) {
       break;
     }
-    site = find_site_def(ep->p->synode);
+    ep->site = find_site_def(ep->p->synode);
     /*
       Getting a pointer to the server needs to be done after we have
       received a message, since without having received a message, we
@@ -3772,45 +4618,45 @@ again:
       common to both the sender_task, reply_handler_task,  and the ac‐
       ceptor_learner_task.
     */
-    ep->srv = get_server(site, ep->p->from);
+    ep->srv = get_server(ep->site, ep->p->from);
     ep->p->refcnt = 1; /* Refcnt from other end is void here */
     MAY_DBG(FN; NDBG(ep->rfd.fd, d); NDBG(task_now(), f);
             COPY_AND_FREE_GOUT(dbg_pax_msg(ep->p)););
     receive_count[ep->p->op]++;
-    receive_bytes[ep->p->op] += (uint64_t)n + MSG_HDR_SIZE;
+    receive_bytes[ep->p->op] += n + MSG_HDR_SIZE;
     {
-      int behind = FALSE;
-      if (get_maxnodes(site) > 0) {
-        behind = ep->p->synode.msgno < delivered_msg.msgno;
+      if (get_maxnodes(ep->site) > 0) {
+        ep->behind = ep->p->synode.msgno < delivered_msg.msgno;
       }
-      ADD_EVENTS(add_event(string_arg("before dispatch "));
-                 add_synode_event(ep->p->synode);
-                 add_event(string_arg("ep->p->from"));
-                 add_event(int_arg(ep->p->from));
-                 add_event(string_arg(pax_op_to_str(ep->p->op)));
-                 add_event(string_arg(pax_msg_type_to_str(ep->p->msg_type)));
-                 add_event(string_arg("is_cached(ep->p->synode)"));
-                 add_event(int_arg(is_cached(ep->p->synode)));
-                 add_event(string_arg("behind")); add_event(int_arg(behind)););
+      ADD_EVENTS(
+          add_event(string_arg("before dispatch "));
+          add_synode_event(ep->p->synode); add_event(string_arg("ep->p->from"));
+          add_event(int_arg(ep->p->from));
+          add_event(string_arg(pax_op_to_str(ep->p->op)));
+          add_event(string_arg(pax_msg_type_to_str(ep->p->msg_type)));
+          add_event(string_arg("is_cached(ep->p->synode)"));
+          add_event(int_arg(is_cached(ep->p->synode)));
+          add_event(string_arg("behind")); add_event(int_arg(ep->behind)););
       /* Special treatment to see if synode number is valid. Return no-op if
        * not. */
       if (ep->p->op == read_op || ep->p->op == prepare_op ||
           ep->p->op == accept_op) {
-        if (site) {
+        if (ep->site) {
           ADD_EVENTS(add_event(string_arg("ep->p->synode"));
                      add_synode_event(ep->p->synode);
                      add_event(string_arg("site->start"));
                      add_synode_event(site->start);
                      add_event(string_arg("site->nodes.node_list_len"));
                      add_event(int_arg(site->nodes.node_list_len)););
-          if (ep->p->synode.node >= site->nodes.node_list_len) {
-            CREATE_REPLY(ep->p);
-            ref_msg(reply);
-            create_noop(reply);
-            set_learn_type(reply);
-            SERIALIZE_REPLY(reply);
-            delete_pax_msg(reply); /* Deallocate BEFORE potentially blocking
-                                      call which will lose value of reply */
+          if (ep->p->synode.node >= ep->site->nodes.node_list_len) {
+            {
+              CREATE_REPLY(ep->p);
+              create_noop(reply);
+              set_learn_type(reply);
+              SERIALIZE_REPLY(reply);
+              delete_pax_msg(reply); /* Deallocate BEFORE potentially blocking
+                                        call which will lose value of reply */
+            }
             WRITE_REPLY;
             goto again;
           }
@@ -3819,27 +4665,37 @@ again:
       if (ep->p->msg_type == normal ||
           ep->p->synode.msgno == 0 || /* Used by i-am-alive and so on */
           is_cached(ep->p->synode) || /* Already in cache */
-          (!behind)) { /* Guard against cache pollution from other nodes */
-        dispatch_op(site, ep->p, &ep->reply_queue);
+          (!ep->behind)) { /* Guard against cache pollution from other nodes */
+
+        if (should_poll_cache(ep->p->op)) {
+          pax_machine *pm;
+          TASK_CALL(wait_for_cache(&pm, ep->p->synode, 10));
+          if (!pm) continue;  // Could not get a machine, discarding message.
+        }
+
+        dispatch_op(ep->site, ep->p, &ep->reply_queue);
 
         /* Send replies on same fd */
         while (!link_empty(&ep->reply_queue)) {
-          msg_link *reply = (msg_link *)(link_extract_first(&ep->reply_queue));
-          MAY_DBG(FN; COPY_AND_FREE_GOUT(dbg_linkage(&ep->reply_queue));
-                  COPY_AND_FREE_GOUT(dbg_msg_link(reply));
-                  COPY_AND_FREE_GOUT(dbg_pax_msg(reply->p)););
-          assert(reply->p);
-          assert(reply->p->refcnt > 0);
-          SERIALIZE_REPLY(reply->p);
-          msg_link_delete(&reply); /* Deallocate BEFORE potentially blocking
-                                      call which will lose value of reply */
+          {
+            msg_link *reply =
+                (msg_link *)(link_extract_first(&ep->reply_queue));
+            MAY_DBG(FN; COPY_AND_FREE_GOUT(dbg_linkage(&ep->reply_queue));
+                    COPY_AND_FREE_GOUT(dbg_msg_link(reply));
+                    COPY_AND_FREE_GOUT(dbg_pax_msg(reply->p)););
+            assert(reply->p);
+            assert(reply->p->refcnt > 0);
+            SERIALIZE_REPLY(reply->p);
+            msg_link_delete(&reply); /* Deallocate BEFORE potentially blocking
+                                        call which will lose value of reply */
+          }
           WRITE_REPLY;
         }
       } else {
         DBGOUT(FN; STRLIT("rejecting "); STRLIT(pax_op_to_str(ep->p->op));
                NDBG(ep->p->from, d); NDBG(ep->p->to, d); SYCEXP(ep->p->synode);
                BALCEXP(ep->p->proposal));
-        if (xcom_booted() && behind) {
+        if (xcom_booted() && ep->behind) {
 #ifdef USE_EXIT_TYPE
           if (ep->p->op == prepare_op) {
             miss_prepare(ep->p, &ep->reply_queue);
@@ -3852,17 +4708,18 @@ again:
             DBGOUT(FN; STRLIT("send_die "); STRLIT(pax_op_to_str(ep->p->op));
                    NDBG(ep->p->from, d); NDBG(ep->p->to, d);
                    SYCEXP(ep->p->synode); BALCEXP(ep->p->proposal));
-            if (get_maxnodes(site) > 0) {
-              pax_msg *np = NULL;
-              np = pax_msg_new(ep->p->synode, site);
-              ref_msg(np);
-              np->op = die_op;
-              SERIALIZE_REPLY(np);
-              DBGOUT(FN; STRLIT("sending die_op to node "); NDBG(np->to, d);
-                     SYCEXP(executed_msg); SYCEXP(max_synode);
-                     SYCEXP(np->synode));
-              unref_msg(&np); /* Deallocate BEFORE potentially blocking call
-                                 which will lose value of np */
+            if (get_maxnodes(ep->site) > 0) {
+              {
+                pax_msg *np = NULL;
+                np = pax_msg_new(ep->p->synode, ep->site);
+                np->op = die_op;
+                SERIALIZE_REPLY(np);
+                DBGOUT(FN; STRLIT("sending die_op to node "); NDBG(np->to, d);
+                       SYCEXP(executed_msg); SYCEXP(max_synode);
+                       SYCEXP(np->synode));
+                delete_pax_msg(np); /* Deallocate BEFORE potentially blocking
+                                   call which will lose value of np */
+              }
               WRITE_REPLY;
             }
           }
@@ -3938,7 +4795,8 @@ int reply_handler_task(task_arg arg) {
             COPY_AND_FREE_GOUT(dbg_pax_msg(ep->reply)););
     receive_count[ep->reply->op]++;
 
-    /* Special test for need_snapshot, since node and site may not be consistent
+    /* Special test for need_snapshot, since node and site may not be
+     * consistent
      */
     if (ep->reply->op == need_boot_op) {
       pax_msg *p = ep->reply;
@@ -4054,6 +4912,36 @@ app_data_ptr init_config_with_group(app_data *a, node_list *nl, cargo_type type,
   return a;
 }
 
+app_data_ptr init_set_event_horizon_msg(app_data *a, uint32_t group_id,
+                                        xcom_event_horizon event_horizon) {
+  init_app_data(a);
+  a->app_key.group_id = a->group_id = group_id;
+  a->body.c_t = set_event_horizon_type;
+  a->body.app_u_u.event_horizon = event_horizon;
+  return a;
+}
+
+app_data_ptr init_get_event_horizon_msg(app_data *a, uint32_t group_id) {
+  init_app_data(a);
+  a->app_key.group_id = a->group_id = group_id;
+  a->body.c_t = get_event_horizon_type;
+  return a;
+}
+
+app_data_ptr init_app_msg(app_data *a, char *payload, u_int payload_size) {
+  init_app_data(a);
+  a->body.c_t = app_type;
+  a->body.app_u_u.data.data_val = payload; /* Takes ownership of payload. */
+  a->body.app_u_u.data.data_len = payload_size;
+  return a;
+}
+
+app_data_ptr init_terminate_command(app_data *a) {
+  init_app_data(a);
+  a->body.c_t = x_terminate_and_exit;
+  return a;
+}
+
 /* purecov: begin deadcode */
 app_data_ptr create_config_with_group(node_list *nl, cargo_type type,
                                       uint32_t group_id) {
@@ -4135,7 +5023,7 @@ static void server_push_log(server *srv, synode_no push, node_no node) {
       if (is_cached(push)) {
         /* Need to clone message here since pax_machine may be re-used while
          * message is sent */
-        pax_machine *p = get_cache_no_touch(push);
+        pax_machine *p = get_cache_no_touch(push, FALSE);
         if (pm_finished(p)) {
           pax_msg *pm = clone_pax_msg(p->learner.msg);
           ref_msg(pm);
@@ -4474,8 +5362,13 @@ void xcom_add_node(char *addr, xcom_port port, node_list *nl) {
 }
 
 void xcom_fsm_add_node(char *addr, node_list *nl) {
-  xcom_port node_port = xcom_get_port(addr);
-  char *node_addr = xcom_get_name(addr);
+  xcom_port node_port = 0;
+  char node_addr[IP_MAX_SIZE];
+
+  // We are not processing any error here since xcom_fsm_add_node does not
+  // have error processing. We will rely on error checking farther away from
+  // this execution.
+  get_ip_and_port(addr, node_addr, &node_port);
 
   if (xcom_mynode_match(node_addr, node_port)) {
     node_list x_nl;
@@ -4490,34 +5383,12 @@ void xcom_fsm_add_node(char *addr, node_list *nl) {
     a.nl = nl;
     XCOM_FSM(xa_add, void_arg(&a));
   }
-  free(node_addr);
 }
 /* purecov: end */
 
 void set_app_snap_handler(app_snap_handler x) { handle_app_snap = x; }
 
 void set_app_snap_getter(app_snap_getter x) { get_app_snap = x; }
-
-/* Initialize sockaddr based on server and port */
-static int init_sockaddr(char *server, struct sockaddr_in *sock_addr,
-                         socklen_t *sock_size, xcom_port port) {
-  /* Get address of server */
-  struct addrinfo *addr = 0;
-
-  checked_getaddrinfo(server, 0, 0, &addr);
-
-  if (addr == 0) {
-    return 0;
-  }
-
-  /* Copy first address */
-  memcpy(sock_addr, addr->ai_addr, addr->ai_addrlen);
-  *sock_size = (socklen_t)addr->ai_addrlen;
-  sock_addr->sin_port = htons(port);
-  freeaddrinfo(addr);
-
-  return 1;
-}
 
 static result checked_create_socket(int domain, int type, int protocol) {
   result retval = {0, 0};
@@ -4538,7 +5409,6 @@ static result checked_create_socket(int domain, int type, int protocol) {
     G_MESSAGE("Socket creation failed with error %d - %s.", retval.funerr,
               strerror(retval.funerr));
 #endif
-    abort();
   }
   return retval;
 }
@@ -4641,7 +5511,47 @@ static inline result xcom_shut_close_socket(int *sock) {
   ret_fd = -1;       \
   goto end
 
-static int timed_connect(int fd, sockaddr *sock_addr, socklen_t sock_size) {
+/*
+
+*/
+
+/**
+  @brief Retreives a node IPv4 address, if it exists.
+
+  If a node is v4 reachable, means one of two:
+  - The raw address is V4
+  - a name was resolved to a V4/V6 address
+
+  If the later is the case, we are going to prefer the first v4
+  address in the list, since it is the common language between
+  old and new version. If you want exclusive V6, please configure your
+  DNS server to serve V6 names
+
+  @param retrieved a previously retrieved struct addrinfo
+  @return struct addrinfo* An addrinfo of the first IPv4 address. Else it will
+                           return the entry parameter.
+ */
+struct addrinfo *does_node_have_v4_address(struct addrinfo *retrieved) {
+  struct addrinfo *cycle = NULL;
+
+  int v4_reachable = is_node_v4_reachable_with_info(retrieved);
+
+  if (v4_reachable) {
+    cycle = retrieved;
+    while (cycle) {
+      if (cycle->ai_family == AF_INET) {
+        return cycle;
+      }
+      cycle = cycle->ai_next;
+    }
+  }
+
+  // If something goes really wrong... we fallback to avoid crashes
+  return retrieved;
+}
+
+static int timed_connect(int fd, struct sockaddr *sock_addr,
+                         socklen_t sock_size) {
   int timeout = 10000;
   int ret_fd = fd;
   int syserr;
@@ -4743,45 +5653,66 @@ end:
 }
 
 /* Connect to server on given port */
+#ifdef XCOM_HAVE_OPENSSL
+static connection_descriptor *connect_xcom(char *server, xcom_port port,
+                                           bool use_ssl) {
+#else
 static connection_descriptor *connect_xcom(char *server, xcom_port port) {
+#endif
   result fd = {0, 0};
   result ret = {0, 0};
-  struct sockaddr_in sock_addr;
+  connection_descriptor *cd = NULL;
+  int error = 0;
   socklen_t sock_size;
   char buf[SYS_STRERROR_SIZE];
+  int v4_reachable = 0;
 
   DBGOUT(FN; STREXP(server); NEXP(port, d));
   G_DEBUG("connecting to %s %d", server, port);
-  /* Create socket */
-  if ((fd = checked_create_socket(AF_INET, SOCK_STREAM, 0)).val < 0) {
-    G_DEBUG("Error creating sockets.");
-    return NULL;
+
+  struct addrinfo *addr = NULL, *from_ns = NULL;
+
+  char buffer[20];
+  sprintf(buffer, "%d", port);
+
+  checked_getaddrinfo(server, buffer, 0, &from_ns);
+
+  if (from_ns == NULL) {
+    G_ERROR("Error retrieving server information.");
+    goto end;
   }
 
-  /* Get address of server */
-  if (!init_sockaddr(server, &sock_addr, &sock_size, port)) {
-    xcom_close_socket(&fd.val);
-    G_DEBUG("Error initializing socket addresses.");
-    return NULL;
+  addr = does_node_have_v4_address(from_ns);
+
+  /* Create socket after knowing the family that we are dealing with
+     getaddrinfo returns a list of possible addresses. We will alays default
+     to the first one in the list, which is V4 if applicable.
+   */
+  if ((fd = checked_create_socket(addr->ai_family, SOCK_STREAM, IPPROTO_TCP))
+          .val < 0) {
+    G_ERROR("Error creating socket in local GR->GCS connection to address %s.",
+            server);
+    goto end;
   }
 
   /* Connect socket to address */
 
   SET_OS_ERR(0);
-  if (timed_connect(fd.val, (struct sockaddr *)&sock_addr, sock_size) == -1) {
+
+  if (timed_connect(fd.val, addr->ai_addr, addr->ai_addrlen) == -1) {
     fd.funerr = to_errno(GET_OS_ERR);
     G_DEBUG(
-        "Connecting socket to address %s in port %d failed with error %d - %s.",
+        "Connecting socket to address %s in port %d failed with error %d - "
+        "%s.",
         server, port, fd.funerr, strerr_msg(buf, sizeof(buf), fd.funerr));
     xcom_close_socket(&fd.val);
-    return NULL;
+    goto end;
   }
   {
     int peer = 0;
     /* Sanity check before return */
     SET_OS_ERR(0);
-    ret.val = peer =
-        getpeername(fd.val, (struct sockaddr *)&sock_addr, &sock_size);
+    ret.val = peer = getpeername(fd.val, addr->ai_addr, &addr->ai_addrlen);
     ret.funerr = to_errno(GET_OS_ERR);
     if (peer >= 0) {
       ret = set_nodelay(fd.val);
@@ -4790,15 +5721,17 @@ static connection_descriptor *connect_xcom(char *server, xcom_port port) {
         xcom_shut_close_socket(&fd.val);
 #if defined(_WIN32)
         G_DEBUG(
-            "Setting node delay failed  while connecting to %s with error %d.",
+            "Setting node delay failed  while connecting to %s with error "
+            "%d.",
             server, ret.funerr);
 #else
         G_DEBUG(
-            "Setting node delay failed  while connecting to %s with error %d - "
+            "Setting node delay failed  while connecting to %s with error %d "
+            "- "
             "%s.",
             server, ret.funerr, strerror(ret.funerr));
 #endif
-        return NULL;
+        goto end;
       }
       G_DEBUG("client connected to %s %d fd %d", server, port, fd.val);
     } else {
@@ -4825,12 +5758,11 @@ static connection_descriptor *connect_xcom(char *server, xcom_port port) {
           "error %d -%s.",
           server, ret.funerr, strerror(ret.funerr));
 #endif
-      return NULL;
+      goto end;
     }
 
 #ifdef XCOM_HAVE_OPENSSL
-    if (xcom_use_ssl()) {
-      connection_descriptor *cd = 0;
+    if (use_ssl && xcom_use_ssl()) {
       SSL *ssl = SSL_new(client_ctx);
       G_DEBUG("Trying to connect using SSL.")
       SSL_set_fd(ssl, fd.val);
@@ -4846,7 +5778,8 @@ static connection_descriptor *connect_xcom(char *server, xcom_port port) {
         SSL_shutdown(ssl);
         SSL_free(ssl);
         xcom_shut_close_socket(&fd.val);
-        return NULL;
+
+        goto end;
       }
       DBGOUT(FN; STRLIT("ssl connected to "); STRLIT(server); NDBG(port, d);
              NDBG(fd.val, d); PTREXP(ssl));
@@ -4857,31 +5790,43 @@ static connection_descriptor *connect_xcom(char *server, xcom_port port) {
         SSL_shutdown(ssl);
         SSL_free(ssl);
         xcom_shut_close_socket(&fd.val);
-        return NULL;
+
+        goto end;
       }
 
       cd = new_connection(fd.val, ssl);
       set_connected(cd, CON_FD);
       G_DEBUG("Success connecting using SSL.")
-      return cd;
+
+      goto end;
     } else {
-      connection_descriptor *cd = new_connection(fd.val, 0);
+      cd = new_connection(fd.val, 0);
       set_connected(cd, CON_FD);
-      return cd;
+
+      goto end;
     }
 #else
     {
-      connection_descriptor *cd = new_connection(fd.val);
+      cd = new_connection(fd.val);
       set_connected(cd, CON_FD);
-      return cd;
+
+      goto end;
     }
 #endif
   }
+
+end:
+  if (from_ns) freeaddrinfo(from_ns);
+  return cd;
 }
 
 connection_descriptor *xcom_open_client_connection(char *server,
                                                    xcom_port port) {
+#ifdef XCOM_HAVE_OPENSSL
+  return connect_xcom(server, port, true);
+#else
   return connect_xcom(server, port);
+#endif
 }
 
 /* Send a protocol negotiation message on connection con */
@@ -4929,6 +5874,108 @@ static int xcom_recv_proto(connection_descriptor *rfd, xcom_proto *x_proto,
 
 enum { TAG_START = 313 };
 
+/**
+ * @brief Checks if a given app_data is from a given cargo_type.
+ *
+ * @param a the app_data
+ * @param t the cargo type
+ * @return int true (1) if app_data a is from cargo_type t
+ */
+
+static inline int is_cargo_type(app_data_ptr a, cargo_type t) {
+  return a ? (a->body.c_t == t) : 0;
+}
+
+/**
+ * @brief Retrieves the address that was used in the add_node request
+ *
+ * @param a app data containing the node to add
+ * @return char* a pointer to the address being added.
+ */
+static char *get_add_node_address(app_data_ptr a, unsigned int *member) {
+  if (!is_cargo_type(a, add_node_type)) return NULL;
+
+  char *retval = NULL;
+  if ((*member) < a->body.app_u_u.nodes.node_list_len) {
+    retval = a->body.app_u_u.nodes.node_list_val[(*member)].address;
+    (*member)++;
+  }
+
+  return retval;
+}
+
+int is_node_v4_reachable_with_info(struct addrinfo *retrieved_addr_info) {
+  int v4_reachable = 0;
+
+  // Verify if we are reachable either by V4 and by V6 with the provided
+  // address.
+  struct addrinfo *my_own_information_loop = NULL;
+
+  my_own_information_loop = retrieved_addr_info;
+  while (!v4_reachable && my_own_information_loop) {
+    if (my_own_information_loop->ai_family == AF_INET) {
+      v4_reachable = 1;
+    }
+    my_own_information_loop = my_own_information_loop->ai_next;
+  }
+
+  return v4_reachable;
+}
+
+int is_node_v4_reachable(char *node_address) {
+  int v4_reachable = 0;
+
+  // Verify if we are reachable either by V4 and by V6 with the provided
+  // address.
+  struct addrinfo *my_own_information = NULL;
+
+  checked_getaddrinfo(node_address, NULL, NULL, &my_own_information);
+  if (my_own_information == NULL) {
+    return v4_reachable;
+  }
+
+  v4_reachable = is_node_v4_reachable_with_info(my_own_information);
+
+  if (my_own_information) freeaddrinfo(my_own_information);
+
+  return v4_reachable;
+}
+
+int are_we_allowed_to_upgrade_to_v6(app_data_ptr a) {
+  // This should the address we used to present ourselves to other nodes.
+  unsigned int list_member = 0;
+  char *added_node = NULL;
+
+  int is_v4_reachable = 0;
+  while ((added_node = get_add_node_address(a, &list_member)) != NULL) {
+    xcom_port my_own_port;
+    char my_own_address[IP_MAX_SIZE];
+    int ip_and_port_error =
+        get_ip_and_port(added_node, my_own_address, &my_own_port);
+
+    if (ip_and_port_error) {
+      G_DEBUG("Error retrieving IP and Port information");
+      return 0;
+    }
+
+    // Verify if we are reachable either by V4 and by V6 with the provided
+    // address.
+    // This means that the other side won't be able to contact us since we
+    // do not provide a public V4 address
+    if (!(is_v4_reachable = is_node_v4_reachable(my_own_address))) {
+      G_ERROR(
+          "Unable to add node to a group of older nodes. Please "
+          "reconfigure "
+          "you local address to an IPv4 address or configure your DNS to "
+          "provide "
+          "an IPv4 address");
+      return 0;
+    }
+  }
+
+  return is_v4_reachable;
+}
+
 static int64_t xcom_send_client_app_data(connection_descriptor *fd,
                                          app_data_ptr a, int force) {
   pax_msg *msg = pax_msg_new(null_synode, 0);
@@ -4959,6 +6006,18 @@ static int64_t xcom_send_client_app_data(connection_descriptor *fd,
       retval = -1;
       goto end;
     }
+
+    // This code will check if, in case of an upgrade if:
+    // - We are a node able to speak IPv6.
+    // - If we are connecting to a group that does not speak IPv6.
+    // - If our address is IPv4-compatible in order for the old group to be able
+    // to contact us back.
+    if (is_cargo_type(a, add_node_type) && x_proto < minimum_ipv6_version() &&
+        !are_we_allowed_to_upgrade_to_v6(a)) {
+      retval = -1;
+      goto end;
+    }
+
     G_DEBUG("client connection will use protocol version %d", x_proto);
     DBGOUT(STRLIT("client connection will use protocol version ");
            NDBG(x_proto, u); STRLIT(xcom_proto_to_str(x_proto)));
@@ -4984,6 +6043,75 @@ end:
   XCOM_XDR_FREE(xdr_pax_msg, msg);
   return retval;
 }
+
+/* purecov: begin tested */
+/*
+ * Tested by TEST_F(XComMultinodeSmokeTest,
+ * 3_nodes_member_crashes_with_dieop_and_joins_again_immediately) GCS smoke test
+ */
+int64_t xcom_client_send_die(connection_descriptor *fd) {
+  uint32_t buflen = 0;
+  char *buf = 0;
+  int64_t retval = 0;
+  app_data a;
+  pax_msg *msg = pax_msg_new(null_synode, 0);
+
+  if (!proto_done(fd)) {
+    xcom_proto x_proto;
+    x_msg_type x_type;
+    unsigned int tag;
+    retval = xcom_send_proto(fd, my_xcom_version, x_version_req, TAG_START);
+    G_DEBUG("client sent negotiation request for protocol %d", my_xcom_version);
+    if (retval < 0) goto end;
+    retval = xcom_recv_proto(fd, &x_proto, &x_type, &tag);
+    if (retval < 0) goto end;
+    if (tag != TAG_START) {
+      retval = -1;
+      goto end;
+    }
+    if (x_type != x_version_reply) {
+      retval = -1;
+      goto end;
+    }
+
+    if (x_proto == x_unknown_proto) {
+      G_DEBUG("no common protocol, returning error");
+      retval = -1;
+      goto end;
+    }
+    G_DEBUG("client connection will use protocol version %d", x_proto);
+    DBGOUT(STRLIT("client connection will use protocol version ");
+           NDBG(x_proto, u); STRLIT(xcom_proto_to_str(x_proto)));
+    fd->x_proto = x_proto;
+    set_connected(fd, CON_PROTO);
+  }
+  init_app_data(&a);
+  a.body.c_t = app_type;
+  msg->a = &a;
+  msg->op = die_op;
+  /*
+    Set the msgno to a value that ensures the die_op will be processed by
+    XCom when it is received (it needs to be higher than the msgno of the
+    executed_msg, otherwise XCom will simply ignore it).
+   */
+  msg->synode.msgno = UINT64_MAX;
+
+  serialize_msg(msg, fd->x_proto, &buflen, &buf);
+  if (buflen) {
+    retval = socket_write(fd, buf, buflen);
+    if (buflen != retval) {
+      DBGOUT(FN; STRLIT("write failed "); NDBG(fd->fd, d); NDBG(buflen, d);
+             NDBG64(retval));
+    }
+    X_FREE(buf);
+  }
+  my_xdr_free((xdrproc_t)xdr_app_data, (char *)&a);
+end:
+  msg->a = 0;
+  XCOM_XDR_FREE(xdr_pax_msg, msg);
+  return retval > 0 && retval == buflen ? 1 : 0;
+}
+/* purecov: end */
 
 int64_t xcom_client_send_data(uint32_t size, char *data,
                               connection_descriptor *fd) {
@@ -5077,43 +6205,85 @@ int xcom_client_boot(connection_descriptor *fd, node_list *nl,
   return retval;
 }
 
-int xcom_send_app_wait(connection_descriptor *fd, app_data *a, int force) {
+enum xcom_send_app_wait_result {
+  SEND_REQUEST_FAILED = 0,
+  RECEIVE_REQUEST_FAILED,
+  REQUEST_BOTCHED,
+  RETRIES_EXCEEDED,
+  REQUEST_OK_RECEIVED,
+  REQUEST_FAIL_RECEIVED
+};
+typedef enum xcom_send_app_wait_result xcom_send_app_wait_result;
+
+/**
+ * Send a message and wait for response.
+ *
+ * The caller is reponsible for freeing p after calling this function,
+ * i.e. my_xdr_free((xdrproc_t)xdr_pax_msg, (char *)p)
+ */
+xcom_send_app_wait_result xcom_send_app_wait_and_get(connection_descriptor *fd,
+                                                     app_data *a, int force,
+                                                     pax_msg *p) {
   int retval = 0;
   int retry_count = 10;  // Same as 'connection_attempts'
-  pax_msg p;
   pax_msg *rp = 0;
 
   do {
     retval = (int)xcom_send_client_app_data(fd, a, force);
-    if (retval < 0) return 0;
-    memset(&p, 0, sizeof(p));
-    rp = socket_read_msg(fd, &p);
+    memset(p, 0, sizeof(*p));  // before return so caller can free p
+    if (retval < 0) return SEND_REQUEST_FAILED;
+    rp = socket_read_msg(fd, p);
     if (rp) {
       client_reply_code cli_err = rp->cli_err;
-      my_xdr_free((xdrproc_t)xdr_pax_msg, (char *)&p);
       switch (cli_err) {
         case REQUEST_OK:
-          return 1;
+          return REQUEST_OK_RECEIVED;
         case REQUEST_FAIL:
           G_DEBUG("cli_err %d", cli_err);
-          return 0;
+          return REQUEST_FAIL_RECEIVED;
         case REQUEST_RETRY:
+          if (retry_count > 1) my_xdr_free((xdrproc_t)xdr_pax_msg, (char *)p);
           G_DEBUG("cli_err %d", cli_err);
           xcom_sleep(1);
           break;
         default:
           G_WARNING("client protocol botched");
-          return 0;
+          return REQUEST_BOTCHED;
       }
     } else {
+      /*
+       * socket_read_msg frees p if deserialization went wrong.
+       * Make it safe for caller to free p.
+       */
+      memset(p, 0, sizeof(*p));
       G_WARNING("read failed");
-      return 0;
+      return RECEIVE_REQUEST_FAILED;
     }
   } while (--retry_count);
   // Timeout after REQUEST_RETRY has been received 'retry_count' times
   G_MESSAGE(
       "Request failed: maximum number of retries (10) has been exhausted.");
-  return 0;
+  return RETRIES_EXCEEDED;
+}
+
+int xcom_send_app_wait(connection_descriptor *fd, app_data *a, int force) {
+  pax_msg p;
+  int result = 0;
+  xcom_send_app_wait_result res = xcom_send_app_wait_and_get(fd, a, force, &p);
+  switch (res) {
+    case SEND_REQUEST_FAILED:
+    case RECEIVE_REQUEST_FAILED:
+    case REQUEST_BOTCHED:
+    case RETRIES_EXCEEDED:
+    case REQUEST_FAIL_RECEIVED:
+      result = 0;
+      break;
+    case REQUEST_OK_RECEIVED:
+      result = 1;
+      break;
+  }
+  my_xdr_free((xdrproc_t)xdr_pax_msg, (char *)&p);
+  return result;
 }
 
 int xcom_send_cfg_wait(connection_descriptor *fd, node_list *nl,
@@ -5129,12 +6299,55 @@ int xcom_send_cfg_wait(connection_descriptor *fd, node_list *nl,
 
 int xcom_client_add_node(connection_descriptor *fd, node_list *nl,
                          uint32_t group_id) {
+  u_int i;
+  for (i = 0; i < nl->node_list_len; i++) {
+    assert(nl->node_list_val[i].proto.max_proto > x_unknown_proto);
+  }
   return xcom_send_cfg_wait(fd, nl, group_id, add_node_type, 0);
 }
 
 int xcom_client_remove_node(connection_descriptor *fd, node_list *nl,
                             uint32_t group_id) {
   return xcom_send_cfg_wait(fd, nl, group_id, remove_node_type, 0);
+}
+
+int xcom_client_get_event_horizon(connection_descriptor *fd, uint32_t group_id,
+                                  xcom_event_horizon *event_horizon) {
+  pax_msg p;
+  app_data a;
+  int result = 0;
+
+  xcom_send_app_wait_result res = xcom_send_app_wait_and_get(
+      fd, init_get_event_horizon_msg(&a, group_id), 0, &p);
+
+  switch (res) {
+    case RECEIVE_REQUEST_FAILED:
+    case REQUEST_BOTCHED:
+    case RETRIES_EXCEEDED:
+    case SEND_REQUEST_FAILED:
+    case REQUEST_FAIL_RECEIVED:
+      result = 0;
+      break;
+    case REQUEST_OK_RECEIVED:
+      *event_horizon = p.event_horizon;
+      result = 1;
+      break;
+  }
+
+  my_xdr_free((xdrproc_t)xdr_pax_msg, (char *)&p);
+  my_xdr_free((xdrproc_t)xdr_app_data, (char *)&a);
+
+  return result;
+}
+
+int xcom_client_set_event_horizon(connection_descriptor *fd, uint32_t group_id,
+                                  xcom_event_horizon event_horizon) {
+  app_data a;
+  int retval = 0;
+  retval = xcom_send_app_wait(
+      fd, init_set_event_horizon_msg(&a, group_id, event_horizon), 0);
+  my_xdr_free((xdrproc_t)xdr_app_data, (char *)&a);
+  return retval;
 }
 
 #ifdef NOTDEF

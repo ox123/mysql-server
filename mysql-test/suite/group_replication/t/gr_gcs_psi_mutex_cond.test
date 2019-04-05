@@ -64,14 +64,14 @@
 SELECT * FROM performance_schema.setup_instruments WHERE (NAME LIKE "wait/synch/mutex/group_rpl/GCS_%" OR NAME LIKE "wait/synch/cond/group_rpl/GCS_%") ORDER BY NAME;
 
 
---let $assert_text= 'There should be 8 GCS instrumented cond entries in the cond_instances table after starting the GR'
---let $assert_cond= COUNT(*) = 8 FROM performance_schema.cond_instances WHERE NAME LIKE "wait/synch/cond/group_rpl/GCS_%"
+--let $assert_text= 'There should be 9 GCS instrumented cond entries in the cond_instances table after starting the GR'
+--let $assert_cond= COUNT(*) = 9 FROM performance_schema.cond_instances WHERE NAME LIKE "wait/synch/cond/group_rpl/GCS_%"
 --source include/assert.inc
 SELECT NAME FROM performance_schema.cond_instances WHERE NAME LIKE "wait/synch/cond/group_rpl/GCS_%" ORDER BY NAME;
 
 
---let $assert_text= 'There should be 18 GCS instrumented mutex entries in the mutex_instances table after starting the GR'
---let $assert_cond= COUNT(*) = 18 FROM performance_schema.mutex_instances WHERE NAME LIKE "wait/synch/mutex/group_rpl/GCS_%"
+--let $assert_text= 'There should be 12 GCS instrumented mutex entries in the mutex_instances table after starting the GR'
+--let $assert_cond= COUNT(*) = 12 FROM performance_schema.mutex_instances WHERE NAME LIKE "wait/synch/mutex/group_rpl/GCS_%"
 --source include/assert.inc
 SELECT NAME FROM performance_schema.mutex_instances WHERE NAME LIKE "wait/synch/mutex/group_rpl/GCS_%" ORDER BY NAME;
 

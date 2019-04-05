@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0,
@@ -22,8 +22,8 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
-#ifndef _XPL_CHALLENGE_RESPONSE_VERIFICATION_H_
-#define _XPL_CHALLENGE_RESPONSE_VERIFICATION_H_
+#ifndef PLUGIN_X_SRC_CHALLENGE_RESPONSE_VERIFICATION_H_
+#define PLUGIN_X_SRC_CHALLENGE_RESPONSE_VERIFICATION_H_
 
 #include <string>
 
@@ -46,8 +46,6 @@ class Challenge_response_verification
 
   const std::string &get_salt() const override { return k_salt; }
 
-  virtual ~Challenge_response_verification() = default;
-
  protected:
   const std::string k_salt;
   ngs::SHA256_password_cache_interface *m_sha256_password_cache;
@@ -61,4 +59,4 @@ class Challenge_response_verification
 
 }  // namespace xpl
 
-#endif  // _XPL_CHALLENGE_RESPONSE_VERIFICATION_H_
+#endif  // PLUGIN_X_SRC_CHALLENGE_RESPONSE_VERIFICATION_H_

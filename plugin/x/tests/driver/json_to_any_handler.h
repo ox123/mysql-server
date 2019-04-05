@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0,
@@ -22,17 +22,18 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
-#ifndef X_TESTS_DRIVER_JSON_TO_ANY_HANDLER_H_
-#define X_TESTS_DRIVER_JSON_TO_ANY_HANDLER_H_
+#ifndef PLUGIN_X_TESTS_DRIVER_JSON_TO_ANY_HANDLER_H_
+#define PLUGIN_X_TESTS_DRIVER_JSON_TO_ANY_HANDLER_H_
 
 #include <cstdint>
 #include <stack>
 
 #include "my_rapidjson_size_t.h"  // IWYU pragma: keep
+
+#include <rapidjson/document.h>
+#include <rapidjson/stringbuffer.h>
+#include <rapidjson/writer.h>
 #include "plugin/x/client/mysqlxclient/xmessage.h"
-#include "rapidjson/document.h"
-#include "rapidjson/stringbuffer.h"
-#include "rapidjson/writer.h"
 
 class Json_to_any_handler
     : public rapidjson::BaseReaderHandler<rapidjson::UTF8<>,
@@ -63,4 +64,4 @@ class Json_to_any_handler
   std::stack<Any *> m_stack;
 };
 
-#endif  // X_TESTS_DRIVER_JSON_TO_ANY_HANDLER_H_
+#endif  // PLUGIN_X_TESTS_DRIVER_JSON_TO_ANY_HANDLER_H_

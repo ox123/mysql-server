@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0,
@@ -14,7 +14,7 @@
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
  * GNU General Public License, version 2.0, for more details.
  *
  * You should have received a copy of the GNU General Public License
@@ -22,22 +22,48 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
-#ifndef XPL_RESULTSET_H_
-#define XPL_RESULTSET_H_
+#ifndef PLUGIN_X_SRC_XPL_RESULTSET_H_
+#define PLUGIN_X_SRC_XPL_RESULTSET_H_
 
+#include <vector>
+
+#include "plugin/x/ngs/include/ngs/interface/notice_output_queue_interface.h"
 #include "plugin/x/ngs/include/ngs/interface/resultset_interface.h"
 #include "plugin/x/src/buffering_command_delegate.h"
+#include "plugin/x/src/cursor_command_delegate.h"
 #include "plugin/x/src/streaming_command_delegate.h"
 
 namespace xpl {
 
 class Process_resultset : public ngs::Resultset_interface {
  public:
-  typedef Callback_command_delegate::Start_row_callback Start_row_callback;
-  typedef Callback_command_delegate::End_row_callback End_row_callback;
-  typedef Callback_command_delegate::Row_data Row;
-  Process_resultset(Start_row_callback start_row, End_row_callback end_row)
-      : m_callback_delegate(start_row, end_row) {}
+  using Row = Callback_command_delegate::Row_data;
+  using Field = Callback_command_delegate::Field_value;
+  using Field_list = std::vector<Field *>;
+  Process_resultset()
+      : m_callback_delegate(std::bind(&Process_resultset::start_row, this),
+                            std::bind(&Process_resultset::end_row, this,
+                                      std::placeholders::_1)) {}
+  ngs::Command_delegate &get_callbacks() override {
+    return m_callback_delegate;
+  }
+  const Info &get_info() const override {
+    return m_callback_delegate.get_info();
+  }
+
+ protected:
+  virtual Row *start_row() = 0;
+  virtual bool end_row(Row *) = 0;
+
+ private:
+  Callback_command_delegate m_callback_delegate;
+};
+
+class Empty_resultset : public ngs::Resultset_interface {
+ public:
+  Empty_resultset()
+      : m_callback_delegate(Callback_command_delegate::Start_row_callback(),
+                            Callback_command_delegate::End_row_callback()) {}
   ngs::Command_delegate &get_callbacks() override {
     return m_callback_delegate;
   }
@@ -49,18 +75,12 @@ class Process_resultset : public ngs::Resultset_interface {
   Callback_command_delegate m_callback_delegate;
 };
 
-class Empty_resultset : public Process_resultset {
- public:
-  Empty_resultset()
-      : Process_resultset(Start_row_callback(), End_row_callback()) {}
-};
-
 class Collect_resultset : public ngs::Resultset_interface {
  public:
-  typedef Buffering_command_delegate::Resultset Row_list;
-  typedef Buffering_command_delegate::Row_data Row;
-  typedef Buffering_command_delegate::Field_value Field;
-  typedef Buffering_command_delegate::Field_types Field_types;
+  using Row_list = Buffering_command_delegate::Resultset;
+  using Row = Buffering_command_delegate::Row_data;
+  using Field = Buffering_command_delegate::Field_value;
+  using Field_types = Buffering_command_delegate::Field_types;
 
   ngs::Command_delegate &get_callbacks() override {
     return m_buffering_delegate;
@@ -94,8 +114,9 @@ class Collect_resultset : public ngs::Resultset_interface {
 class Streaming_resultset : public ngs::Resultset_interface {
  public:
   Streaming_resultset(ngs::Protocol_encoder_interface *proto,
+                      ngs::Notice_output_queue_interface *notice_queue,
                       const bool compact_metadata)
-      : m_streaming_delegate(proto) {
+      : m_streaming_delegate(proto, notice_queue) {
     m_streaming_delegate.set_compact_metadata(compact_metadata);
   }
   ngs::Command_delegate &get_callbacks() override {
@@ -109,6 +130,22 @@ class Streaming_resultset : public ngs::Resultset_interface {
   Streaming_command_delegate m_streaming_delegate;
 };
 
+class Cursor_resultset : public ngs::Resultset_interface {
+ public:
+  Cursor_resultset(ngs::Protocol_encoder_interface *proto,
+                   ngs::Notice_output_queue_interface *notice_queue,
+                   const bool compact_metadata,
+                   const bool ignore_fetch_suspended)
+      : m_cursor_delegate(proto, notice_queue, ignore_fetch_suspended) {
+    m_cursor_delegate.set_compact_metadata(compact_metadata);
+  }
+  ngs::Command_delegate &get_callbacks() override { return m_cursor_delegate; }
+  const Info &get_info() const override { return m_cursor_delegate.get_info(); }
+
+ private:
+  Cursor_command_delegate m_cursor_delegate;
+};
+
 }  // namespace xpl
 
-#endif  // XPL_RESULTSET_H_
+#endif  // PLUGIN_X_SRC_XPL_RESULTSET_H_

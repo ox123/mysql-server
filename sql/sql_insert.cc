@@ -45,6 +45,7 @@
 #include "my_sys.h"
 #include "my_table_map.h"
 #include "my_thread_local.h"
+#include "mysql/psi/mysql_table.h"
 #include "mysql/psi/psi_base.h"
 #include "mysql/service_mysql_alloc.h"
 #include "mysql/udf_registration_types.h"
@@ -89,7 +90,6 @@
 #include "sql/sql_resolver.h"   // validate_gc_assignment
 #include "sql/sql_show.h"       // store_create_info
 #include "sql/sql_table.h"      // quick_rm_table
-#include "sql/sql_tmp_table.h"  // create_tmp_field
 #include "sql/sql_update.h"     // records_are_comparable
 #include "sql/sql_view.h"       // check_key_in_view
 #include "sql/system_variables.h"
@@ -907,6 +907,66 @@ static void prepare_for_positional_update(TABLE *table, TABLE_LIST *tables) {
   return;
 }
 
+static bool allocate_column_bitmap(TABLE *table, MY_BITMAP **bitmap) {
+  DBUG_ENTER("allocate_column_bitmap");
+  const uint number_bits = table->s->fields;
+  MY_BITMAP *the_struct;
+  my_bitmap_map *the_bits;
+
+  DBUG_ASSERT(current_thd == table->in_use);
+  if (multi_alloc_root(table->in_use->mem_root, &the_struct, sizeof(MY_BITMAP),
+                       &the_bits, bitmap_buffer_size(number_bits),
+                       NULL) == NULL)
+    DBUG_RETURN(true);
+
+  if (bitmap_init(the_struct, the_bits, number_bits, false) != 0)
+    DBUG_RETURN(true);
+
+  *bitmap = the_struct;
+
+  DBUG_RETURN(false);
+}
+
+bool get_default_columns(TABLE *table, MY_BITMAP **m_function_default_columns) {
+  if (allocate_column_bitmap(table, m_function_default_columns)) return true;
+  /*
+    Find columns with function default on insert or update, mark them in
+    bitmap.
+  */
+  for (uint i = 0; i < table->s->fields; ++i) {
+    Field *f = table->field[i];
+    // if it's a default expression
+    if (f->has_insert_default_general_value_expression()) {
+      bitmap_set_bit(*m_function_default_columns, f->field_index);
+    }
+  }
+
+  // Remove from map the fields that are explicitly specified
+  bitmap_subtract(*m_function_default_columns, table->write_set);
+
+  // If no bit left exit
+  if (bitmap_is_clear_all(*m_function_default_columns)) return false;
+
+  // For each default function that is used restore the flags
+  for (uint i = 0; i < table->s->fields; ++i) {
+    Field *f = table->field[i];
+    if (bitmap_is_set(*m_function_default_columns, i)) {
+      DBUG_ASSERT(f->m_default_val_expr != nullptr);
+      // restore binlog safety flags
+      table->in_use->lex->set_stmt_unsafe_flags(
+          f->m_default_val_expr->get_stmt_unsafe_flags());
+      // Mark the columns the expression reads in the table's read_set
+      for (uint j = 0; j < table->s->fields; j++) {
+        if (bitmap_is_set(&f->m_default_val_expr->base_columns_map, j)) {
+          bitmap_set_bit(table->read_set, j);
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
 /**
   Prepare items in INSERT statement
 
@@ -1042,9 +1102,17 @@ bool Sql_cmd_insert_base::prepare_inner(THD *thd) {
 
   TABLE *const insert_table = lex->insert_table_leaf->table;
 
-  const uint field_count = insert_field_list.elements
-                               ? insert_field_list.elements
-                               : insert_table->s->fields;
+  uint field_count = insert_field_list.elements ? insert_field_list.elements
+                                                : insert_table->s->fields;
+
+  // If the SQL command was an INSERT without column list (like
+  //  "INSERT INTO foo VALUES (1, 2);", we ignore any columns that is hidden
+  // from the user.
+  if (insert_field_list.elements == 0) {
+    for (uint i = 0; i < insert_table->s->fields; ++i) {
+      if (insert_table->s->field[i]->is_hidden_from_user()) field_count--;
+    }
+  }
 
   table_map map = lex->insert_table_leaf->map();
 
@@ -1078,7 +1146,8 @@ bool Sql_cmd_insert_base::prepare_inner(THD *thd) {
     if (check_valid_table_refs(table_list, *values, map))
       DBUG_RETURN(true); /* purecov: inspected */
 
-    if (insert_table->has_gcol() &&
+    if ((insert_table->has_gcol() ||
+         insert_table->gen_def_fields_ptr != nullptr) &&
         validate_gc_assignment(&insert_field_list, values, insert_table))
       DBUG_RETURN(true);
   }
@@ -1098,6 +1167,9 @@ bool Sql_cmd_insert_base::prepare_inner(THD *thd) {
   if ((insert_into_view || insert_field_list.elements == 0) &&
       (select_insert || value_count > 0))
     bitmap_set_all(insert_table->write_set);
+
+  MY_BITMAP *function_default_columns = nullptr;
+  get_default_columns(insert_table, &function_default_columns);
 
   if (duplicates == DUP_UPDATE) {
     // Setup the columns to be updated
@@ -1195,7 +1267,7 @@ bool Sql_cmd_insert_base::prepare_inner(THD *thd) {
       lex->set_stmt_unsafe(LEX::BINLOG_STMT_UNSAFE_REPLACE_SELECT);
 
     result = new (thd->mem_root) Query_result_insert(
-        thd, table_list, insert_table, &insert_field_list, &insert_field_list,
+        table_list, insert_table, &insert_field_list, &insert_field_list,
         &update_field_list, &update_value_list, duplicates);
     if (result == NULL) DBUG_RETURN(true); /* purecov: inspected */
 
@@ -1232,7 +1304,7 @@ bool Sql_cmd_insert_base::prepare_inner(THD *thd) {
       DBUG_RETURN(true);
     }
 
-    if (insert_table->has_gcol() &&
+    if ((insert_table->has_gcol() || insert_table->gen_def_fields_ptr) &&
         validate_gc_assignment(&insert_field_list,
                                unit->get_unit_column_types(), insert_table))
       DBUG_RETURN(true);
@@ -1522,7 +1594,7 @@ bool write_record(THD *thd, TABLE *table, COPY_INFO *info, COPY_INFO *update) {
   save_read_set = table->read_set;
   save_write_set = table->write_set;
 
-  info->set_function_defaults(table);
+  if (info->set_function_defaults(table)) DBUG_RETURN(true);
 
   const enum_duplicates duplicate_handling = info->get_duplicate_handling();
 
@@ -1599,13 +1671,6 @@ bool write_record(THD *thd, TABLE *table, COPY_INFO *info, COPY_INFO *update) {
         and we shouldn't try to locate key info.
       */
       else if (key_nr < MAX_KEY) {
-        if (table->file->extra(
-                HA_EXTRA_FLUSH_CACHE)) /* Not needed with NISAM */
-        {
-          error = my_errno();
-          goto err;
-        }
-
         if (!key) {
           if (!(key = (char *)my_safe_alloca(table->s->max_unique_length,
                                              MAX_KEY_LENGTH))) {
@@ -1899,7 +1964,8 @@ bool check_that_all_fields_are_given_values(THD *thd, TABLE *entry,
 
   for (Field **field = entry->field; *field; field++) {
     if (!bitmap_is_set(write_set, (*field)->field_index) &&
-        ((*field)->flags & NO_DEFAULT_VALUE_FLAG) &&
+        (((*field)->flags & NO_DEFAULT_VALUE_FLAG) &&
+         ((*field)->m_default_val_expr == nullptr)) &&
         ((*field)->real_type() != MYSQL_TYPE_ENUM)) {
       bool view = false;
       if (table_list) {
@@ -1929,7 +1995,7 @@ bool check_that_all_fields_are_given_values(THD *thd, TABLE *entry,
   return thd->is_error();
 }
 
-bool Query_result_insert::prepare(List<Item> &, SELECT_LEX_UNIT *u) {
+bool Query_result_insert::prepare(THD *thd, List<Item> &, SELECT_LEX_UNIT *u) {
   DBUG_ENTER("Query_result_insert::prepare");
 
   LEX *const lex = thd->lex;
@@ -1986,7 +2052,7 @@ bool Query_result_insert::prepare(List<Item> &, SELECT_LEX_UNIT *u) {
   @returns false always
 */
 
-bool Query_result_insert::start_execution() {
+bool Query_result_insert::start_execution(THD *thd) {
   DBUG_ENTER("Query_result_insert::start_execution");
   if (thd->locked_tables_mode <= LTM_LOCK_TABLES && !thd->lex->is_explain()) {
     DBUG_ASSERT(!bulk_insert_started);
@@ -1997,7 +2063,7 @@ bool Query_result_insert::start_execution() {
   DBUG_RETURN(false);
 }
 
-void Query_result_insert::cleanup() {
+void Query_result_insert::cleanup(THD *thd) {
   DBUG_ENTER("Query_result_insert::cleanup");
   if (table) {
     table->next_number_field = 0;
@@ -2008,17 +2074,12 @@ void Query_result_insert::cleanup() {
   DBUG_VOID_RETURN;
 }
 
-bool Query_result_insert::send_data(List<Item> &values) {
+bool Query_result_insert::send_data(THD *thd, List<Item> &values) {
   DBUG_ENTER("Query_result_insert::send_data");
   bool error = 0;
 
-  if (unit->offset_limit_cnt) {  // using limit offset,count
-    unit->offset_limit_cnt--;
-    DBUG_RETURN(false);
-  }
-
   thd->check_for_truncated_fields = CHECK_FIELD_WARN;
-  store_values(values);
+  store_values(thd, values);
   thd->check_for_truncated_fields = CHECK_FIELD_ERROR_FOR_NULL;
   if (thd->is_error()) {
     table->auto_increment_field_not_null = false;
@@ -2067,7 +2128,7 @@ bool Query_result_insert::send_data(List<Item> &values) {
   DBUG_RETURN(error);
 }
 
-void Query_result_insert::store_values(List<Item> &values) {
+void Query_result_insert::store_values(THD *thd, List<Item> &values) {
   if (fields->elements) {
     restore_record(table, s->default_values);
     if (!validate_default_values_of_unset_fields(thd, table))
@@ -2080,7 +2141,7 @@ void Query_result_insert::store_values(List<Item> &values) {
   check_that_all_fields_are_given_values(thd, table, table_list);
 }
 
-void Query_result_insert::send_error(uint errcode, const char *err) {
+void Query_result_insert::send_error(THD *, uint errcode, const char *err) {
   DBUG_ENTER("Query_result_insert::send_error");
 
   my_message(errcode, err, MYF(0));
@@ -2092,7 +2153,7 @@ bool Query_result_insert::stmt_binlog_is_trans() const {
   return table->file->has_transactions();
 }
 
-bool Query_result_insert::send_eof() {
+bool Query_result_insert::send_eof(THD *thd) {
   int error;
   ulonglong id, row_count;
   bool changed MY_ATTRIBUTE((unused));
@@ -2191,7 +2252,7 @@ bool Query_result_insert::send_eof() {
   DBUG_RETURN(false);
 }
 
-void Query_result_insert::abort_result_set() {
+void Query_result_insert::abort_result_set(THD *thd) {
   DBUG_ENTER("Query_result_insert::abort_result_set");
   /*
     If the creation of the table failed (due to a syntax error, for
@@ -2320,69 +2381,10 @@ static TABLE *create_table_from_items(THD *thd, HA_CREATE_INFO *create_info,
     promote_first_timestamp_column(&alter_info->create_list);
 
   while ((item = it++)) {
-    Field *tmp_table_field;
-    if (item->type() == Item::FUNC_ITEM) {
-      if (item->result_type() != STRING_RESULT)
-        tmp_table_field = item->tmp_table_field(&tmp_table);
-      else
-        tmp_table_field =
-            item->tmp_table_field_from_field_type(&tmp_table, false);
-    } else {
-      Field *from_field, *default_field;
-      tmp_table_field = create_tmp_field(thd, &tmp_table, item, item->type(),
-                                         NULL, &from_field, &default_field,
-                                         false, false, false, false);
+    Create_field *cr_field = generate_create_field(thd, item, &tmp_table);
+    if (cr_field == nullptr) {
+      DBUG_RETURN(nullptr); /* purecov: deadcode */
     }
-
-    if (!tmp_table_field) DBUG_RETURN(NULL);
-
-    Field *table_field;
-
-    switch (item->type()) {
-      /*
-        We have to take into account both the real table's fields and
-        pseudo-fields used in trigger's body. These fields are used
-        to copy defaults values later inside constructor of
-        the class Create_field.
-      */
-      case Item::FIELD_ITEM:
-      case Item::TRIGGER_FIELD_ITEM:
-        table_field = ((Item_field *)item)->field;
-        break;
-      default:
-        table_field = NULL;
-    }
-
-    DBUG_ASSERT(tmp_table_field->gcol_info == NULL &&
-                tmp_table_field->stored_in_db);
-    Create_field *cr_field =
-        new (*THR_MALLOC) Create_field(tmp_table_field, table_field);
-
-    if (!cr_field) DBUG_RETURN(NULL);
-
-    // Mark if collation was specified explicitly by user for the column.
-    if (item->type() == Item::FIELD_ITEM) {
-      TABLE *table = table_field->orig_table;
-      DBUG_ASSERT(table);
-      const dd::Table *table_obj =
-          table->s->tmp_table ? table->s->tmp_table_def : nullptr;
-
-      if (!table_obj && table->s->table_category != TABLE_UNKNOWN_CATEGORY) {
-        dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
-
-        if (thd->dd_client()->acquire(table->s->db.str,
-                                      table->s->table_name.str, &table_obj))
-          DBUG_RETURN(NULL);
-      }
-
-      cr_field->is_explicit_collation = false;
-      if (table_obj) {
-        const dd::Column *c = table_obj->get_column(table_field->field_name);
-        if (c) cr_field->is_explicit_collation = c->is_explicit_collation();
-      }
-    }
-
-    if (item->maybe_null) cr_field->flags &= ~NOT_NULL_FLAG;
 
     alter_info->create_list.push_back(cr_field);
   }
@@ -2480,14 +2482,13 @@ static TABLE *create_table_from_items(THD *thd, HA_CREATE_INFO *create_info,
   DBUG_RETURN(table);
 }
 
-Query_result_create::Query_result_create(THD *thd, TABLE_LIST *table_arg,
+Query_result_create::Query_result_create(TABLE_LIST *table_arg,
                                          HA_CREATE_INFO *create_info_par,
                                          Alter_info *alter_info_arg,
                                          List<Item> &select_fields,
                                          enum_duplicates duplic,
                                          TABLE_LIST *select_tables_arg)
-    : Query_result_insert(thd,
-                          NULL,  // table_list_par
+    : Query_result_insert(NULL,  // table_list_par
                           NULL,  // table_par
                           NULL,  // target_columns
                           &select_fields,
@@ -2504,13 +2505,15 @@ Query_result_create::Query_result_create(THD *thd, TABLE_LIST *table_arg,
 /**
   Create the new table from the selected items.
 
+  @param thd     Thread handle.
   @param values  List of items to be used as new columns
   @param u       Select
 
   @returns false if success, true if error.
 */
 
-bool Query_result_create::prepare(List<Item> &values, SELECT_LEX_UNIT *u) {
+bool Query_result_create::prepare(THD *thd, List<Item> &values,
+                                  SELECT_LEX_UNIT *u) {
   DBUG_ENTER("Query_result_create::prepare");
 
   unit = u;
@@ -2553,7 +2556,7 @@ bool Query_result_create::prepare(List<Item> &values, SELECT_LEX_UNIT *u) {
   @returns false if success, true if error
 */
 
-bool Query_result_create::start_execution() {
+bool Query_result_create::start_execution(THD *thd) {
   DBUG_ENTER("Query_result_create::start_execution");
   DEBUG_SYNC(thd, "create_table_select_before_lock");
 
@@ -2567,7 +2570,7 @@ bool Query_result_create::start_execution() {
     the table) and thus can't get aborted.
   */
   if (!(extra_lock = mysql_lock_tables(thd, &table, 1, 0)) ||
-      binlog_show_create_table()) {
+      binlog_show_create_table(thd)) {
     if (extra_lock) {
       mysql_unlock_tables(thd, extra_lock);
       extra_lock = 0;
@@ -2626,7 +2629,6 @@ bool Query_result_create::start_execution() {
   thd->check_for_truncated_fields = save_check_for_truncated_fields;
 
   table->mark_columns_needed_for_insert(thd);
-  table->file->extra(HA_EXTRA_WRITE_CACHE);
   DBUG_RETURN(false);
 }
 
@@ -2649,7 +2651,7 @@ bool Query_result_create::start_execution() {
   statement until the statement has finished.
 */
 
-int Query_result_create::binlog_show_create_table() {
+int Query_result_create::binlog_show_create_table(THD *thd) {
   DBUG_ENTER("Query_result_create::binlog_show_create_table");
 
   TABLE_LIST *save_next_global = create_table->next_global;
@@ -2718,12 +2720,12 @@ int Query_result_create::binlog_show_create_table() {
   DBUG_RETURN(result);
 }
 
-void Query_result_create::store_values(List<Item> &values) {
+void Query_result_create::store_values(THD *thd, List<Item> &values) {
   fill_record_n_invoke_before_triggers(thd, field, values, table,
                                        TRG_EVENT_INSERT, table->s->fields);
 }
 
-void Query_result_create::send_error(uint errcode, const char *err) {
+void Query_result_create::send_error(THD *thd, uint errcode, const char *err) {
   DBUG_ENTER("Query_result_create::send_error");
 
   DBUG_PRINT("info",
@@ -2744,7 +2746,7 @@ void Query_result_create::send_error(uint errcode, const char *err) {
 
   */
   Disable_binlog_guard binlog_guard(thd);
-  Query_result_insert::send_error(errcode, err);
+  Query_result_insert::send_error(thd, errcode, err);
 
   DBUG_VOID_RETURN;
 }
@@ -2757,7 +2759,7 @@ bool Query_result_create::stmt_binlog_is_trans() const {
   return (table->s->db_type()->flags & HTON_SUPPORTS_ATOMIC_DDL);
 }
 
-bool Query_result_create::send_eof() {
+bool Query_result_create::send_eof(THD *thd) {
   /*
     The routine that writes the statement in the binary log
     is in Query_result_insert::send_eof(). For that reason, we
@@ -2783,7 +2785,8 @@ bool Query_result_create::send_eof() {
     if ((!dd::get_dictionary()->is_dd_table_name(create_table->db,
                                                  create_table->table_name) &&
          collect_fk_children(thd, create_table->db, create_table->table_name,
-                             create_info->db_type, &mdl_requests)) ||
+                             create_info->db_type, MDL_EXCLUSIVE,
+                             &mdl_requests)) ||
         collect_fk_parents_for_new_fks(thd, create_table->db,
                                        create_table->table_name, alter_info,
                                        MDL_EXCLUSIVE, create_info->db_type,
@@ -2836,9 +2839,9 @@ bool Query_result_create::send_eof() {
                                                 &uncommitted_tables);
   }
 
-  if (!error) error = Query_result_insert::send_eof();
+  if (!error) error = Query_result_insert::send_eof(thd);
   if (error)
-    abort_result_set();
+    abort_result_set(thd);
   else {
     bool commit_error = false;
     /*
@@ -2891,7 +2894,7 @@ bool Query_result_create::send_eof() {
         and a data lock on it, if any, has been released.
 */
 
-void Query_result_create::drop_open_table() {
+void Query_result_create::drop_open_table(THD *thd) {
   DBUG_ENTER("Query_result_create::drop_open_table");
 
   if (table->s->tmp_table) {
@@ -2940,11 +2943,19 @@ void Query_result_create::drop_open_table() {
       quick_rm_table(thd, table_type, create_table->db,
                      create_table->table_name, 0);
     }
+#ifdef HAVE_PSI_TABLE_INTERFACE
+    else {
+      /* quick_rm_table() was not called, so remove the P_S table share here. */
+      PSI_TABLE_CALL(drop_table_share)
+      (false, create_table->db, strlen(create_table->db),
+       create_table->table_name, strlen(create_table->table_name));
+    }
+#endif
   }
   DBUG_VOID_RETURN;
 }
 
-void Query_result_create::abort_result_set() {
+void Query_result_create::abort_result_set(THD *thd) {
   DBUG_ENTER("Query_result_create::abort_result_set");
 
   /*
@@ -2964,7 +2975,7 @@ void Query_result_create::abort_result_set() {
   */
   {
     Disable_binlog_guard binlog_guard(thd);
-    Query_result_insert::abort_result_set();
+    Query_result_insert::abort_result_set(thd);
     thd->get_transaction()->reset_unsafe_rollback_flags(Transaction_ctx::STMT);
   }
   /* possible error of writing binary log is ignored deliberately */
@@ -2978,7 +2989,7 @@ void Query_result_create::abort_result_set() {
 
   if (table) {
     table->auto_increment_field_not_null = false;
-    drop_open_table();
+    drop_open_table(thd);
     table = 0;  // Safety
   }
 
@@ -2995,4 +3006,34 @@ void Query_result_create::abort_result_set() {
   }
 
   DBUG_VOID_RETURN;
+}
+
+bool Sql_cmd_insert_base::accept(THD *thd, Select_lex_visitor *visitor) {
+  // Columns
+  if (insert_field_list.elements) {
+    List_iterator<Item> it_field(insert_field_list);
+    while (Item *field = it_field++)
+      if (walk_item(field, visitor)) return true;
+  }
+
+  if (insert_many_values.elements > 0) {
+    // INSERT...VALUES statement
+    List_iterator<List_item> it_row(insert_many_values);
+    while (List_item *row = it_row++) {
+      List_iterator<Item> it_col(*row);
+      while (Item *item = it_col++)
+        if (walk_item(item, visitor)) return true;
+    }
+  } else {
+    // INSERT...SELECT statement
+    if (thd->lex->select_lex->accept(visitor)) return true;
+  }
+
+  // Update list (on duplicate update)
+  List_iterator<Item> it_value(update_value_list), it_column(update_field_list);
+  Item *value, *column;
+  while ((column = it_column++) && (value = it_value++))
+    if (walk_item(column, visitor) || walk_item(value, visitor)) return true;
+
+  return visitor->visit(thd->lex->select_lex);
 }

@@ -275,7 +275,7 @@ static bool handle_bootstrap_impl(THD *thd) {
 
     // Ignore ER_TOO_LONG_KEY for system tables.
     thd->push_internal_handler(&error_handler);
-    mysql_parse(thd, &parser_state);
+    mysql_parse(thd, &parser_state, true);
     thd->pop_internal_handler();
 
     bootstrap_error = thd->is_error();
@@ -328,12 +328,13 @@ static void *handle_bootstrap(void *arg) {
 
   /* The following must be called before DBUG_ENTER */
   thd->thread_stack = (char *)&thd;
-  if (my_thread_init() || thd->store_globals()) {
+  if (my_thread_init()) {
     close_connection(thd, ER_OUT_OF_RESOURCES);
-    thd->fatal_error();
     bootstrap_error = true;
     thd->get_protocol_classic()->end_net();
+    thd->release_resources();
   } else {
+    thd->store_globals();
     Global_THD_manager *thd_manager = Global_THD_manager::get_instance();
     thd_manager->add_thd(thd);
 
@@ -389,6 +390,16 @@ bool run_bootstrap_thread(MYSQL_FILE *file, bootstrap_functor boot_handler,
   pthread_attr_setscope(&thr_attr, PTHREAD_SCOPE_SYSTEM);
 #endif
   my_thread_attr_setdetachstate(&thr_attr, MY_THREAD_CREATE_JOINABLE);
+
+  // Default stack size may be too small.
+  size_t stacksize = 0;
+  my_thread_attr_getstacksize(&thr_attr, &stacksize);
+  if (stacksize < my_thread_stack_size) {
+    if (0 != my_thread_attr_setstacksize(&thr_attr, my_thread_stack_size)) {
+      DBUG_ASSERT(false);
+    }
+  }
+
   my_thread_handle thread_handle;
   // What about setting THD::real_id?
   int error = mysql_thread_create(key_thread_bootstrap, &thread_handle,
@@ -396,7 +407,8 @@ bool run_bootstrap_thread(MYSQL_FILE *file, bootstrap_functor boot_handler,
   if (error) {
     /* purecov: begin inspected */
     LogErr(WARNING_LEVEL, ER_BOOTSTRAP_CANT_THREAD, errno).os_errno(errno);
-
+    thd->release_resources();
+    delete thd;
     DBUG_RETURN(true);
     /* purecov: end */
   }

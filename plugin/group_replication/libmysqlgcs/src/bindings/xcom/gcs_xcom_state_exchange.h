@@ -33,9 +33,10 @@
 #include "plugin/group_replication/libmysqlgcs/include/mysql/gcs/gcs_communication_interface.h"
 #include "plugin/group_replication/libmysqlgcs/include/mysql/gcs/gcs_message.h"
 #include "plugin/group_replication/libmysqlgcs/include/mysql/gcs/gcs_view.h"
+#include "plugin/group_replication/libmysqlgcs/include/mysql/gcs/xplatform/my_xp_cond.h"
+#include "plugin/group_replication/libmysqlgcs/include/mysql/gcs/xplatform/my_xp_mutex.h"
 #include "plugin/group_replication/libmysqlgcs/src/bindings/xcom/gcs_internal_message.h"
 #include "plugin/group_replication/libmysqlgcs/src/bindings/xcom/gcs_xcom_group_member_information.h"
-#include "plugin/group_replication/libmysqlgcs/src/bindings/xcom/gcs_xcom_utils.h"
 #include "plugin/group_replication/libmysqlgcs/src/bindings/xcom/gcs_xcom_view_identifier.h"
 #include "plugin/group_replication/libmysqlgcs/xdr_gen/xcom_vp.h"
 
@@ -180,7 +181,7 @@ class Xcom_member_state {
 };
 
 /**
-  @interface gcs_xcom_state_exchange_interface
+  @class gcs_xcom_state_exchange_interface
 
   Interface that defines the operations that state exchange will provide.
   In what follows, we describe how the state exchange algorithm works and
@@ -248,7 +249,7 @@ class Xcom_member_state {
 */
 class Gcs_xcom_state_exchange_interface {
  public:
-  virtual ~Gcs_xcom_state_exchange_interface(){};
+  virtual ~Gcs_xcom_state_exchange_interface() {}
 
   /**
     Accomplishes all necessary initialization steps.
@@ -306,13 +307,29 @@ class Gcs_xcom_state_exchange_interface {
 
     @param[in] ms_info received Member State
     @param[in] p_id the node that the Member State pertains
+    @param[in] protocol_version protocol version in use by a member during the
+               state exchange phase
 
     @return true if State Exchanged is to be finished and the view can be
                  installed
   */
 
   virtual bool process_member_state(Xcom_member_state *ms_info,
-                                    const Gcs_member_identifier &p_id) = 0;
+                                    const Gcs_member_identifier &p_id,
+                                    const unsigned int protocol_version) = 0;
+
+  /*
+   Compute the greatest common protocol version among members using the
+   information that was gathered during the state exchange phase and determine
+   the nodes that cannot remain as members because they have a protocol version
+   that may not be compatible with the current protocol version in use by the
+   group.
+
+   @return the set of members that has a protocol version that is less than
+           possible version accepted by the group.
+   */
+  virtual std::vector<Gcs_member_identifier>
+  compute_incompatible_protocol_members() = 0;
 
   /**
     Retrieves the new view identifier after a State Exchange.
@@ -388,7 +405,10 @@ class Gcs_xcom_state_exchange : public Gcs_xcom_state_exchange_interface {
                       const Gcs_member_identifier &local_info);
 
   bool process_member_state(Xcom_member_state *ms_info,
-                            const Gcs_member_identifier &p_id);
+                            const Gcs_member_identifier &p_id,
+                            const unsigned int protocol_version);
+
+  std::vector<Gcs_member_identifier> compute_incompatible_protocol_members();
 
   Gcs_xcom_view_identifier *get_new_view_id();
 
@@ -448,6 +468,17 @@ class Gcs_xcom_state_exchange : public Gcs_xcom_state_exchange_interface {
   void fill_member_set(std::vector<Gcs_member_identifier *> &in,
                        std::set<Gcs_member_identifier *> &pset);
 
+  /**
+   * Stores the member's state and protocol version.
+   *
+   * @param ms_info state
+   * @param p_id member
+   * @param protocol_version protocol version
+   */
+  void save_member_state(Xcom_member_state *ms_info,
+                         const Gcs_member_identifier &p_id,
+                         const unsigned int protocol_version);
+
   Gcs_communication_interface *m_broadcaster;
 
   std::map<Gcs_member_identifier, uint> m_awaited_vector;
@@ -457,6 +488,9 @@ class Gcs_xcom_state_exchange : public Gcs_xcom_state_exchange_interface {
 
   /* Collection of State Message contents to facilitate view installation. */
   std::map<Gcs_member_identifier, Xcom_member_state *> m_member_states;
+
+  /* Collection of protocol version in use per member. */
+  std::map<Gcs_member_identifier, unsigned int> m_member_versions;
 
   // Group name to exchange state
   std::string *m_group_name;

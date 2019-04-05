@@ -22,28 +22,7 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-/* mysqldump.c  - Dump a tables contents and format to an ASCII file
-**
-** The author's original notes follow :-
-**
-** AUTHOR: Igor Romanenko (igor@frog.kiev.ua)
-** DATE:   December 3, 1994
-** WARRANTY: None, expressed, impressed, implied
-**          or other
-** STATUS: Public domain
-** Adapted and optimized for MySQL by
-** Michael Widenius, Sinisa Milivojevic, Jani Tolonen
-** -w --where added 9/10/98 by Jim Faucette
-** slave code by David Saez Padros <david@ols.es>
-** master/autocommit code by Brian Aker <brian@tangent.org>
-** SSL by
-** Andrei Errapart <andreie@no.spam.ee>
-** Tonu Samuel  <tonu@please.do.not.remove.this.spam.ee>
-** XML by Gary Huntress <ghuntress@mediaone.net> 10/10/01, cleaned up
-** and adapted to mysqldump 05/11/01 by Jani Tolonen
-** Added --single-transaction option 06/06/2002 by Peter Zaitsev
-** 10 Jun 2003: SET NAMES and --no-set-names by Alexander Barkov
-*/
+// Dump a table's contents and format to an ASCII file.
 
 #define DUMP_VERSION "10.13"
 
@@ -928,7 +907,6 @@ static int get_options(int *argc, char ***argv) {
       new collation_unordered_set<string>(charset_info, PSI_NOT_INSTRUMENTED);
   /* Don't copy internal log tables */
   ignore_table->insert("mysql.apply_status");
-  ignore_table->insert("mysql.gtid_executed");
   ignore_table->insert("mysql.schema");
   ignore_table->insert("mysql.general_log");
   ignore_table->insert("mysql.slow_log");
@@ -1366,8 +1344,9 @@ static FILE *open_sql_file_for_table(const char *table, int flags) {
   FILE *res;
   char filename[FN_REFLEN], tmp_path[FN_REFLEN];
   convert_dirname(tmp_path, path, NullS);
-  res = my_fopen(fn_format(filename, table, tmp_path, ".sql", 4), flags,
-                 MYF(MY_WME));
+  res = my_fopen(fn_format(filename, table, tmp_path, ".sql",
+                           MYF(MY_UNPACK_FILENAME | MY_APPEND_EXT)),
+                 flags, MYF(MY_WME));
   return res;
 }
 
@@ -2442,12 +2421,16 @@ static inline bool general_log_or_slow_log_tables(const char *db,
           !my_strcasecmp(charset_info, table, "slow_log"));
 }
 
-/* slave_master_info and slave_relay_log_info tables under mysql database */
+/*
+ slave_master_info,slave_relay_log_info and gtid_executed tables under
+ mysql database
+*/
 static inline bool replication_metadata_tables(const char *db,
                                                const char *table) {
   return (!my_strcasecmp(charset_info, db, "mysql")) &&
          (!my_strcasecmp(charset_info, table, "slave_master_info") ||
-          !my_strcasecmp(charset_info, table, "slave_relay_log_info"));
+          !my_strcasecmp(charset_info, table, "slave_relay_log_info") ||
+          !my_strcasecmp(charset_info, table, "gtid_executed"));
 }
 
 /**
@@ -2533,7 +2516,6 @@ static uint get_table_structure(char *table, char *db, char *table_type,
       "TABLE_SCHEMA = '%s' AND TABLE_NAME = '%s' "
       "ORDER BY ORDINAL_POSITION";
   FILE *sql_file = md_result_file;
-  size_t len;
   bool is_log_table;
   bool is_replication_metadata_table;
   unsigned int colno;
@@ -2564,12 +2546,8 @@ static uint get_table_structure(char *table, char *db, char *table_type,
 
   verbose_msg("-- Retrieving table structure for table %s...\n", table);
 
-  len = snprintf(query_buff, sizeof(query_buff), "SET SQL_QUOTE_SHOW_CREATE=%d",
-                 (opt_quoted || opt_keywords));
-  if (!create_options)
-    my_stpcpy(query_buff + len,
-              " ,SQL_MODE=concat(@@sql_mode, _utf8mb4 "
-              "',NO_KEY_OPTIONS,NO_TABLE_OPTIONS,NO_FIELD_OPTIONS') ");
+  snprintf(query_buff, sizeof(query_buff), "SET SQL_QUOTE_SHOW_CREATE=%d",
+           (opt_quoted || opt_keywords));
 
   result_table = quote_name(table, table_buff, 1);
   opt_quoted_table = quote_name(table, table_buff2, 0);
@@ -3293,7 +3271,7 @@ done:
 static bool dump_column_statistics_for_table(char *table_name, char *db_name) {
   char name_buff[NAME_LEN * 4 + 3];
   char column_buffer[NAME_LEN * 4 + 3];
-  char query_buff[QUERY_LENGTH];
+  char query_buff[QUERY_LENGTH * 3 / 2];
   bool old_ansi_quotes_mode = ansi_quotes_mode;
   char *quoted_table;
   MYSQL_RES *column_statistics_rs;
@@ -3347,7 +3325,7 @@ static bool dump_column_statistics_for_table(char *table_name, char *db_name) {
     } else {
       fprintf(sql_file,
               "/*!80002 ANALYZE TABLE %s UPDATE HISTOGRAM ON %s "
-              "WITH %s BUCKETS; */;\n",
+              "WITH %s BUCKETS */;\n",
               quoted_table, quoted_column, row[1]);
     }
   }
@@ -3530,7 +3508,8 @@ static void dump_table(char *table, char *db) {
     */
     convert_dirname(tmp_path, path, NullS);
     my_load_path(tmp_path, tmp_path, NULL);
-    fn_format(filename, table, tmp_path, ".txt", MYF(MY_UNPACK_FILENAME));
+    fn_format(filename, table, tmp_path, ".txt",
+              MYF(MY_UNPACK_FILENAME | MY_APPEND_EXT));
 
     /* Must delete the file that 'INTO OUTFILE' will write to */
     my_delete(filename, MYF(0));
@@ -3686,20 +3665,19 @@ static void dump_table(char *table, char *db) {
         /*
            63 is my_charset_bin. If charsetnr is not 63,
            we have not a BLOB but a TEXT column.
-           we'll dump in hex only BLOB columns.
         */
-        is_blob = (opt_hex_blob && field->charsetnr == 63 &&
-                   (field->type == MYSQL_TYPE_BIT ||
-                    field->type == MYSQL_TYPE_STRING ||
-                    field->type == MYSQL_TYPE_VAR_STRING ||
-                    field->type == MYSQL_TYPE_VARCHAR ||
-                    field->type == MYSQL_TYPE_BLOB ||
-                    field->type == MYSQL_TYPE_LONG_BLOB ||
-                    field->type == MYSQL_TYPE_MEDIUM_BLOB ||
-                    field->type == MYSQL_TYPE_TINY_BLOB ||
-                    field->type == MYSQL_TYPE_GEOMETRY))
-                      ? 1
-                      : 0;
+        is_blob =
+            (field->charsetnr == 63 && (field->type == MYSQL_TYPE_BIT ||
+                                        field->type == MYSQL_TYPE_STRING ||
+                                        field->type == MYSQL_TYPE_VAR_STRING ||
+                                        field->type == MYSQL_TYPE_VARCHAR ||
+                                        field->type == MYSQL_TYPE_BLOB ||
+                                        field->type == MYSQL_TYPE_LONG_BLOB ||
+                                        field->type == MYSQL_TYPE_MEDIUM_BLOB ||
+                                        field->type == MYSQL_TYPE_TINY_BLOB ||
+                                        field->type == MYSQL_TYPE_GEOMETRY))
+                ? 1
+                : 0;
         if (extended_insert && !opt_xml) {
           if (i == 0)
             dynstr_set_checked(&extended_row, "(");
@@ -3727,6 +3705,13 @@ static void dump_table(char *table, char *db) {
                   /* mysql_hex_string() already terminated string by '\0' */
                   DBUG_ASSERT(extended_row.str[extended_row.length] == '\0');
                 } else {
+                  if (is_blob) {
+                    /*
+                      inform SQL parser that this string isn't in
+                      character_set_connection, so it doesn't emit a warning.
+                    */
+                    dynstr_append_checked(&extended_row, "_binary ");
+                  }
                   dynstr_append_checked(&extended_row, "'");
                   extended_row.length += mysql_real_escape_string_quote(
                       &mysql_connection, &extended_row.str[extended_row.length],
@@ -3777,8 +3762,13 @@ static void dump_table(char *table, char *db) {
               } else if (opt_hex_blob && is_blob && length) {
                 fputs("0x", md_result_file);
                 print_blob_as_hex(md_result_file, row[i], length);
-              } else
+              } else {
+                if (is_blob) {
+                  fputs("_binary ", md_result_file);
+                  check_io(md_result_file);
+                }
                 unescape(md_result_file, row[i], length);
+              }
             } else {
               /* change any strings ("inf", "-inf", "nan") into NULL */
               char *ptr = row[i];
@@ -4557,7 +4547,7 @@ static char *get_actual_table_name(const char *old_table_name, MEM_ROOT *root) {
   char *name = 0;
   MYSQL_RES *table_res;
   MYSQL_ROW row;
-  char query[50 + 2 * NAME_LEN];
+  char query[4 * NAME_LEN];
   char show_name_buff[FN_REFLEN];
   DBUG_ENTER("get_actual_table_name");
 

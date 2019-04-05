@@ -53,7 +53,7 @@
 #include "sql/item.h"
 #include "sql/item_cmpfunc.h"      // Item_func_any_value
 #include "sql/item_func.h"         // Item_func_udf_str
-#include "sql/item_geofunc.h"      // Item_func_area
+#include "sql/item_geofunc.h"      // Item_func_st_area
 #include "sql/item_inetfunc.h"     // Item_func_inet_ntoa
 #include "sql/item_json_func.h"    // Item_func_json
 #include "sql/item_regexp_func.h"  // Item_func_regexp_xxx
@@ -821,13 +821,58 @@ class Srid_instantiator {
   Item *instantiate(THD *thd, PT_item_list *args) {
     switch (args->elements()) {
       case 1:
-        return new (thd->mem_root) Item_func_get_srid(POS(), (*args)[0]);
+        return new (thd->mem_root)
+            Item_func_st_srid_observer(POS(), (*args)[0]);
       case 2:
         return new (thd->mem_root)
-            Item_func_set_srid(POS(), (*args)[0], (*args)[1]);
+            Item_func_st_srid_mutator(POS(), (*args)[0], (*args)[1]);
       default:
         DBUG_ASSERT(false);
         return nullptr;
+    }
+  }
+};
+
+class Latitude_instantiator {
+ public:
+  static const uint Min_argcount = 1;
+  static const uint Max_argcount = 2;
+
+  Item *instantiate(THD *thd, PT_item_list *args) {
+    switch (args->elements()) {
+      case 1:
+        return new (thd->mem_root)
+            Item_func_st_latitude_observer(POS(), (*args)[0]);
+      case 2:
+        return new (thd->mem_root)
+            Item_func_st_latitude_mutator(POS(), (*args)[0], (*args)[1]);
+      default:
+        /* purecov: begin deadcode */
+        DBUG_ASSERT(false);
+        return nullptr;
+        /* purecov: end */
+    }
+  }
+};
+
+class Longitude_instantiator {
+ public:
+  static const uint Min_argcount = 1;
+  static const uint Max_argcount = 2;
+
+  Item *instantiate(THD *thd, PT_item_list *args) {
+    switch (args->elements()) {
+      case 1:
+        return new (thd->mem_root)
+            Item_func_st_longitude_observer(POS(), (*args)[0]);
+      case 2:
+        return new (thd->mem_root)
+            Item_func_st_longitude_mutator(POS(), (*args)[0], (*args)[1]);
+      default:
+        /* purecov: begin deadcode */
+        DBUG_ASSERT(false);
+        return nullptr;
+        /* purecov: end */
     }
   }
 };
@@ -840,10 +885,10 @@ class X_instantiator {
   Item *instantiate(THD *thd, PT_item_list *args) {
     switch (args->elements()) {
       case 1:
-        return new (thd->mem_root) Item_func_get_x(POS(), (*args)[0]);
+        return new (thd->mem_root) Item_func_st_x_observer(POS(), (*args)[0]);
       case 2:
         return new (thd->mem_root)
-            Item_func_set_x(POS(), (*args)[0], (*args)[1]);
+            Item_func_st_x_mutator(POS(), (*args)[0], (*args)[1]);
       default:
         DBUG_ASSERT(false);
         return nullptr;
@@ -859,10 +904,10 @@ class Y_instantiator {
   Item *instantiate(THD *thd, PT_item_list *args) {
     switch (args->elements()) {
       case 1:
-        return new (thd->mem_root) Item_func_get_y(POS(), (*args)[0]);
+        return new (thd->mem_root) Item_func_st_y_observer(POS(), (*args)[0]);
       case 2:
         return new (thd->mem_root)
-            Item_func_set_y(POS(), (*args)[0], (*args)[1]);
+            Item_func_st_y_mutator(POS(), (*args)[0], (*args)[1]);
       default:
         DBUG_ASSERT(false);
         return nullptr;
@@ -1461,7 +1506,7 @@ static const std::pair<const char *, Create_func *> func_array[] = {
     {"SQRT", SQL_FN(Item_func_sqrt, 1)},
     {"STRCMP", SQL_FN(Item_func_strcmp, 2)},
     {"STR_TO_DATE", SQL_FN(Item_func_str_to_date, 2)},
-    {"ST_AREA", SQL_FN(Item_func_area, 1)},
+    {"ST_AREA", SQL_FN(Item_func_st_area, 1)},
     {"ST_ASBINARY", SQL_FN_V(Item_func_as_wkb, 1, 2)},
     {"ST_ASGEOJSON", SQL_FN_V_THD(Item_func_as_geojson, 1, 3)},
     {"ST_ASTEXT", SQL_FN_V(Item_func_as_wkt, 1, 2)},
@@ -1476,7 +1521,7 @@ static const std::pair<const char *, Create_func *> func_array[] = {
     {"ST_DIFFERENCE", SQL_FN(Item_func_st_difference, 2)},
     {"ST_DIMENSION", SQL_FN(Item_func_dimension, 1)},
     {"ST_DISJOINT", SQL_FN(Item_func_st_disjoint, 2)},
-    {"ST_DISTANCE", SQL_FN_LIST(Item_func_distance, 2)},
+    {"ST_DISTANCE", SQL_FN_V_LIST(Item_func_distance, 2, 3)},
     {"ST_DISTANCE_SPHERE", SQL_FN_V_LIST(Item_func_st_distance_sphere, 2, 3)},
     {"ST_ENDPOINT", SQL_FACTORY(Endpoint_instantiator)},
     {"ST_ENVELOPE", SQL_FN(Item_func_envelope, 1)},
@@ -1505,12 +1550,14 @@ static const std::pair<const char *, Create_func *> func_array[] = {
     {"ST_ISSIMPLE", SQL_FN(Item_func_st_issimple, 1)},
     {"ST_ISVALID", SQL_FN(Item_func_isvalid, 1)},
     {"ST_LATFROMGEOHASH", SQL_FN(Item_func_latfromgeohash, 1)},
+    {"ST_LATITUDE", SQL_FACTORY(Latitude_instantiator)},
     {"ST_LENGTH", SQL_FN(Item_func_st_length, 1)},
     {"ST_LINEFROMTEXT", SQL_FACTORY(Linefromtext_instantiator)},
     {"ST_LINEFROMWKB", SQL_FACTORY(Linefromwkb_instantiator)},
     {"ST_LINESTRINGFROMTEXT", SQL_FACTORY(Linestringfromtext_instantiator)},
     {"ST_LINESTRINGFROMWKB", SQL_FACTORY(Linestringfromwkb_instantiator)},
     {"ST_LONGFROMGEOHASH", SQL_FN(Item_func_longfromgeohash, 1)},
+    {"ST_LONGITUDE", SQL_FACTORY(Longitude_instantiator)},
     {"ST_MAKEENVELOPE", SQL_FN(Item_func_make_envelope, 2)},
     {"ST_MLINEFROMTEXT", SQL_FACTORY(Mlinefromtext_instantiator)},
     {"ST_MLINEFROMWKB", SQL_FACTORY(Mlinefromwkb_instantiator)},
@@ -1539,12 +1586,13 @@ static const std::pair<const char *, Create_func *> func_array[] = {
     {"ST_POLYFROMWKB", SQL_FACTORY(Polyfromwkb_instantiator)},
     {"ST_POLYGONFROMTEXT", SQL_FACTORY(Polygonfromtext_instantiator)},
     {"ST_POLYGONFROMWKB", SQL_FACTORY(Polygonfromwkb_instantiator)},
-    {"ST_SIMPLIFY", SQL_FN(Item_func_simplify, 2)},
+    {"ST_SIMPLIFY", SQL_FN(Item_func_st_simplify, 2)},
     {"ST_SRID", SQL_FACTORY(Srid_instantiator)},
     {"ST_STARTPOINT", SQL_FACTORY(Startpoint_instantiator)},
     {"ST_SYMDIFFERENCE", SQL_FN(Item_func_st_symdifference, 2)},
     {"ST_SWAPXY", SQL_FN(Item_func_swap_xy, 1)},
     {"ST_TOUCHES", SQL_FN(Item_func_st_touches, 2)},
+    {"ST_TRANSFORM", SQL_FN(Item_func_st_transform, 2)},
     {"ST_UNION", SQL_FN(Item_func_st_union, 2)},
     {"ST_VALIDATE", SQL_FN(Item_func_validate, 1)},
     {"ST_WITHIN", SQL_FN(Item_func_st_within, 2)},

@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2005, 2017, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2005, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -116,13 +116,13 @@ TODO:
 #include "my_systime.h"
 #include "mysql/service_mysql_alloc.h"
 #include "print_version.h"
+#include "thr_cond.h"
 #include "typelib.h"
 #include "welcome_copyright_notice.h" /* ORACLE_WELCOME_COPYRIGHT_NOTICE */
 
 #ifdef _WIN32
 #define srandom srand
 #define random rand
-#define snprintf _snprintf
 #endif
 
 #if defined(_WIN32)

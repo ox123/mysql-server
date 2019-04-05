@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2017, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -22,16 +22,14 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-/*
- * testBlobs
- */
-
 #include <ndb_global.h>
 #include <NdbOut.hpp>
 #include <OutputStream.hpp>
 #include <NdbTest.hpp>
 #include <NdbTick.h>
-#include <my_sys.h>
+#include "m_ctype.h"
+#include "my_sys.h"
+
 #include <NdbRestarter.hpp>
 
 #include <ndb_rand.h>
@@ -1392,8 +1390,8 @@ verifyHeadInline(Tup& tup)
     CHK(g_opr->equal("PK3", (char*)&tup.m_pk3) == 0);
   }
   setUDpartId(tup, g_opr);
-  NdbRecAttr* ra1;
-  NdbRecAttr* ra2;
+  NdbRecAttr* ra1 = 0;
+  NdbRecAttr* ra2 = 0;
   NdbRecAttr* ra_frag;
   CHK((ra1 = g_opr->getValue("BL1")) != 0);
   if (! g_opt.m_oneblob)
@@ -4787,7 +4785,7 @@ bugtest_27370()
     CHK(g_con->execute(NoCommit, AbortOnError, 1) == 0);
 
     const Uint32 loop_max= 10;
-    char read_char;
+    char read_char = 0;
     char original_read_char= 0;
     Uint32 readloop;
     for (readloop= 0;; readloop++)
@@ -4837,7 +4835,7 @@ bugtest_27370()
     CHK(g_ops->nextResult(&out_row, true, false) == 0);
 
     const Uint32 loop_max= 10;
-    char read_char;
+    char read_char = 0;
     char original_read_char= 0;
     Uint32 readloop;
     for (readloop= 0;; readloop++)

@@ -70,7 +70,7 @@ typedef Vio Vio;
 #define MYSQL_VIO Vio *
 #endif
 
-enum enum_vio_type {
+enum enum_vio_type : int {
   /**
     Type of the connection is unknown.
   */
@@ -268,6 +268,8 @@ struct st_VioSSLFd *new_VioSSLConnectorFd(
 long process_tls_version(const char *tls_version);
 
 int set_fips_mode(const uint fips_mode, char *err_string);
+
+uint get_fips_mode();
 
 struct st_VioSSLFd *new_VioSSLAcceptorFd(
     const char *key_file, const char *cert_file, const char *ca_file,

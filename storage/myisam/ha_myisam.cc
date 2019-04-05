@@ -42,6 +42,7 @@
 #include "mysql/plugin.h"
 #include "sql/current_thd.h"
 #include "sql/derror.h"
+#include "sql/field.h"
 #include "sql/key.h"  // key_copy
 #include "sql/log.h"
 #include "sql/mysqld.h"
@@ -79,7 +80,7 @@ TYPELIB myisam_stats_method_typelib = {
     myisam_stats_method_names, NULL};
 
 static MYSQL_SYSVAR_ULONG(block_size, opt_myisam_block_size,
-                          PLUGIN_VAR_EXPERIMENTAL | PLUGIN_VAR_RQCMDARG,
+                          PLUGIN_VAR_NOSYSVAR | PLUGIN_VAR_RQCMDARG,
                           "Block size to be used for MyISAM index pages", NULL,
                           NULL, MI_KEY_BLOCK_LENGTH, MI_MIN_KEY_BLOCK_LENGTH,
                           MI_MAX_KEY_BLOCK_LENGTH, MI_MIN_KEY_BLOCK_LENGTH);
@@ -633,13 +634,14 @@ void _mi_report_crashed(MI_INFO *file, const char *message, const char *sfile,
 ha_myisam::ha_myisam(handlerton *hton, TABLE_SHARE *table_arg)
     : handler(hton, table_arg),
       file(0),
-      int_table_flags(HA_NULL_IN_KEY | HA_CAN_FULLTEXT | HA_CAN_SQL_HANDLER |
-                      HA_BINLOG_ROW_CAPABLE | HA_BINLOG_STMT_CAPABLE |
-                      HA_DUPLICATE_POS | HA_CAN_INDEX_BLOBS | HA_AUTO_PART_KEY |
-                      HA_FILE_BASED | HA_CAN_GEOMETRY | HA_NO_TRANSACTIONS |
-                      HA_CAN_BIT_FIELD | HA_CAN_RTREEKEYS | HA_HAS_RECORDS |
-                      HA_STATS_RECORDS_IS_EXACT | HA_CAN_REPAIR |
-                      HA_GENERATED_COLUMNS | HA_ATTACHABLE_TRX_COMPATIBLE),
+      int_table_flags(
+          HA_NULL_IN_KEY | HA_CAN_FULLTEXT | HA_CAN_SQL_HANDLER |
+          HA_BINLOG_ROW_CAPABLE | HA_BINLOG_STMT_CAPABLE | HA_DUPLICATE_POS |
+          HA_CAN_INDEX_BLOBS | HA_AUTO_PART_KEY | HA_FILE_BASED |
+          HA_CAN_GEOMETRY | HA_NO_TRANSACTIONS | HA_CAN_BIT_FIELD |
+          HA_CAN_RTREEKEYS | HA_COUNT_ROWS_INSTANT | HA_STATS_RECORDS_IS_EXACT |
+          HA_CAN_REPAIR | HA_GENERATED_COLUMNS | HA_ATTACHABLE_TRX_COMPATIBLE |
+          HA_SUPPORTS_DEFAULT_EXPRESSION),
       can_enable_indexes(1),
       ds_mrr(this) {}
 
@@ -727,24 +729,6 @@ int ha_myisam::open(const char *name, int mode, uint test_if_locked,
   MYISAM_SHARE *share = NULL;
   uint recs;
   uint i;
-
-  /*
-    If the user wants to have memory mapped data files, add an
-    open_flag. Do not memory map temporary tables because they are
-    expected to be inserted and thus extended a lot. Memory mapping is
-    efficient for files that keep their size, but very inefficient for
-    growing files. Using an open_flag instead of calling mi_extra(...
-    HA_EXTRA_MMAP ...) after mi_open() has the advantage that the
-    mapping is not repeated for every open, but just done on the initial
-    open, when the MyISAM share is created. Everytime the server
-    requires to open a new instance of a table it calls this method. We
-    will always supply HA_OPEN_MMAP for a permanent table. However, the
-    MyISAM storage engine will ignore this flag if this is a secondary
-    open of a table that is in use by other threads already (if the
-    MyISAM share exists already).
-  */
-  if (!(test_if_locked & HA_OPEN_TMP_TABLE) && opt_myisam_use_mmap)
-    test_if_locked |= HA_OPEN_MMAP;
 
   /*
      We are allocating the handler share only in case of normal MyISAM tables
@@ -862,7 +846,7 @@ int ha_myisam::write_row(uchar *buf) {
     If we have an auto_increment column and we are writing a changed row
     or a new row, then update the auto_increment value in the record.
   */
-  if (table->next_number_field && buf == table->record[0]) {
+  if (table && table->next_number_field && buf == table->record[0]) {
     int error;
     if ((error = update_auto_increment())) return error;
   }
@@ -1159,11 +1143,14 @@ int ha_myisam::repair(THD *thd, MI_CHECK &param, bool do_optimize) {
     if (file->state != &file->s->state.state)
       file->s->state.state = *file->state;
     if (file->s->base.auto_key) update_auto_increment_key(&param, file, 1);
-    if (optimize_done)
+    if (optimize_done) {
+      mysql_mutex_lock(&share->intern_lock);
       error = update_state_info(
           &param, file,
           UPDATE_TIME | UPDATE_OPEN_COUNT |
               (local_testflag & T_STATISTICS ? UPDATE_STAT : 0));
+      mysql_mutex_unlock(&share->intern_lock);
+    }
     info(HA_STATUS_NO_LOCK | HA_STATUS_TIME | HA_STATUS_VARIABLE |
          HA_STATUS_CONST);
     if (rows != file->state->records && !(param.testflag & T_VERY_SILENT)) {
@@ -1446,14 +1433,6 @@ int ha_myisam::indexes_are_disabled(void) {
 void ha_myisam::start_bulk_insert(ha_rows rows) {
   DBUG_ENTER("ha_myisam::start_bulk_insert");
   THD *thd = current_thd;
-  ulong size = min(thd->variables.read_buff_size,
-                   (ulong)(table->s->avg_row_length * rows));
-  DBUG_PRINT("info",
-             ("start_bulk_insert: rows %lu size %lu", (ulong)rows, size));
-
-  /* don't enable row cache if too few rows */
-  if (!rows || (rows > MI_MIN_ROWS_TO_USE_WRITE_CACHE))
-    mi_extra(file, HA_EXTRA_WRITE_CACHE, (void *)&size);
 
   can_enable_indexes =
       mi_is_all_keys_active(file->s->state.key_map, file->s->base.keys);
@@ -1490,22 +1469,20 @@ void ha_myisam::start_bulk_insert(ha_rows rows) {
 
 int ha_myisam::end_bulk_insert() {
   mi_end_bulk_insert(file);
-  int err = mi_extra(file, HA_EXTRA_NO_CACHE, 0);
-  if (!err) {
-    if (can_enable_indexes) {
-      /*
-        Truncate the table when enable index operation is killed.
-        After truncating the table we don't need to enable the
-        indexes, because the last repair operation is aborted after
-        setting the indexes as active and  trying to recreate them.
-     */
+  int err = 0;
+  if (can_enable_indexes) {
+    /*
+      Truncate the table when enable index operation is killed.
+      After truncating the table we don't need to enable the
+      indexes, because the last repair operation is aborted after
+      setting the indexes as active and  trying to recreate them.
+   */
 
-      if (((err = enable_indexes(HA_KEY_SWITCH_NONUNIQ_SAVE)) != 0) &&
-          current_thd->killed) {
-        delete_all_rows();
-        /* not crashed, despite being killed during repair */
-        file->s->state.changed &= ~(STATE_CRASHED | STATE_CRASHED_ON_REPAIR);
-      }
+    if (((err = enable_indexes(HA_KEY_SWITCH_NONUNIQ_SAVE)) != 0) &&
+        current_thd->killed) {
+      delete_all_rows();
+      /* not crashed, despite being killed during repair */
+      file->s->state.changed &= ~(STATE_CRASHED | STATE_CRASHED_ON_REPAIR);
     }
   }
   return err;
@@ -1751,7 +1728,6 @@ int ha_myisam::info(uint flag) {
 }
 
 int ha_myisam::extra(enum ha_extra_function operation) {
-  if (operation == HA_EXTRA_MMAP && !opt_myisam_use_mmap) return 0;
   return mi_extra(file, operation, 0);
 }
 
@@ -2051,7 +2027,8 @@ static int myisam_init(void *p) {
   myisam_hton->create = myisam_create_handler;
   myisam_hton->panic = myisam_panic;
   myisam_hton->close_connection = myisam_close_connection;
-  myisam_hton->flags = HTON_CAN_RECREATE | HTON_SUPPORT_LOG_TABLES;
+  myisam_hton->flags =
+      HTON_CAN_RECREATE | HTON_SUPPORT_LOG_TABLES | HTON_SUPPORTS_PACKED_KEYS;
   myisam_hton->is_supported_system_table = myisam_is_supported_system_table;
   myisam_hton->file_extensions = ha_myisam_exts;
   myisam_hton->rm_tmp_tables = default_rm_tmp_tables;

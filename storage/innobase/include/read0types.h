@@ -117,11 +117,11 @@ class ReadView {
 
     /**
     @return a pointer to the start of the array */
-    trx_id_t *data() { return (m_ptr); };
+    trx_id_t *data() { return (m_ptr); }
 
     /**
     @return a const pointer to the start of the array */
-    const trx_id_t *data() const { return (m_ptr); };
+    const trx_id_t *data() const { return (m_ptr); }
 
     /**
     @return the number of elements in the array */
@@ -241,10 +241,6 @@ class ReadView {
   point in time are seen in the view.
   @param id		Creator transaction id */
   inline void prepare(trx_id_t id);
-
-  /**
-  Complete the read view creation */
-  inline void complete();
 
   /**
   Copy state from another view. Must call copy_complete() to finish.

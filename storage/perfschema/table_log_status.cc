@@ -27,8 +27,10 @@
 
 #include "storage/perfschema/table_log_status.h"
 
+#include "mysql/plugin.h"
 #include "sql/current_thd.h"
 #include "sql/debug_sync.h"
+#include "sql/field.h"
 #include "sql/log_resource.h"
 #include "sql/plugin_table.h"
 #include "sql/rpl_msr.h"  // channel_map
@@ -250,7 +252,9 @@ int table_log_status::make_row() {
   }
 
   /* Lock all resources */
-  for (it = resources.begin(); it != resources.end(); ++it) (*it)->lock();
+  for (it = resources.begin(); it != resources.end(); ++it) {
+    (*it)->lock();
+  }
 
   DBUG_SIGNAL_WAIT_FOR(thd, "pause_collecting_instance_logs_info",
                        "reached_collecting_instance_logs_info",
@@ -270,8 +274,9 @@ int table_log_status::make_row() {
 
 err_unlock:
   /* Unlock all resources */
-  for (rit = resources.rbegin(); rit != resources.rend(); ++rit)
+  for (rit = resources.rbegin(); rit != resources.rend(); ++rit) {
     (*rit)->unlock();
+  }
 
 end:
   /* Delete all wrappers */

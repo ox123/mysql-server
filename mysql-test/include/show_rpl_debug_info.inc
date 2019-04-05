@@ -32,6 +32,9 @@
 #     with the current connection. If this variable is set, debug
 #     info is printed only for the current connection.
 #
+#   $crash_after_show_rpl_debug_info
+#     Crash all servers at the end (using include/dbug_crash_all.inc)
+#
 #   $extra_debug_info
 #     This text is printed verbatim to the output. Useful for helper
 #     scripts to supply extra diagnostic output.
@@ -116,6 +119,10 @@ while ($_rpl_server)
     --echo **** replication_group_member_stats on $CURRENT_CONNECTION ****
     query_vertical
     SELECT * FROM performance_schema.replication_group_member_stats;
+    --echo
+    --echo **** group replication stages on $CURRENT_CONNECTION ****
+    query_vertical
+    SELECT * FROM performance_schema.events_stages_current WHERE event_name LIKE "%stage/group_rpl%";
   }
   --echo
   --echo **** replication_applier_status on $CURRENT_CONNECTION ****
@@ -195,7 +202,13 @@ if ($extra_debug_eval)
 {
   --let $eval_expr= $extra_debug_eval
   --source include/eval.inc
+  --echo extra evaluated debug expression: '$extra_debug_eval'
   --echo extra evaluated debug info: '$eval_result'
+}
+
+if ($crash_after_show_rpl_debug_info)
+{
+ --source include/dbug_crash_all.inc
 }
 
 --connection $_rpl_old_con

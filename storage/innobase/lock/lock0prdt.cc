@@ -41,7 +41,6 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "lock0lock.h"
 #include "lock0prdt.h"
 #include "lock0priv.h"
-#include "my_inttypes.h"
 #include "srv0mon.h"
 #include "trx0purge.h"
 #include "trx0sys.h"
@@ -172,11 +171,6 @@ bool lock_prdt_has_to_wait(
       ut_ad(lock2->type_mode & LOCK_PRDT_PAGE);
 
       return (true);
-    }
-
-    /* Predicate lock does not conflicts with non-predicate lock */
-    if (!(lock2->type_mode & LOCK_PREDICATE)) {
-      return (FALSE);
     }
 
     ut_ad(lock2->type_mode & LOCK_PREDICATE);
@@ -435,7 +429,7 @@ static lock_t *lock_prdt_add_to_queue(
 
 /** Checks if locks of other transactions prevent an immediate insert of
  a predicate record.
- @return	DB_SUCCESS, DB_LOCK_WAIT, DB_DEADLOCK, or DB_QUE_THR_SUSPENDED
+ @return	DB_SUCCESS, DB_LOCK_WAIT, or DB_DEADLOCK
  */
 dberr_t lock_prdt_insert_check_and_lock(
     ulint flags,         /*!< in: if BTR_NO_LOCKING_FLAG bit is
@@ -535,7 +529,7 @@ dberr_t lock_prdt_insert_check_and_lock(
       /* We only care about the two return values. */
       break;
   }
-
+  ut_ad(err == DB_SUCCESS || err == DB_LOCK_WAIT || err == DB_DEADLOCK);
   return (err);
 }
 
@@ -712,7 +706,7 @@ void lock_init_prdt_from_mbr(
 }
 
 /** Acquire a predicate lock on a block
- @return	DB_SUCCESS, DB_LOCK_WAIT, DB_DEADLOCK, or DB_QUE_THR_SUSPENDED
+ @return	DB_SUCCESS, DB_SUCCESS_LOCKED_REC, DB_LOCK_WAIT, or DB_DEADLOCK
  */
 dberr_t lock_prdt_lock(buf_block_t *block,  /*!< in/out: buffer block of rec */
                        lock_prdt_t *prdt,   /*!< in: Predicate for the lock */
@@ -812,12 +806,13 @@ dberr_t lock_prdt_lock(buf_block_t *block,  /*!< in/out: buffer block of rec */
     /* Append the predicate in the lock record */
     lock_prdt_set_prdt(lock, prdt);
   }
-
+  ut_ad(err == DB_SUCCESS || err == DB_SUCCESS_LOCKED_REC ||
+        err == DB_LOCK_WAIT || err == DB_DEADLOCK);
   return (err);
 }
 
 /** Acquire a "Page" lock on a block
- @return	DB_SUCCESS, DB_LOCK_WAIT, DB_DEADLOCK, or DB_QUE_THR_SUSPENDED
+ @return	DB_SUCCESS
  */
 dberr_t lock_place_prdt_page_lock(
     space_id_t space,    /*!< in: space for the page to lock */

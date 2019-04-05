@@ -132,7 +132,7 @@ select t2.fld3 from t2 where fld3 LIKE 'don_t_find_me_please%';
 fld3
 explain select t2.fld3 from t2 where fld3 = 'honeysuckle';
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
-1	SIMPLE	t2	NULL	ref	fld3	fld3	120	const	1	100.00	Using index
+1	SIMPLE	t2	NULL	ref	fld3	fld3	120	const	1	100.00	Using where; Using index
 Warnings:
 Note	1003	/* select#1 */ select `test`.`t2`.`fld3` AS `fld3` from `test`.`t2` where (`test`.`t2`.`fld3` = 'honeysuckle')
 explain select fld3 from t2 ignore index (fld3) where fld3 = 'honeysuckle';
@@ -147,12 +147,12 @@ Warnings:
 Note	1003	/* select#1 */ select `test`.`t2`.`fld3` AS `fld3` from `test`.`t2` USE INDEX (`fld1`) where (`test`.`t2`.`fld3` = 'honeysuckle')
 explain select fld3 from t2 use index (fld3) where fld3 = 'honeysuckle';
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
-1	SIMPLE	t2	NULL	ref	fld3	fld3	120	const	1	100.00	Using index
+1	SIMPLE	t2	NULL	ref	fld3	fld3	120	const	1	100.00	Using where; Using index
 Warnings:
 Note	1003	/* select#1 */ select `test`.`t2`.`fld3` AS `fld3` from `test`.`t2` USE INDEX (`fld3`) where (`test`.`t2`.`fld3` = 'honeysuckle')
 explain select fld3 from t2 use index (fld1,fld3) where fld3 = 'honeysuckle';
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
-1	SIMPLE	t2	NULL	ref	fld3	fld3	120	const	1	100.00	Using index
+1	SIMPLE	t2	NULL	ref	fld3	fld3	120	const	1	100.00	Using where; Using index
 Warnings:
 Note	1003	/* select#1 */ select `test`.`t2`.`fld3` AS `fld3` from `test`.`t2` USE INDEX (`fld3`) USE INDEX (`fld1`) where (`test`.`t2`.`fld3` = 'honeysuckle')
 explain select fld3 from t2 ignore index (fld3,not_used);
@@ -566,44 +566,44 @@ attainments
 fanatic
 measures
 rightfulness
-select distinct fld3,count(*) from t2 group by companynr asc, fld3 asc limit 10;
-fld3	count(*)
-affixed	1
-and	1
-annoyers	1
-Anthony	1
-assayed	1
-assurers	1
-attendants	1
-bedlam	1
-bedpost	1
-boasted	1
+select distinct companynr, fld3,count(*) from t2 group by companynr, fld3 order by companynr, fld3 limit 10;
+companynr	fld3	count(*)
+00	affixed	1
+00	and	1
+00	annoyers	1
+00	Anthony	1
+00	assayed	1
+00	assurers	1
+00	attendants	1
+00	bedlam	1
+00	bedpost	1
+00	boasted	1
 SET BIG_TABLES=1;
-select distinct fld3,count(*) from t2 group by companynr asc, fld3 asc limit 10;
-fld3	count(*)
-affixed	1
-and	1
-annoyers	1
-Anthony	1
-assayed	1
-assurers	1
-attendants	1
-bedlam	1
-bedpost	1
-boasted	1
+select distinct companynr, fld3,count(*) from t2 group by companynr, fld3 order by companynr, fld3 limit 10;
+companynr	fld3	count(*)
+00	affixed	1
+00	and	1
+00	annoyers	1
+00	Anthony	1
+00	assayed	1
+00	assurers	1
+00	attendants	1
+00	bedlam	1
+00	bedpost	1
+00	boasted	1
 SET BIG_TABLES=0;
-select distinct fld3,repeat("a",length(fld3)),count(*) from t2 group by companynr asc,fld3 asc limit 100,10;
-fld3	repeat("a",length(fld3))	count(*)
-chancellor	aaaaaaaaaa	1
-Chippewa	aaaaaaaa	1
-circumference	aaaaaaaaaaaaa	1
-circus	aaaaaa	1
-cited	aaaaa	1
-congresswoman	aaaaaaaaaaaaa	1
-contrition	aaaaaaaaaa	1
-corny	aaaaa	1
-cultivation	aaaaaaaaaaa	1
-definiteness	aaaaaaaaaaaa	1
+select distinct companynr, fld3,repeat("a",length(fld3)),count(*) from t2 group by companynr ,fld3 order by companynr, fld3 limit 100,10;
+companynr	fld3	repeat("a",length(fld3))	count(*)
+29	chancellor	aaaaaaaaaa	1
+29	Chippewa	aaaaaaaa	1
+29	circumference	aaaaaaaaaaaaa	1
+29	circus	aaaaaa	1
+29	cited	aaaaa	1
+29	Colombo	aaaaaaa	1
+29	congresswoman	aaaaaaaaaaaaa	1
+29	contrition	aaaaaaaaaa	1
+29	corny	aaaaa	1
+29	cultivation	aaaaaaaaaaa	1
 select distinct companynr,rtrim(space(512+companynr)) from t3 order by 1,2;
 companynr	rtrim(space(512+companynr))
 37	
@@ -655,7 +655,7 @@ id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered
 1	SIMPLE	t2	NULL	const	fld1	fld1	4	const	1	100.00	NULL
 1	SIMPLE	t3	NULL	const	PRIMARY,period	PRIMARY	4	const	1	100.00	NULL
 Warnings:
-Note	1003	/* select#1 */ select 'breaking' AS `fld3`,'1001' AS `period` from `test`.`t2` join `test`.`t3` where (('11401' = 11401))
+Note	1003	/* select#1 */ select 'breaking' AS `fld3`,'1001' AS `period` from `test`.`t2` join `test`.`t3` where 1
 select fld3,period from t2,t1 where companynr*10 = 37*10;
 fld3	period
 breaking	9410
@@ -1570,14 +1570,14 @@ id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered
 1	SIMPLE	t2	NULL	ALL	NULL	NULL	NULL	NULL	1199	9.00	Using where
 Warnings:
 Note	1003	/* select#1 */ select count(0) AS `count(*)`,min(`test`.`t2`.`fld4`) AS `min(fld4)`,max(`test`.`t2`.`fld4`) AS `max(fld4)`,sum(`test`.`t2`.`fld1`) AS `sum(fld1)`,avg(`test`.`t2`.`fld1`) AS `avg(fld1)`,std(`test`.`t2`.`fld1`) AS `std(fld1)`,variance(`test`.`t2`.`fld1`) AS `variance(fld1)` from `test`.`t2` where ((`test`.`t2`.`companynr` = 34) and (`test`.`t2`.`fld4` <> ''))
-select companynr,count(*),min(fld4),max(fld4),sum(fld1),avg(fld1),std(fld1),variance(fld1) from t2 group by companynr asc limit 3;
+select companynr,count(*),min(fld4),max(fld4),sum(fld1),avg(fld1),std(fld1),variance(fld1) from t2 group by companynr order by companynr limit 3;
 companynr	count(*)	min(fld4)	max(fld4)	sum(fld1)	avg(fld1)	std(fld1)	variance(fld1)
 00	82	Anthony	windmills	10355753	126289.6707	115550.97568479746	13352027981.708656
 29	95	abut	wetness	14473298	152350.5053	8368.547956641249	70032594.90260443
 34	70	absentee	vest	17788966	254128.0857	3272.5939722090234	10709871.306938833
 select
 companynr,t2nr,count(price),sum(price),min(price),max(price),avg(price) from
-t3 where companynr = 37 group by companynr asc,t2nr asc limit 10;
+t3 where companynr = 37 group by companynr,t2nr order by companynr, t2nr limit 10;
 companynr	t2nr	count(price)	sum(price)	min(price)	max(price)	avg(price)
 37	1	1	5987435	5987435	5987435	5987435.0000
 37	2	1	28357832	28357832	28357832	28357832.0000
@@ -1591,7 +1591,7 @@ companynr	t2nr	count(price)	sum(price)	min(price)	max(price)	avg(price)
 37	31	1	5987435	5987435	5987435	5987435.0000
 select /*! SQL_SMALL_RESULT */
 companynr,t2nr,count(price),sum(price),min(price),max(price),avg(price) from
-t3 where companynr = 37 group by companynr asc,t2nr asc limit 10;
+t3 where companynr = 37 group by companynr,t2nr order by companynr, t2nr limit 10;
 companynr	t2nr	count(price)	sum(price)	min(price)	max(price)	avg(price)
 37	1	1	5987435	5987435	5987435	5987435.0000
 37	2	1	28357832	28357832	28357832	28357832.0000
@@ -2161,10 +2161,10 @@ analyze table t2;
 Table	Op	Msg_type	Msg_text
 test.t2	analyze	status	OK
 show keys from t2;
-Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible
-t2	0	PRIMARY	1	auto	A	1199	NULL	NULL		BTREE			YES
-t2	0	fld1	1	fld1	A	1199	NULL	NULL		BTREE			YES
-t2	1	fld3	1	fld3	A	1199	NULL	NULL		BTREE			YES
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t2	0	PRIMARY	1	auto	A	1199	NULL	NULL		BTREE			YES	NULL
+t2	0	fld1	1	fld1	A	1199	NULL	NULL		BTREE			YES	NULL
+t2	1	fld3	1	fld3	A	1199	NULL	NULL		BTREE			YES	NULL
 drop table t4, t3, t2, t1;
 DO 1;
 DO benchmark(100,1+1),1,1;
@@ -3020,7 +3020,9 @@ NULL
 1.0000
 1.0000
 select distinct avg(s1) as x from t1 group by s1 with rollup;
-ERROR HY000: Incorrect usage of WITH ROLLUP and DISTINCT
+x
+NULL
+1.0000
 drop table t1;
 CREATE TABLE t1 (a int);
 CREATE TABLE t2 (a int);
@@ -3343,11 +3345,11 @@ create table t1 (id int(11) not null default '0');
 insert into t1 values (123),(191),(192);
 create table t2 (id char(16) character set utf8 not null);
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 insert into t2 values ('58013'),('58014'),('58015'),('58016');
 create table t3 (a_id int(11) not null, b_id char(16) character set utf8);
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 insert into t3 values (123,null),(123,null),(123,null),(123,null),(123,null),(123,'58013');
 select count(*)
 from t1 inner join (t3 left join t2 on t2.id = t3.b_id) on t1.id = t3.a_id;
@@ -5021,7 +5023,7 @@ id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered
 1	SIMPLE	t2	NULL	system	NULL	NULL	NULL	NULL	1	100.00	NULL
 1	SIMPLE	t1	NULL	ALL	NULL	NULL	NULL	NULL	10	100.00	Using where
 Warnings:
-Note	1003	/* select#1 */ select '2' AS `b`,`test`.`t1`.`a` AS `a` from `test`.`t1` where 1
+Note	1003	/* select#1 */ select '2' AS `b`,`test`.`t1`.`a` AS `a` from <constant table> left join `test`.`t1` on((`test`.`t1`.`a` = <cache>(('2' + 1)))) where 1
 EXPLAIN SELECT * FROM t1 WHERE a > UNIX_TIMESTAMP('2009-03-10 00:00:00');
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
 1	SIMPLE	t1	NULL	ALL	NULL	NULL	NULL	NULL	10	33.33	Using where
@@ -5054,6 +5056,8 @@ DROP FUNCTION f1;
 SELECT @old_optimizer_switch:=@@optimizer_switch;
 @old_optimizer_switch:=@@optimizer_switch
 #
+Warnings:
+#	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
 CREATE TABLE t1 (
 pk int(11) NOT NULL,
 i int(11) DEFAULT NULL,

@@ -83,9 +83,12 @@ inline const char *addon_fields_text(Addon_fields_status afs) {
 
 /// Struct that holds information about a sort field.
 struct st_sort_field {
-  Field *field;                 ///< Field to sort
-  Item *item;                   ///< Item if not sorting fields
-  uint length;                  ///< Length of sort field
+  Field *field;  ///< Field to sort
+  Item *item;    ///< Item if not sorting fields
+
+  /// Length of sort field. Beware, can be 0xFFFFFFFFu (infinite)!
+  uint length;
+
   uint suffix_length;           ///< Length suffix (0-4)
   Item_result result_type;      ///< Type of item (not used for fields)
   enum_field_types field_type;  ///< Field type of the field or item
@@ -139,7 +142,7 @@ class Addon_fields {
   Sort_addon_field *end() { return m_field_descriptors.end(); }
   size_t num_field_descriptors() const { return m_field_descriptors.size(); }
 
-  /// rr_unpack_from_tempfile needs an extra buffer when unpacking.
+  /// SortFileIterator needs an extra buffer when unpacking.
   uchar *allocate_addon_buf(uint sz) {
     if (m_addon_buf != NULL) {
       DBUG_ASSERT(m_addon_buf_length == sz);
@@ -222,7 +225,7 @@ class Addon_fields {
   All the record formats consist of a (possibly composite) key,
   followed by a (possibly composite) payload.
   The key is used for sorting data. Once sorting is done, the payload is
-  stored in some buffer, and read by some rr_from or rr_unpack routine.
+  stored in some buffer, and read by some RowIterator.
 
   For fixed-size keys, with @<rowid@> payload, the @<rowid@> is also
   considered to be part of the key.
@@ -269,15 +272,14 @@ class Sort_param {
   uint m_fixed_rec_length;   ///< Maximum length of a record, see above.
   uint m_fixed_sort_length;  ///< Maximum number of bytes used for sorting.
  public:
-  uint ref_length;            // Length of record ref.
-  uint m_addon_length;        // Length of added packed fields.
-  uint fixed_res_length;      // Length of records in final sorted file/buffer.
-  uint max_rows_per_buffer;   // Max (unpacked) rows / buffer.
-  ha_rows max_rows;           // Select limit, or HA_POS_ERROR if unlimited.
-  ha_rows num_examined_rows;  // Number of examined rows.
-  TABLE *sort_form;           // For quicker make_sortkey.
-  bool use_hash;              // Whether to use hash to distinguish cut JSON
-  bool m_force_stable_sort;   // Keep relative order of equal elements
+  uint ref_length;           // Length of record ref.
+  uint m_addon_length;       // Length of added packed fields.
+  uint fixed_res_length;     // Length of records in final sorted file/buffer.
+  uint max_rows_per_buffer;  // Max (unpacked) rows / buffer.
+  ha_rows max_rows;          // Select limit, or HA_POS_ERROR if unlimited.
+  TABLE *sort_form;          // For quicker make_sortkey.
+  bool use_hash;             // Whether to use hash to distinguish cut JSON
+  bool m_force_stable_sort;  // Keep relative order of equal elements
 
   /**
     ORDER BY list with some precalculated info for filesort.
@@ -329,13 +331,19 @@ class Sort_param {
   bool using_addon_fields() const { return addon_fields != NULL; }
 
   /**
-    Stores key fields in *to.
+    Stores key fields in *dst.
     Then appends either *ref_pos (the @<rowid@>) or the "addon fields".
-    @param  to      out Where to store the result
+    @param  dst     out Where to store the result
     @param  ref_pos in  Where to find the @<rowid@>
-    @returns Number of bytes stored.
+    @returns Number of bytes stored, or UINT_MAX if the result could not
+      provably fit within the destination buffer.
    */
-  uint make_sortkey(uchar *to, const uchar *ref_pos);
+  uint make_sortkey(Bounds_checked_array<uchar> dst, const uchar *ref_pos);
+
+  // Adapter for Bounded_queue.
+  uint make_sortkey(uchar *dst, size_t dst_len, const uchar *ref_pos) {
+    return make_sortkey(Bounds_checked_array<uchar>(dst, dst_len), ref_pos);
+  }
 
   /// Stores the length of a variable-sized key.
   static void store_varlen_key_length(uchar *p, uint sz) { int4store(p, sz); }
@@ -350,7 +358,7 @@ class Sort_param {
 
   /**
     Skips the key part, and returns address of payload.
-    For rr_unpack_from_buffer, which does not have access to Sort_param.
+    For SortBufferIterator, which does not have access to Sort_param.
    */
   static uchar *get_start_of_payload(uint default_val, bool is_varlen,
                                      uchar *p) {

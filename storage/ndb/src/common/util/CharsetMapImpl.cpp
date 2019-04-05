@@ -1,4 +1,4 @@
-/* Copyright (c) 2010, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2010, 2018, Oracle and/or its affiliates. All rights reserved.
  
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License, version 2.0,
@@ -21,16 +21,11 @@
  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-/*
- *  CharsetMapImpl.cpp
- *
-*/
-
 #include "CharsetMapImpl.h"
 
-#include <string.h> // not using namespaces yet
+#include <string.h>
 
-#include "mysql.h"
+#include "m_ctype.h"
 #include "my_sys.h"
 
 #define MYSQL_BINARY_CHARSET 63
@@ -96,7 +91,7 @@ void CharsetMapImpl::build_map()
     for(unsigned int i = 0 ; i < NDB_ARRAY_SIZE(mysql_charset_name) ; i++)
     {
         CHARSET_INFO *cs = get_charset(i, MYF(0));
-        register const char *mysql_name = 0;
+        const char *mysql_name = 0;
         const char *mapped_name = 0;
         
         if(cs) 

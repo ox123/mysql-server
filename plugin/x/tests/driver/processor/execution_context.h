@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0,
@@ -22,8 +22,8 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
-#ifndef X_TESTS_DRIVER_PROCESSOR_EXECUTION_CONTEXT_H_
-#define X_TESTS_DRIVER_PROCESSOR_EXECUTION_CONTEXT_H_
+#ifndef PLUGIN_X_TESTS_DRIVER_PROCESSOR_EXECUTION_CONTEXT_H_
+#define PLUGIN_X_TESTS_DRIVER_PROCESSOR_EXECUTION_CONTEXT_H_
 
 #include <istream>
 #include <map>
@@ -34,6 +34,7 @@
 #include "plugin/x/tests/driver/connector/connection_manager.h"
 #include "plugin/x/tests/driver/formatters/console.h"
 #include "plugin/x/tests/driver/processor/commands/expected_error.h"
+#include "plugin/x/tests/driver/processor/commands/expected_warnings.h"
 #include "plugin/x/tests/driver/processor/commands/macro.h"
 #include "plugin/x/tests/driver/processor/script_stack.h"
 #include "plugin/x/tests/driver/processor/variable_container.h"
@@ -45,6 +46,7 @@ class Execution_context {
     bool m_bindump{false};
     bool m_show_warnings{false};
     bool m_fatal_errors{true};
+    bool m_fatal_warnings{false};
     bool m_show_query_result{true};
     std::string m_import_path{FN_CURLIB, FN_LIBCHAR, '\0'};
   };
@@ -54,8 +56,11 @@ class Execution_context {
                     Variable_container *variables, const Console &console)
       : m_options(options),
         m_connection(cm),
-        m_expected_error(m_options.m_fatal_errors, console, &m_script_stack),
         m_variables(variables),
+        m_expected_error(m_options.m_fatal_errors, console, &m_script_stack),
+        m_expected_warnings(m_options.m_fatal_errors,
+                            m_options.m_fatal_warnings, console,
+                            &m_script_stack),
         m_console(console) {}
 
   void set_options(const Options &options) { m_options = options; }
@@ -64,10 +69,12 @@ class Execution_context {
   std::string m_command_name;
   Connection_manager *m_connection;
   Script_stack m_script_stack;
-  Expected_error m_expected_error;
   Variable_container *m_variables;
+  Expected_error m_expected_error;
+  Expected_warnings m_expected_warnings;
   const Console &m_console;
   Macro_container m_macros;
+  std::map<std::string, std::vector<xcl::Column_metadata>> m_stored_metadata;
 
   xcl::XSession *session() { return m_connection->active_xsession(); }
 
@@ -92,4 +99,4 @@ class Execution_context {
   }
 };
 
-#endif  // X_TESTS_DRIVER_PROCESSOR_EXECUTION_CONTEXT_H_
+#endif  // PLUGIN_X_TESTS_DRIVER_PROCESSOR_EXECUTION_CONTEXT_H_

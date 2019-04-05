@@ -44,14 +44,14 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "dict0dd.h"
 #include "dict0dict.h"
 #include "dict0priv.h"
-#include "dict0sdi-decompress.h"
-#include "dict0sdi.h"
 #include "fsp0fsp.h"
 #include "ha_prototypes.h"
 #include "lob0lob.h"
 #include "lock0lock.h"
 #include "lock0types.h"
-#include "my_inttypes.h"
+
+#include "dict0sdi-decompress.h"
+#include "dict0sdi.h"
 #include "pars0pars.h"
 #include "rem0cmp.h"
 #include "row0ins.h"
@@ -223,8 +223,7 @@ UNIV_INLINE
 ib_bool_t ib_btr_cursor_is_positioned(
     btr_pcur_t *pcur) /*!< in: InnoDB persistent cursor */
 {
-  return (pcur->old_stored && (pcur->pos_state == BTR_PCUR_IS_POSITIONED ||
-                               pcur->pos_state == BTR_PCUR_WAS_POSITIONED));
+  return (pcur->is_positioned());
 }
 
 /** Find table using table name.
@@ -363,7 +362,7 @@ static ib_err_t ib_read_tuple(
       dfield = dtuple_get_nth_field(dtuple, i);
     }
 
-    data = rec_get_nth_field(copy, offsets, i, &len);
+    data = rec_get_nth_field_instant(copy, offsets, i, index, &len);
 
     /* Fetch and copy any externally stored column. */
     if (rec_offs_nth_extern(offsets, i)) {
@@ -373,8 +372,8 @@ static ib_err_t ib_read_tuple(
       means that partial update of LOB is not supported
       via this interface.*/
       data = lob::btr_rec_copy_externally_stored_field(
-          index, copy, offsets, page_size, i, &len, dict_index_is_sdi(index),
-          tuple->heap);
+          nullptr, index, copy, offsets, page_size, i, &len, nullptr,
+          dict_index_is_sdi(index), tuple->heap);
 
       ut_a(len != UNIV_SQL_NULL);
     }
@@ -985,11 +984,12 @@ ib_err_t ib_cursor_close(ib_crsr_t ib_crsr) /*!< in,own: InnoDB cursor */
     --trx->n_mysql_tables_in_use;
   }
 
+  row_prebuilt_free(prebuilt, FALSE);
+  cursor->prebuilt = NULL;
+
   if (cursor->mdl != nullptr) {
     dd_mdl_release(trx->mysql_thd, &cursor->mdl);
   }
-  row_prebuilt_free(prebuilt, FALSE);
-  cursor->prebuilt = NULL;
 
   mem_heap_free(cursor->query_heap);
   mem_heap_free(cursor->heap);
@@ -1363,10 +1363,10 @@ ib_err_t ib_execute_update_query_graph(
 
   node = q_proc->node.upd;
 
-  ut_a(pcur->btr_cur.index->is_clustered());
+  ut_a(pcur->m_btr_cur.index->is_clustered());
   btr_pcur_copy_stored_position(node->pcur, pcur);
 
-  ut_a(node->pcur->rel_pos == BTR_PCUR_ON);
+  ut_a(node->pcur->m_rel_pos == BTR_PCUR_ON);
 
   savept = trx_savept_take(trx);
 
@@ -3159,8 +3159,6 @@ ib_err_t ib_sdi_delete(uint32_t tablespace_id, const ib_sdi_key_t *ib_sdi_key,
           << "sdi_delete failed: tablespace_id: " << tablespace_id
           << " Key: " << ib_sdi_key->sdi_key->type << " "
           << ib_sdi_key->sdi_key->id << " Error returned: " << err;
-      bool sdi_delete_failed = true;
-      ut_ad(!sdi_delete_failed);
     }
   }
 #endif /* UNIV_DEBUG */

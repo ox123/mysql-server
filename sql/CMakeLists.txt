@@ -75,9 +75,6 @@ ADD_CUSTOM_COMMAND(
 )
 
 ADD_DEFINITIONS(-DMYSQL_SERVER)
-IF(SSL_DEFINES)
- ADD_DEFINITIONS(${SSL_DEFINES})
-ENDIF()
 
 SET(DD_SOURCES
   dd/collection.cc
@@ -89,6 +86,8 @@ SET(DD_SOURCES
   dd/dd_tablespace.cc
   dd/dd_trigger.cc
   dd/dd_view.cc
+  dd/dd_utility.cc
+  dd/properties.cc
 
   dd/impl/bootstrap_ctx.cc
   dd/impl/bootstrapper.cc
@@ -138,10 +137,13 @@ SET(DD_SOURCES
   dd/impl/system_views/schemata.cc
   dd/impl/system_views/statistics.cc
   dd/impl/system_views/st_spatial_reference_systems.cc
+  dd/impl/system_views/st_units_of_measure.cc
   dd/impl/system_views/st_geometry_columns.cc
   dd/impl/system_views/tables.cc
   dd/impl/system_views/table_constraints.cc
   dd/impl/system_views/triggers.cc
+  dd/impl/system_views/view_routine_usage.cc
+  dd/impl/system_views/view_table_usage.cc
   dd/impl/system_views/views.cc
 
   dd/impl/tables/character_sets.cc
@@ -227,11 +229,13 @@ SET(DD_SOURCES
 
 SET(SQL_GIS_SOURCES
   geometry_rtree.cc
+  gis/area.cc
   gis/covered_by.cc
   gis/crosses.cc
   gis/difference.cc
   gis/disjoint.cc
   gis/distance.cc
+  gis/distance_functor.cc
   gis/distance_sphere.cc
   gis/equals.cc
   gis/gc_utils.cc
@@ -244,12 +248,17 @@ SET(SQL_GIS_SOURCES
   gis/overlaps.cc
   gis/ring_flip_visitor.cc
   gis/rtree_support.cc
+  gis/simplify.cc
   gis/srs/srs.cc
   gis/srs/wkt_parser.cc
+  gis/st_units_of_measure.cc
   gis/touches.cc
+  gis/transform.cc
   gis/union.cc
   gis/within.cc
-  gis/wkb_parser.cc
+  gis/wkb.cc
+  gis/wkb_size_visitor.cc
+  gis/wkb_visitor.cc
   item_geofunc.cc
   item_geofunc_buffer.cc
   item_geofunc_internal.cc
@@ -260,12 +269,16 @@ SET(SQL_GIS_SOURCES
 
 SET(MYSQL_SERVER_SUB_COMPONENT_SOURCES
   server_component/backup_lock_service.cc
+  server_component/clone_protocol_service.cc
   server_component/mysql_string_service.cc
   server_component/persistent_dynamic_loader.cc
   server_component/component_sys_var_service.cc
   server_component/component_status_var_service.cc
+  server_component/ongoing_transaction_query_service.cc
   server_component/system_variable_source_imp.cc
   server_component/security_context_imp.cc
+  server_component/host_application_signal_imp.cc
+  server_component/audit_api_message_service_imp.cc
   )
 
 SET(SQL_SHARED_SOURCES
@@ -273,6 +286,7 @@ SET(SQL_SHARED_SOURCES
   auth/auth_common.cc
   auth/dynamic_privileges_impl.cc
   auth/dynamic_privilege_table.cc
+  auth/acl_table_user.cc
   auth/sql_authentication.cc
   auth/sql_auth_cache.cc
   auth/sql_authorization.cc
@@ -292,6 +306,7 @@ SET(SQL_SHARED_SOURCES
   check_stack.cc
   conn_handler/connection_handler_manager.cc 
   clone_handler.cc
+  create_field.cc
   current_thd.cc
   dd_sql_view.cc
   dd_sp.cc
@@ -342,6 +357,7 @@ SET(SQL_SHARED_SOURCES
   locking_service.cc
   log.cc
   mdl.cc
+  mdl_context_backup.cc
   migrate_keyring.cc
   my_decimal.cc
   mysqld.cc
@@ -397,6 +413,7 @@ SET(SQL_SHARED_SOURCES
   sdi_utils.cc
   session_tracker.cc
   set_var.cc 
+  sorting_iterator.cc
   sp.cc
   sp_cache.cc
   sp_head.cc
@@ -588,7 +605,7 @@ ENDIF()
 # Segfault in boost::geometry code at high optimization levels
 IF(CMAKE_CXX_COMPILER_ID MATCHES "SunPro")
   STRING(TOUPPER "${CMAKE_BUILD_TYPE}" CMAKEBT)
-  IF(CMAKEBT MATCHES "^REL")
+  IF(CMAKEBT MATCHES "REL")
     ADD_COMPILE_FLAGS(item_geofunc_buffer.cc COMPILE_FLAGS "-xO2")
   ENDIF()
 ENDIF()
@@ -618,6 +635,25 @@ IF(WIN32)
     item_geofunc_relchecks.cc
     item_geofunc_setops.cc
     COMPILE_FLAGS "/bigobj")
+ENDIF()
+
+# Force optimization of (large) MYSQLparse function in MSVC
+IF(WIN32 AND NOT WIN32_CLANG)
+  IF (MSVC_VERSION GREATER_EQUAL 1910)
+    ADD_COMPILE_FLAGS(
+      ${CMAKE_CURRENT_BINARY_DIR}/sql_yacc.cc
+      COMPILE_FLAGS "/d2OptimizeHugeFunctions")
+  ELSE()
+      # The optimization _may_ be available in VS2015 if hotfix
+      # KB3207317 is installed
+      MY_CHECK_CXX_COMPILER_FLAG("/d2OptimizeHugeFunctions"
+                                 HAVE_OPTIMIZE_HUGE_FUNCTIONS)
+      IF(HAVE_OPTIMIZE_HUGE_FUNCTIONS)
+        ADD_COMPILE_FLAGS(
+          ${CMAKE_CURRENT_BINARY_DIR}/sql_yacc.cc
+          COMPILE_FLAGS "/d2OptimizeHugeFunctions")
+      ENDIF()
+  ENDIF()
 ENDIF()
 
 # Common for all versions of GCC/Clang
@@ -653,6 +689,35 @@ ADD_DEPENDENCIES(sql_gis GenBootstrapPriv)
 ADD_DEPENDENCIES(sql_gis GenSysSchema)
 ADD_DEPENDENCIES(sql_gis GenError)
 
+# A class with a reference member lacks a user-defined constructor,
+# which can lead to errors.
+# Constexpr function return type is not a literal type.
+IF(CMAKE_CXX_COMPILER_ID MATCHES "SunPro")
+  SET_TARGET_PROPERTIES(sql_gis PROPERTIES
+    COMPILE_FLAGS "-erroff=refmemnoconstr,w_constexprnonlitret")
+  ADD_COMPILE_FLAGS(
+    item_geofunc_setops.cc
+    COMPILE_FLAGS "-erroff=refmemnoconstr")
+ENDIF()
+
+# -g0 is the same as -g, except that inlining is enabled.
+# With Studio 12.6 we may get linking errors for large binaries,
+# so we add -g0 here to enable inlining of boost/geometry.
+# This also cuts link time by almost one hour for large binaries ....
+IF(CMAKE_CXX_COMPILER_ID MATCHES "SunPro")
+  ADD_COMPILE_FLAGS(
+    ${SQL_GIS_SOURCES}
+    sql_exception_handler.cc
+    COMPILE_FLAGS " -g0 -xdebuginfo=no%decl")
+ENDIF()
+
+# /permissive- gives MSVC compilation error in Boost's pj_gridinfo.hpp
+IF(MSVC AND NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
+  ADD_COMPILE_FLAGS(
+    "gis/transform.cc"
+    COMPILE_FLAGS " /permissive")
+ENDIF()
+
 ADD_CONVENIENCE_LIBRARY(sql_dd ${DD_SOURCES})
 ADD_DEPENDENCIES(sql_dd GenServerSource)
 ADD_DEPENDENCIES(sql_dd GenDigestServerSource)
@@ -679,7 +744,9 @@ SET (BINLOG_SOURCE rpl_gtid_misc.cc
                    rpl_gtid_sid_map.cc rpl_gtid_set.cc rpl_gtid_specification.cc
                    rpl_gtid_state.cc rpl_gtid_owned.cc rpl_gtid_execution.cc
                    rpl_gtid_mutex_cond_array.cc rpl_gtid_persist.cc
-                   log_event.cc binlog.cc sql_binlog.cc
+                   log_event.cc binlog.cc sql_binlog.cc basic_ostream.cc
+                   binlog_ostream.cc basic_istream.cc binlog_istream.cc
+                   binlog_reader.cc rpl_log_encryption.cc rpl_cipher.cc
                    rpl_filter.cc rpl_record.cc rpl_trx_tracking.cc
                    rpl_utility.cc rpl_injector.cc rpl_table_access.cc)
 ADD_CONVENIENCE_LIBRARY(binlog ${BINLOG_SOURCE})
@@ -688,7 +755,7 @@ TARGET_LINK_LIBRARIES(binlog binlogevents_static)
 SET (RPL_SOURCE rpl_handler.cc rpl_tblmap.cc rpl_context.cc)
 ADD_DEPENDENCIES(binlog GenError)
 ADD_CONVENIENCE_LIBRARY(rpl ${RPL_SOURCE})
-SET (MASTER_SOURCE rpl_master.cc rpl_binlog_sender.cc)
+SET (MASTER_SOURCE rpl_master.cc rpl_binlog_sender.cc binlog_reader.cc)
 ADD_DEPENDENCIES(rpl GenError)
 ADD_CONVENIENCE_LIBRARY(master ${MASTER_SOURCE})
 ADD_DEPENDENCIES(master GenError)
@@ -699,7 +766,7 @@ SET (SLAVE_SOURCE rpl_slave.cc rpl_reporting.cc rpl_mi.cc rpl_rli.cc
                   rpl_rli_pdb.cc rpl_info_dummy.cc rpl_mts_submode.cc
                   rpl_slave_commit_order_manager.cc rpl_msr.cc
                   rpl_trx_boundary_parser.cc rpl_channel_service_interface.cc
-                  rpl_slave_until_options.cc)
+                  rpl_slave_until_options.cc rpl_applier_reader.cc)
 ADD_CONVENIENCE_LIBRARY(slave ${SLAVE_SOURCE})
 ADD_DEPENDENCIES(slave GenError)
 
@@ -771,7 +838,7 @@ SET_TARGET_PROPERTIES(mysqld PROPERTIES INTERFACE_LINK_LIBRARIES "")
 SET(WITH_MYSQLD_LDFLAGS "" CACHE STRING "Additional linker flags for mysqld")
 MARK_AS_ADVANCED(WITH_MYSQLD_LDFLAGS)
 IF(WITH_MYSQLD_LDFLAGS)
-  GET_TARGET_PROPERTY(mysqld LINK_FLAGS MYSQLD_LINK_FLAGS)
+  GET_TARGET_PROPERTY(MYSQLD_LINK_FLAGS mysqld LINK_FLAGS)
   IF(NOT MYSQLD_LINK_FLAGS)
     SET(MYSQLD_LINK_FLAGS) 
   ENDIF() 

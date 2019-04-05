@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -31,6 +31,7 @@
 #include <time.h>
 #include <algorithm>
 
+#include "my_byteorder.h"
 #include "my_compiler.h"
 #include "my_dbug.h"
 #include "my_default.h"
@@ -42,6 +43,7 @@
 #include "my_tree.h"
 #include "mysys_err.h"
 #include "print_version.h"
+#include "sql/field.h"
 #include "storage/myisam/myisam_sys.h"
 #include "storage/myisam/myisamdef.h"
 #include "storage/myisam/queues.h"
@@ -154,8 +156,7 @@ static int test_space_compress(HUFF_COUNTS *huff_counts, my_off_t records,
 static HUFF_TREE *make_huff_trees(HUFF_COUNTS *huff_counts, uint trees);
 static int make_huff_tree(HUFF_TREE *tree, HUFF_COUNTS *huff_counts);
 static int compare_huff_elements(void *not_used, uchar *a, uchar *b);
-static int save_counts_in_queue(uchar *key, element_count count,
-                                HUFF_TREE *tree);
+static int save_counts_in_queue(void *v_key, element_count count, void *v_tree);
 static my_off_t calc_packed_length(HUFF_COUNTS *huff_counts, uint flag);
 static uint join_same_trees(HUFF_COUNTS *huff_counts, uint trees);
 static int make_huff_decode_table(HUFF_TREE *huff_tree, uint trees);
@@ -1426,9 +1427,8 @@ static int make_huff_tree(HUFF_TREE *huff_tree, HUFF_COUNTS *huff_counts) {
       in fact irrelevant here. We will establish the correct order
       later.
     */
-    tree_walk(&huff_counts->int_tree,
-              (int (*)(void *, element_count, void *))save_counts_in_queue,
-              (uchar *)huff_tree, left_root_right);
+    tree_walk(&huff_counts->int_tree, save_counts_in_queue, (uchar *)huff_tree,
+              left_root_right);
   } else {
     huff_tree->elements = found;
     huff_tree->tree_pack_length =
@@ -1554,8 +1554,10 @@ static int compare_tree(const void *cmp_arg MY_ATTRIBUTE((unused)),
     0
  */
 
-static int save_counts_in_queue(uchar *key, element_count count,
-                                HUFF_TREE *tree) {
+static int save_counts_in_queue(void *v_key, element_count count,
+                                void *v_tree) {
+  uchar *key = static_cast<uchar *>(v_key);
+  HUFF_TREE *tree = static_cast<HUFF_TREE *>(v_tree);
   HUFF_ELEMENT *new_huff_el;
 
   new_huff_el = tree->element_buffer + (tree->elements++);
@@ -1761,7 +1763,8 @@ static void make_traverse_code_tree(HUFF_TREE *huff_tree, HUFF_ELEMENT *element,
   if (!element->a.leaf.null) {
     chr = element->a.leaf.element_nr;
     huff_tree->code_len[chr] = (uchar)(8 * sizeof(ulonglong) - size);
-    huff_tree->code[chr] = (code >> size);
+    // >> 64 is undefined (platform specific)
+    huff_tree->code[chr] = size >= 64 ? 0 : (code >> size);
     if (huff_tree->height < 8 * sizeof(ulonglong) - size)
       huff_tree->height = 8 * sizeof(ulonglong) - size;
   } else {
@@ -2653,7 +2656,8 @@ static void flush_bits(void) {
   ulonglong bit_buffer;
 
   bits = file_buffer.bits & ~7;
-  bit_buffer = file_buffer.bitbucket >> bits;
+  // >> 64 is undefined (platform specific)
+  bit_buffer = bits >= 64 ? 0 : file_buffer.bitbucket >> bits;
   bits = BITS_SAVED - bits;
   while (bits > 0) {
     bits -= 8;
@@ -2744,7 +2748,6 @@ static int save_state_mrg(File file, PACK_MRG_INFO *mrg, my_off_t new_length,
 
 static void mrg_reset(PACK_MRG_INFO *mrg) {
   if (mrg->current) {
-    mi_extra(*mrg->current, HA_EXTRA_NO_CACHE, 0);
     mrg->current = 0;
   }
 }
@@ -2758,7 +2761,6 @@ static int mrg_rrnd(PACK_MRG_INFO *info, uchar *buf) {
     isam_info = *(info->current = info->file);
     info->end = info->current + info->count;
     mi_reset(isam_info);
-    mi_extra(isam_info, HA_EXTRA_CACHE, 0);
     filepos = isam_info->s->pack.header_length;
   } else {
     isam_info = *info->current;
@@ -2771,13 +2773,11 @@ static int mrg_rrnd(PACK_MRG_INFO *info, uchar *buf) {
               (*isam_info->s->read_rnd)(isam_info, (uchar *)buf, filepos, 1)) ||
         error != HA_ERR_END_OF_FILE)
       return (error);
-    mi_extra(isam_info, HA_EXTRA_NO_CACHE, 0);
     if (info->current + 1 == info->end) return (HA_ERR_END_OF_FILE);
     info->current++;
     isam_info = *info->current;
     filepos = isam_info->s->pack.header_length;
     mi_reset(isam_info);
-    mi_extra(isam_info, HA_EXTRA_CACHE, 0);
   }
 }
 

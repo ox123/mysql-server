@@ -675,14 +675,14 @@ create temporary table t2 (a int);
 let $have_debug = `SELECT VERSION() LIKE '%debug%'`;
 if (!$have_debug)
 {
-  --replace_regex /8/X/
-  call p_verify_status_increment(8, 0, 0, 0);
+  --replace_regex /7/X/
+  call p_verify_status_increment(7, 0, 0, 0);
 }
 
 if ($have_debug)
 {
-  --replace_regex /9/X/
-  call p_verify_status_increment(9, 0, 0, 0);
+  --replace_regex /8/X/
+  call p_verify_status_increment(8, 0, 0, 0);
 }
 --enable_warnings
 set sql_mode=default;
@@ -723,7 +723,7 @@ call p_verify_status_increment(2, 0, 1, 0);
 alter table t2 add column b int default 5;
 --echo # A commit is done internally by ALTER. 
 --disable_warnings
-call p_verify_status_increment(4, 0, 3, 0);
+call p_verify_status_increment(2, 0, 3, 0);
 commit;
 --echo # There is nothing left to commit
 call p_verify_status_increment(0, 0, 0, 0);
@@ -737,7 +737,7 @@ call p_verify_status_increment(0, 0, 0, 0);
 --echo
 truncate table t2;
 --disable_warnings
-call p_verify_status_increment(6, 0, 4, 0);
+call p_verify_status_increment(5, 0, 4, 0);
 commit;
 --echo # There is nothing left to commit
 call p_verify_status_increment(0, 0, 0, 0);
@@ -822,13 +822,13 @@ create table t2 (a int);
 # COM_PREPARE.
 if (`SELECT $PS_PROTOCOL = 0`)
 {
-  --replace_regex /11/<commit_count>/
-  call p_verify_status_increment(11, 4, 6, 0);
+  --replace_regex /10/<commit_count>/
+  call p_verify_status_increment(10, 4, 6, 0);
 }
 if (`SELECT $PS_PROTOCOL > 0`)
 {
-  --replace_regex /12/<commit_count>/
-  call p_verify_status_increment(12, 4, 6, 0);
+  --replace_regex /11/<commit_count>/
+  call p_verify_status_increment(11, 4, 6, 0);
 }
 --echo # One extra transaction to load table 't2' into data-dictionary cache.
 do (select f1() from t1 where a=2);
@@ -882,44 +882,44 @@ create table t3 select a from t2;
 # COM_PREPARE.
 if (`SELECT $PS_PROTOCOL = 0`)
 {
- --replace_regex /12/<commit_count>/
-  call p_verify_status_increment(12, 4, 4, 4);
+  --replace_regex /11/<commit_count>/
+  call p_verify_status_increment(11, 4, 4, 4);
 }
 if (`SELECT $PS_PROTOCOL > 0`)
 {
-  --replace_regex /13/<commit_count>/
-  call p_verify_status_increment(13, 4, 4, 4);
+  --replace_regex /12/<commit_count>/
+  call p_verify_status_increment(12, 4, 4, 4);
 }
 alter table t3 add column (b int);
 
 if (!$have_debug)
 {
-  --replace_regex /17/X/
-  call p_verify_status_increment(17, 4, 2, 0);
+  --replace_regex /19/X/
+  call p_verify_status_increment(19, 4, 2, 0);
 }
 
 if ($have_debug)
 {
-  --replace_regex /19/X/
-  call p_verify_status_increment(19, 4, 2, 0);
+  --replace_regex /20/X/
+  call p_verify_status_increment(20, 4, 2, 0);
 }
 
 alter table t3 rename t4;
 call p_verify_status_increment(20, 4, 3, 0);
 rename table t4 to t3;
-call p_verify_status_increment(23, 4, 5, 0);
+call p_verify_status_increment(24, 4, 5, 0);
 truncate table t3;
 
 if (!$have_debug)
 {
-  --replace_regex /9/X/
-  call p_verify_status_increment(9, 4, 4, 0);
+  --replace_regex /8/X/
+  call p_verify_status_increment(8, 4, 4, 0);
 }
 
 if ($have_debug)
 {
-  --replace_regex /10/X/
-  call p_verify_status_increment(10, 4, 4, 0);
+  --replace_regex /9/X/
+  call p_verify_status_increment(9, 4, 4, 0);
 }
 
 create view v1 as select * from t2;
@@ -931,7 +931,7 @@ commit;
 call p_verify_status_increment(0, 0, 0, 0);
 check table t1, t2, t3;
 --echo # Extra transactions to load t3 into data-dictionary and table caches
-call p_verify_status_increment(12, 0, 6, 0);
+call p_verify_status_increment(9, 0, 6, 0);
 commit;
 call p_verify_status_increment(0, 0, 0, 0);
 drop view v1;

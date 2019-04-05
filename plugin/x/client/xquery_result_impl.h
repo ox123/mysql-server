@@ -25,8 +25,8 @@
 // MySQL DB access module, for use by plugins and others
 // For the module that implements interactive DB functionality see mod_db
 
-#ifndef X_CLIENT_XQUERY_RESULT_IMPL_H_
-#define X_CLIENT_XQUERY_RESULT_IMPL_H_
+#ifndef PLUGIN_X_CLIENT_XQUERY_RESULT_IMPL_H_
+#define PLUGIN_X_CLIENT_XQUERY_RESULT_IMPL_H_
 
 #include <memory>
 #include <string>
@@ -57,6 +57,7 @@ class Query_result : public XQuery_result {
       std::vector<std::string> *out_ids) const override;
 
   const Metadata &get_metadata(XError *out_error) override;
+  void set_metadata(const Metadata &metadata) override;
   const Warnings &get_warnings() override;
 
   bool next_resultset(XError *out_error) override;
@@ -65,6 +66,7 @@ class Query_result : public XQuery_result {
   bool get_next_row(const XRow **out_row, XError *out_error) override;
   const XRow *get_next_row(XError *out_error) override;
   bool has_resultset(XError *out_error) override;
+  bool is_out_parameter_resultset() const override;
 
  private:
   void clear();
@@ -74,16 +76,12 @@ class Query_result : public XQuery_result {
                                const uint32_t payload_size);
 
   bool had_fetch_not_ended() const;
-  void read_stmt_ok();
+  void check_if_stmt_ok();
   void read_if_needed_metadata();
   Row_ptr read_row();
   XError read_metadata(const XProtocol::Server_message_type_id msg_id,
                        std::unique_ptr<XProtocol::Message> &msg);
   bool is_end_resultset_msg() const;
-
-  static XError read_dump_out_params_or_resultset(
-      const XProtocol::Server_message_type_id msg_id,
-      std::unique_ptr<XProtocol::Message> &msg);
 
   void check_error(const XError &error);
   bool verify_current_instance(XError *out_error);
@@ -116,6 +114,7 @@ class Query_result : public XQuery_result {
 
   bool m_received_fetch_done{false};
   bool m_read_metadata{true};
+  bool m_is_out_param_resultset{false};
   std::shared_ptr<XProtocol> m_protocol;
   XError m_error;
   Metadata m_metadata;
@@ -135,4 +134,4 @@ class Query_result : public XQuery_result {
 
 }  // namespace xcl
 
-#endif  // X_CLIENT_XQUERY_RESULT_IMPL_H_
+#endif  // PLUGIN_X_CLIENT_XQUERY_RESULT_IMPL_H_

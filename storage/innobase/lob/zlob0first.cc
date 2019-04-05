@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2016, 2017, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2016, 2018, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
@@ -64,6 +64,8 @@ can contain. */
 ulint z_first_page_t::get_n_frag_entries() const {
   ut_ad(m_index != nullptr);
 
+  DBUG_EXECUTE_IF("innodb_zlob_first_use_only_1_frag_entries", return (1););
+
   const page_size_t page_size(dict_table_page_size(m_index->table));
   ulint len = page_size.physical();
   switch (len) {
@@ -89,6 +91,11 @@ buf_block_t *z_first_page_t::alloc(bool bulk) {
 
   page_no_t hint = FIL_NULL;
   m_block = alloc_lob_page(m_index, m_mtr, hint, bulk);
+
+  if (m_block == nullptr) {
+    return (nullptr);
+  }
+
   init();
 
   ut_ad(m_block->get_page_type() == FIL_PAGE_TYPE_ZLOB_FIRST);
@@ -167,7 +174,9 @@ z_index_entry_t z_first_page_t::alloc_index_entry(bool bulk) {
     first_loc = flst_get_first(free_lst, m_mtr);
   }
 
-  ut_ad(!fil_addr_is_null(first_loc));
+  if (fil_addr_is_null(first_loc)) {
+    return (z_index_entry_t());
+  }
 
   flst_node_t *first_ptr = addr2ptr_x(first_loc);
   z_index_entry_t entry(first_ptr, m_mtr);
@@ -183,6 +192,7 @@ request.
 z_frag_entry_t z_first_page_t::alloc_frag_entry(bool bulk) {
   flst_base_node_t *free_lst = free_frag_list();
   flst_base_node_t *used_lst = frag_list();
+
   fil_addr_t first_loc = flst_get_first(free_lst, m_mtr);
 
   if (fil_addr_is_null(first_loc)) {
@@ -191,7 +201,9 @@ z_frag_entry_t z_first_page_t::alloc_frag_entry(bool bulk) {
     first_loc = flst_get_first(free_lst, m_mtr);
   }
 
-  ut_ad(!fil_addr_is_null(first_loc));
+  if (fil_addr_is_null(first_loc)) {
+    return (z_frag_entry_t());
+  }
 
   flst_node_t *first_ptr = addr2ptr_x(first_loc);
   z_frag_entry_t entry(first_ptr, m_mtr);
@@ -200,37 +212,25 @@ z_frag_entry_t z_first_page_t::alloc_frag_entry(bool bulk) {
   return (entry);
 }
 
-/** Find a fragment page, that has space to store len bytes of data. If
-necessary, allocate a new fragment page.
-@param[in]	bulk		true if it is bulk operation
-                                (OPCODE_INSERT_BULK), false otherwise.
-@param[in]	len		length of data to be stored in fragment page.
-@param[out]	frag_page	the fragment page with the needed free space.
-@return a reference to the fragment page. */
-z_frag_entry_t z_first_page_t::find_frag_page(bool bulk, ulint len,
-                                              z_frag_page_t &frag_page) {
+frag_id_t z_first_page_t::alloc_fragment(bool bulk, ulint len,
+                                         z_frag_page_t &frag_page,
+                                         z_frag_entry_t &entry) {
   ut_ad(m_mtr != nullptr);
+
+  frag_id_t frag_id = FRAG_ID_NULL;
 
   frag_page.set_mtr(m_mtr);
   frag_page.set_index(m_index);
   frag_page.set_block_null();
-
-  z_frag_entry_t entry(m_mtr);
 
   const page_no_t first_page_no = get_page_no();
 
   /* Make sure that there will be some extra space for page directory
   entry and meta data.  Adding a margin to provide for this.  This is
   for exact fit. */
-  const ulint look_size_1 = len + frag_node_t::overhead();
+  const ulint look_size = len + frag_node_t::header_size();
 
-  /* If the fragment node is split into two, then ensure that atleast
-  1 byte can be stored in the other frag node. */
-  const ulint look_size_2 = len + (2 * frag_node_t::overhead()) + 1;
-
-  ut_ad(look_size_1 <= z_frag_page_t::max_payload(m_index));
-  ut_ad(look_size_1 <= z_frag_page_t::max_payload(m_index) ||
-        look_size_2 <= z_frag_page_t::max_payload(m_index));
+  ut_ad(look_size <= z_frag_page_t::max_payload(m_index));
 
   flst_base_node_t *frag_lst = frag_list();
 
@@ -243,7 +243,7 @@ z_frag_entry_t z_first_page_t::find_frag_page(bool bulk, ulint len,
 
     ulint big_free = entry.get_big_free_len();
 
-    if (big_free == look_size_1 || big_free >= look_size_2) {
+    if (big_free >= look_size) {
       /* Double check if the information in the index
       entry matches with the fragment page. If not, update
       the index entry. */
@@ -253,15 +253,21 @@ z_frag_entry_t z_first_page_t::find_frag_page(bool bulk, ulint len,
       const ulint big_free_len_2 = entry.get_big_free_len();
 
       if (big_free_len_1 == big_free_len_2) {
-        break;
+        frag_id = frag_page.alloc_fragment(len, entry);
+        if (frag_id != FRAG_ID_NULL) {
+          break;
+        }
       } else {
         entry.update(frag_page);
 
         /* Check again */
         big_free = entry.get_big_free_len();
 
-        if (big_free == look_size_1 || big_free >= look_size_2) {
-          break;
+        if (big_free >= look_size) {
+          frag_id = frag_page.alloc_fragment(len, entry);
+          if (frag_id != FRAG_ID_NULL) {
+            break;
+          }
         }
       }
     }
@@ -270,10 +276,24 @@ z_frag_entry_t z_first_page_t::find_frag_page(bool bulk, ulint len,
     entry.reset(nullptr);
   }
 
+  if (frag_id != FRAG_ID_NULL) {
+    return (frag_id);
+  }
+
   if (fil_addr_is_null(loc)) {
     /* Need to allocate a new fragment page. */
-    frag_page.alloc(first_page_no + 1, bulk);
+    buf_block_t *tmp_block = frag_page.alloc(first_page_no + 1, bulk);
+
+    if (tmp_block == nullptr) {
+      return (FRAG_ID_NULL);
+    }
+
     entry = alloc_frag_entry(bulk);
+
+    if (entry.is_null()) {
+      return (FRAG_ID_NULL);
+    }
+
     entry.set_page_no(frag_page.get_page_no());
     frag_page.set_frag_entry(entry.get_self_addr());
 
@@ -292,11 +312,15 @@ z_frag_entry_t z_first_page_t::find_frag_page(bool bulk, ulint len,
   const ulint big_free_len_2 = entry.get_big_free_len();
   ut_ad(big_free_len_1 == big_free_len_2);
 
-  ut_ad(big_free_len_1 == look_size_1 || big_free_len_1 >= look_size_2);
+  ut_ad(big_free_len_1 >= look_size);
   ut_ad(big_free_len_1 > len);
 #endif /* UNIV_DEBUG */
 
-  return (entry);
+  frag_id = frag_page.alloc_fragment(len, entry);
+
+  ut_ad(frag_id != FRAG_ID_NULL);
+
+  return (frag_id);
 }
 
 /** Print the page. */
@@ -366,7 +390,6 @@ void z_first_page_t::load_entry_x(fil_addr_t &addr, z_index_entry_t &entry) {
 /** Deallocate the first page of a compressed LOB. */
 void z_first_page_t::dealloc() {
   ut_ad(m_mtr != nullptr);
-
   btr_page_free_low(m_index, m_block, ULINT_UNDEFINED, m_mtr);
   m_block = nullptr;
 }
@@ -382,7 +405,7 @@ buf_block_t *z_first_page_t::load_x(const page_id_t &page_id,
 #ifdef UNIV_DEBUG
   /* Dump the page into the log file, if the page type is not matching
   one of the first page types. */
-  ulint page_type = get_page_type();
+  page_type_t page_type = get_page_type();
 
   switch (page_type) {
     case FIL_PAGE_TYPE_ZBLOB:
@@ -495,4 +518,4 @@ void z_first_page_t::import(trx_id_t trx_id) {
   }
 }
 
-}; /* namespace lob */
+} /* namespace lob */

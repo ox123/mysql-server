@@ -1,4 +1,4 @@
-/* Copyright (c) 2014, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2014, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -50,6 +50,7 @@ class Security_context {
  public:
   Security_context() { init(); }
   ~Security_context() { destroy(); }
+
   Security_context(const Security_context &src_sctx) {
     copy_security_ctx(src_sctx);
   }
@@ -339,7 +340,6 @@ class Security_context {
   /**
     Cache the schema level effective privileges (apply roles first!) for the
     currently active schema.
-    @param db_access
   */
   void cache_current_db_access(ulong db_access) { m_db_access = db_access; }
 
@@ -370,6 +370,14 @@ class Security_context {
   bool account_is_locked() { return m_is_locked; }
 
   void lock_account(bool is_locked) { m_is_locked = is_locked; }
+
+  void set_drop_policy(const std::function<void(Security_context *)> &func);
+
+  bool has_drop_policy(void);
+
+  bool has_executed_drop_policy(void);
+
+  void execute_drop_policy(void);
 
  private:
   void destroy();
@@ -434,6 +442,10 @@ class Security_context {
     True if this account can't be logged into.
   */
   bool m_is_locked;
+
+  bool m_executed_drop_policy;
+  bool m_has_drop_policy;
+  std::unique_ptr<std::function<void(Security_context *)>> m_drop_policy;
 };
 
 /**

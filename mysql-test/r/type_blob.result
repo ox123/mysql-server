@@ -14,7 +14,7 @@ Note	1246	Converting column 'b' from VARBINARY to BLOB
 Note	1246	Converting column 'c' from VARCHAR to TEXT
 CREATE TABLE t4 (c varchar(65530) character set utf8 not null);
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 Note	1246	Converting column 'c' from VARCHAR to TEXT
 show columns from t2;
 Field	Type	Null	Key	Default	Extra
@@ -328,35 +328,35 @@ a	a	a	a
 select t,count(*) from t1 group by t;
 t	count(*)
 	1
-hello	2
-HELLO MY	1
-a	1
 1	1
+HELLO MY	1
 NULL	2
+a	1
+hello	2
 select b,count(*) from t1 group by b;
 b	count(*)
 	1
-hello	1
 HELLO	1
 HELLO MY	1
-a	1
 NULL	3
+a	1
+hello	1
 select c,count(*) from t1 group by c;
 c	count(*)
-NULL	2
 	2
-hello	2
 HELLO MY	1
+NULL	2
 a	1
+hello	2
 select d,count(*) from t1 group by d;
 d	count(*)
-NULL	2
 	1
-hello	1
+1	1
 HELLO	1
 HELLO MY	1
+NULL	2
 a	1
-1	1
+hello	1
 drop table t1;
 create table t1 (a text, unique (a(2100))) engine=myisam;
 ERROR 42000: Specified key was too long; max key length is 1000 bytes

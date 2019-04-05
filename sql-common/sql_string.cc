@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -19,8 +19,6 @@
    You should have received a copy of the GNU General Public License
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
-
-/* This file is originally from the mysql distribution. Coded by monty */
 
 #include "sql_string.h"
 
@@ -91,7 +89,8 @@ bool String::real_alloc(size_t length) {
    new buffer is smaller than the currently allocated buffer (if one exists),
    no allocation occured.
 
-   @retval true An error occured when attempting to allocate memory.
+   @retval true An error occured when attempting to allocate memory or memory
+   allocation length exceeded allowed limit (4GB) for String Class.
 */
 bool String::mem_realloc(size_t alloc_length, bool force_on_heap) {
   size_t len = ALIGN_SIZE(alloc_length + 1);
@@ -106,8 +105,11 @@ bool String::mem_realloc(size_t alloc_length, bool force_on_heap) {
     m_alloced_length = 0;
   }
 
-  if (m_alloced_length < len) {
-    // Available bytes are not enough.
+  if (m_alloced_length < len) {  // Available bytes are not enough
+  // Signal an error if len exceeds uint32 max on 64-bit word platform.
+#if defined(__WORDSIZE) && (__WORDSIZE == 64)
+    if (len > std::numeric_limits<uint32>::max()) return true;
+#endif
     char *new_ptr;
     if (m_is_alloced) {
       if (!(new_ptr = static_cast<char *>(
@@ -227,7 +229,7 @@ bool String::copy(const String &str) {
   const char *str_ptr = str.m_ptr;
   if (alloc(str.m_length)) return true;
   m_length = str_length;
-  memmove(m_ptr, str_ptr, m_length);  // May be overlapping
+  if (m_length > 0) memmove(m_ptr, str_ptr, m_length);  // May be overlapping
   m_ptr[m_length] = 0;
   m_charset = str.m_charset;
   return false;
@@ -697,26 +699,27 @@ int String::reserve(size_t space_needed, size_t grow_by) {
   return false;
 }
 
-void String::qs_append(const char *str, size_t len) {
-  memcpy(m_ptr + m_length, str, len + 1);
-  m_length += len;
+void qs_append(const char *str_in, size_t len, String *str) {
+  memcpy(&((*str)[str->length()]), str_in, len + 1);
+  str->length(str->length() + len);
 }
 
-void String::qs_append(double d, size_t len) {
-  char *buff = m_ptr + m_length;
-  m_length += my_gcvt(d, MY_GCVT_ARG_DOUBLE, len, buff, NULL);
+void qs_append(double d, size_t len, String *str) {
+  char *buff = &((*str)[str->length()]);
+  int written = my_gcvt(d, MY_GCVT_ARG_DOUBLE, len, buff, NULL);
+  str->length(str->length() + written);
 }
 
-void String::qs_append(int i) {
-  char *buff = m_ptr + m_length;
+void qs_append(int i, String *str) {
+  char *buff = &((*str)[str->length()]);
   char *end = int10_to_str(i, buff, -10);
-  m_length += (int)(end - buff);
+  str->length(str->length() + (int)(end - buff));
 }
 
-void String::qs_append(uint i) {
-  char *buff = m_ptr + m_length;
+void qs_append(uint i, String *str) {
+  char *buff = &((*str)[str->length()]);
   char *end = int10_to_str(i, buff, 10);
-  m_length += (int)(end - buff);
+  str->length(str->length() + (int)(end - buff));
 }
 
 /*
@@ -898,22 +901,54 @@ size_t well_formed_copy_nchars(const CHARSET_INFO *to_cs, char *to,
         to_length -= to_cs->mbminlen;
       }
 
-      set_if_smaller(from_length, to_length);
-
+      size_t min_length = min(from_length, to_length);
       /*
         If we operate on a multi-byte fixed-width character set, make
         sure the string wasn't truncated in the middle of a character.
         If so, truncate to a character boundary.
       */
       if (to_cs->mbmaxlen > 1 && to_cs->mbmaxlen == to_cs->mbminlen)
-        from_length -= from_length % to_cs->mbmaxlen;
+        min_length -= min_length % to_cs->mbmaxlen;
 
-      res = to_cs->cset->well_formed_len(to_cs, from, from + from_length,
-                                         nchars, &well_formed_error);
+      res = to_cs->cset->well_formed_len(to_cs, from, from + min_length, nchars,
+                                         &well_formed_error);
       if (res > 0) memmove(to, from, res);
       *from_end_pos = from + res;
-      *well_formed_error_pos = well_formed_error ? from + res : NULL;
-      *cannot_convert_error_pos = NULL;
+
+      /*
+        If we are operating on a multi-byte variable-width character set and
+        "well_formed_error" is set to true, it means the string is not
+        well-formed (either partially or completely). But, in case of a
+        well-formed string whose string length is too long for the destination
+        buffer (i.e to_length), there is a possibility that the string is
+        truncated in the middle of a character, which would break its sequence.
+        This could lead to mistakenly rejecting the string as malformed.
+
+        To resolve this, we check if the full string contains a valid character
+        immediately after the returned end point. If it does, the string was
+        just truncated; if it doesn't, it was actually malformed.
+
+        For example: Consider a well-formed string of 300 bytes, which contained
+        a given three-byte code point at str[254..256]. Furthermore, suppose the
+        destination buffer is 255 bytes long. In this case, well_formed_len()
+        would return 254, so we would need to check the bytes str[254..257] to
+        see if they contain a well-formed character. This second invocation of
+        well_formed_len() would return 2, which takes us across the truncation
+        point, confirming that the problem was indeed truncation and not a
+        malformed code point.
+      */
+      if (well_formed_error && to_cs->mbmaxlen > 1 &&
+          res > min_length - to_cs->mbmaxlen) {
+        const char *from_end = from + min(res + to_cs->mbmaxlen, from_length);
+
+        size_t extra = to_cs->cset->well_formed_len(
+            to_cs, *from_end_pos, from_end, 1, &well_formed_error);
+
+        well_formed_error = (res + extra < min_length);
+      }
+
+      *well_formed_error_pos = well_formed_error ? *from_end_pos : nullptr;
+      *cannot_convert_error_pos = nullptr;
       if (from_offset) res += to_cs->mbminlen;
     }
   } else {
@@ -964,7 +999,7 @@ size_t well_formed_copy_nchars(const CHARSET_INFO *to_cs, char *to,
   return res;
 }
 
-void String::print(String *str) {
+void String::print(String *str) const {
   char *st = m_ptr;
   char *end = st + m_length;
 
@@ -1146,7 +1181,7 @@ size_t bin_to_hex_str(char *to, size_t to_len, char *from, size_t from_len) {
                                   // encoding for some input character
         return true
 */
-bool validate_string(const CHARSET_INFO *cs, const char *str, uint32 length,
+bool validate_string(const CHARSET_INFO *cs, const char *str, size_t length,
                      size_t *valid_length, bool *length_error) {
   if (cs->mbmaxlen > 1) {
     int well_formed_error;

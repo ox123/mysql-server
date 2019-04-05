@@ -1,4 +1,4 @@
-/* Copyright (c) 2015, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -61,8 +61,8 @@
 struct mysql_cond_t;
 struct mysql_mutex_t;
 
-int thd_init(THD *thd, char *stack_start, bool bound MY_ATTRIBUTE((unused)),
-             PSI_thread_key psi_key MY_ATTRIBUTE((unused))) {
+void thd_init(THD *thd, char *stack_start, bool bound MY_ATTRIBUTE((unused)),
+              PSI_thread_key psi_key MY_ATTRIBUTE((unused))) {
   DBUG_ENTER("thd_init");
   // TODO: Purge threads currently terminate too late for them to be added.
   // Note that P_S interprets all threads with thread_id != 0 as
@@ -90,8 +90,8 @@ int thd_init(THD *thd, char *stack_start, bool bound MY_ATTRIBUTE((unused)),
   }
   thd_set_thread_stack(thd, stack_start);
 
-  int retval = thd->store_globals();
-  DBUG_RETURN(retval);
+  thd->store_globals();
+  DBUG_VOID_RETURN;
 }
 
 THD *create_thd(bool enable_plugins, bool background_thread, bool bound,
@@ -288,3 +288,5 @@ bool thd_is_dd_update_stmt(const THD *thd) {
   */
   return (thd->variables.option_bits & OPTION_DD_UPDATE_CONTEXT);
 }
+
+my_thread_id thd_thread_id(const THD *thd) { return (thd->thread_id()); }

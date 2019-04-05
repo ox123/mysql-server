@@ -57,7 +57,8 @@ class ha_heap : public handler {
   ulonglong table_flags() const {
     return (HA_FAST_KEY_READ | HA_NO_BLOBS | HA_NULL_IN_KEY |
             HA_BINLOG_ROW_CAPABLE | HA_BINLOG_STMT_CAPABLE |
-            HA_NO_TRANSACTIONS | HA_HAS_RECORDS | HA_STATS_RECORDS_IS_EXACT);
+            HA_NO_TRANSACTIONS | HA_COUNT_ROWS_INSTANT |
+            HA_STATS_RECORDS_IS_EXACT);
   }
   ulong index_flags(uint inx, uint, bool) const {
     return ((table_share->key_info[inx].algorithm == HA_KEY_ALG_BTREE)
@@ -65,7 +66,10 @@ class ha_heap : public handler {
                 : HA_ONLY_WHOLE_INDEX | HA_KEY_SCAN_NOT_ROR);
   }
   uint max_supported_keys() const { return MAX_KEY; }
-  uint max_supported_key_part_length() const { return MAX_KEY_LENGTH; }
+  uint max_supported_key_part_length(
+      HA_CREATE_INFO *create_info MY_ATTRIBUTE((unused))) const {
+    return MAX_KEY_LENGTH;
+  }
   double scan_time() {
     return (double)(stats.records + stats.deleted) / 20.0 + 10;
   }

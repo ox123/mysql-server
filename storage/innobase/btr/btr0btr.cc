@@ -47,7 +47,6 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "ibuf0ibuf.h"
 #include "lock0lock.h"
 #include "my_dbug.h"
-#include "my_inttypes.h"
 #include "page0page.h"
 #include "page0zip.h"
 #include "rem0cmp.h"
@@ -282,18 +281,18 @@ dberr_t btr_root_adjust_on_import(
     } else {
       /* Check that the table flags and the tablespace
       flags match. */
-      ulint flags =
-          dict_tf_to_fsp_flags(table->flags, dict_table_is_encrypted(table));
+      ulint flags = dict_tf_to_fsp_flags(table->flags);
       ulint fsp_flags = fil_space_get_flags(table->space);
 
       /* We remove SDI flag from space flags temporarily for
       comparison because the space flags derived from table
       flags will not have SDI flag */
-      fsp_flags &= ~FSP_FLAGS_MASK_SDI;
+      FSP_FLAGS_UNSET_SDI(fsp_flags);
 
-      if (dict_table_is_sdi(index->table->id)) {
-        fsp_flags &= ~FSP_FLAGS_MASK_ENCRYPTION;
-      }
+      /* As encryption is not a table property, we don't keep
+      any encryption property related flag in table. Thus
+      exclude encryption flag as well. */
+      FSP_FLAGS_UNSET_ENCRYPTION(fsp_flags);
 
       err = fsp_flags_are_equal(flags, fsp_flags) ? DB_SUCCESS : DB_CORRUPTION;
     }
@@ -610,7 +609,8 @@ void btr_node_ptr_set_child_page_no(
   ut_ad(!rec_offs_comp(offsets) || rec_get_node_ptr_flag(rec));
 
   /* The child address is in the last field */
-  field = rec_get_nth_field(rec, offsets, rec_offs_n_fields(offsets) - 1, &len);
+  field = const_cast<byte *>(
+      rec_get_nth_field(rec, offsets, rec_offs_n_fields(offsets) - 1, &len));
 
   ut_ad(len == REC_NODE_PTR_SIZE);
 
@@ -2349,6 +2349,7 @@ rec_t *btr_page_split_and_insert(
   }
   n_uniq = dict_index_get_n_unique_in_tree(cursor->index);
 func_start:
+  ut_ad(tuple->m_heap != *heap);
   mem_heap_empty(*heap);
   *offsets = NULL;
 
@@ -3913,15 +3914,16 @@ ibool btr_index_rec_validate(
 
   n = dict_index_get_n_fields(index);
 
-  if (!page_is_comp(page) && (rec_get_n_fields_old(rec) != n
-                              /* a record for older SYS_INDEXES table
-                              (missing merge_threshold column) is acceptable. */
-                              && !(index->id == DICT_INDEXES_ID &&
-                                   rec_get_n_fields_old(rec) == n - 1))) {
+  if (!page_is_comp(page) &&
+      (rec_get_n_fields_old(rec, index) != n
+       /* a record for older SYS_INDEXES table
+       (missing merge_threshold column) is acceptable. */
+       && !(index->id == DICT_INDEXES_ID &&
+            rec_get_n_fields_old(rec, index) == n - 1))) {
     btr_index_rec_validate_report(page, rec, index);
 
-    ib::error(ER_IB_MSG_37)
-        << "Has " << rec_get_n_fields_old(rec) << " fields, should have " << n;
+    ib::error(ER_IB_MSG_37) << "Has " << rec_get_n_fields_old(rec, index)
+                            << " fields, should have " << n;
 
     if (dump_on_error) {
       fputs("InnoDB: corrupt record ", stderr);
@@ -3962,9 +3964,9 @@ ibool btr_index_rec_validate(
       }
     }
 
-    if ((field->prefix_len == 0 && len != UNIV_SQL_NULL && fixed_size &&
-         len != fixed_size) ||
-        (field->prefix_len > 0 && len != UNIV_SQL_NULL &&
+    if ((field->prefix_len == 0 && rec_field_not_null_not_add_col_def(len) &&
+         fixed_size && len != fixed_size) ||
+        (field->prefix_len > 0 && rec_field_not_null_not_add_col_def(len) &&
          len > field->prefix_len)) {
       btr_index_rec_validate_report(page, rec, index);
 
@@ -4740,7 +4742,7 @@ dberr_t btr_sdi_create_index(space_id_t space_id, bool dict_locked) {
   ut_ad(mach_read_from_4(page + FSP_HEADER_OFFSET + FSP_SPACE_FLAGS) ==
         fsp_flags);
 
-  fsp_flags = FSP_FLAGS_SET_SDI(fsp_flags);
+  FSP_FLAGS_SET_SDI(fsp_flags);
   mlog_write_ulint(FSP_HEADER_OFFSET + FSP_SPACE_FLAGS + page, fsp_flags,
                    MLOG_4BYTES, &mtr);
 

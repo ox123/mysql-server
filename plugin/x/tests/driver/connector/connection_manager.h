@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0,
@@ -22,8 +22,8 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
-#ifndef X_TESTS_DRIVER_CONNECTOR_CONNECTION_MANAGER_H_
-#define X_TESTS_DRIVER_CONNECTOR_CONNECTION_MANAGER_H_
+#ifndef PLUGIN_X_TESTS_DRIVER_CONNECTOR_CONNECTION_MANAGER_H_
+#define PLUGIN_X_TESTS_DRIVER_CONNECTOR_CONNECTION_MANAGER_H_
 
 #include <iostream>
 #include <map>
@@ -54,11 +54,11 @@ class Connection_manager {
 
   void connect_default(const bool send_cap_password_expired = false,
                        const bool client_interactive = false,
-                       const bool no_auth = false,
-                       const std::vector<std::string> &auth_methods = {});
+                       const bool no_auth = false);
   void create(const std::string &name, const std::string &user,
               const std::string &password, const std::string &db,
-              const std::vector<std::string> &auth_methods);
+              const std::vector<std::string> &auth_methods,
+              const bool is_raw_connection);
 
   void abort_active();
   bool is_default_active();
@@ -83,9 +83,9 @@ class Connection_manager {
   Map_name_vs_session m_session_holders;
   Session_holder_ptr m_active_holder;
   std::string m_active_session_name;
-  Connection_options m_connection_options;
+  Connection_options m_default_connection_options;
   Variable_container *m_variables;
   const Console &m_console;
 };
 
-#endif  // X_TESTS_DRIVER_CONNECTOR_CONNECTION_MANAGER_H_
+#endif  // PLUGIN_X_TESTS_DRIVER_CONNECTOR_CONNECTION_MANAGER_H_

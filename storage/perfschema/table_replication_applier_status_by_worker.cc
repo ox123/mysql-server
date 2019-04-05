@@ -33,6 +33,7 @@
 
 #include "my_compiler.h"
 #include "my_dbug.h"
+#include "sql/field.h"
 #include "sql/plugin_table.h"
 #include "sql/rpl_info.h"
 #include "sql/rpl_mi.h"
@@ -77,7 +78,17 @@ Plugin_table table_replication_applier_status_by_worker::m_table_def(
     "  APPLYING_TRANSACTION_IMMEDIATE_COMMIT_TIMESTAMP TIMESTAMP(6)\n"
     "                                                  not null,\n"
     "  APPLYING_TRANSACTION_START_APPLY_TIMESTAMP TIMESTAMP(6)\n"
-    "                                             not null\n",
+    "                                             not null,\n"
+    "  LAST_APPLIED_TRANSACTION_RETRIES_COUNT BIGINT UNSIGNED not null,\n"
+    "  LAST_APPLIED_TRANSACTION_LAST_TRANSIENT_ERROR_NUMBER INTEGER not null,\n"
+    "  LAST_APPLIED_TRANSACTION_LAST_TRANSIENT_ERROR_MESSAGE VARCHAR(1024),\n"
+    "  LAST_APPLIED_TRANSACTION_LAST_TRANSIENT_ERROR_TIMESTAMP TIMESTAMP(6)\n"
+    "                                                          not null,\n"
+    "  APPLYING_TRANSACTION_RETRIES_COUNT BIGINT UNSIGNED not null,\n"
+    "  APPLYING_TRANSACTION_LAST_TRANSIENT_ERROR_NUMBER INTEGER not null,\n"
+    "  APPLYING_TRANSACTION_LAST_TRANSIENT_ERROR_MESSAGE VARCHAR(1024),\n"
+    "  APPLYING_TRANSACTION_LAST_TRANSIENT_ERROR_TIMESTAMP TIMESTAMP(6)\n"
+    "                                                        not null\n",
     /* Options */
     " ENGINE=PERFORMANCE_SCHEMA",
     /* Tablespace */
@@ -239,44 +250,40 @@ int table_replication_applier_status_by_worker::rnd_next(void) {
        m_pos.next_channel()) {
     mi = channel_map.get_mi_at_pos(m_pos.m_index_1);
 
-    if (mi == nullptr) continue;
+    if (mi == nullptr) {
+      continue;
+    }
 
-    if (!mi->host[0]) continue;
+    if (!mi->host[0]) {
+      continue;
+    }
 
-    if (mi->rli == nullptr) continue;
+    if (mi->rli == nullptr) {
+      continue;
+    }
 
     wc = mi->rli->get_worker_count();
+    if (wc == 0) {
+      /* Single Thread Slave */
+      make_row(mi);
+      m_next_pos.set_channel_after(&m_pos);
+      channel_map.unlock();
+      return 0;
+    }
+    for (; m_pos.m_index_2 < wc; m_pos.next_worker()) {
+      /* Multi Thread Slave */
 
-    for (; m_pos.m_index_2 < wc + 1; m_pos.m_index_2++) {
-      if (m_pos.m_index_2 == 0) {
-        /* Looking for Single Thread Slave */
-
-        if (wc == 0) {
-          if (!make_row(mi)) {
-            m_next_pos.set_channel_after(&m_pos);
-            channel_map.unlock();
-            return 0;
-          }
-        }
-      } else {
-        /* Looking for Multi Thread Slave */
-
-        if ((m_pos.m_index_2 >= 1) && (m_pos.m_index_2 <= wc)) {
-          worker = mi->rli->get_worker(m_pos.m_index_2 - 1);
-          if (worker) {
-            if (!make_row(worker)) {
-              m_next_pos.set_after(&m_pos);
-              channel_map.unlock();
-              return 0;
-            }
-          }
-        }
+      worker = mi->rli->get_worker(m_pos.m_index_2);
+      if (worker) {
+        make_row(worker);
+        m_next_pos.set_after(&m_pos);
+        channel_map.unlock();
+        return 0;
       }
     }
   }
 
   channel_map.unlock();
-
   return HA_ERR_END_OF_FILE;
 }
 
@@ -299,18 +306,17 @@ int table_replication_applier_status_by_worker::rnd_pos(const void *pos) {
 
   wc = mi->rli->get_worker_count();
 
-  if (m_pos.m_index_1 == 0) {
-    /* Looking for Single Thread Slave */
-    if (wc == 0) {
-      res = make_row(mi);
-    }
+  if (wc == 0) {
+    /* Single Thread Slave */
+    make_row(mi);
+    res = 0;
   } else {
-    /* Looking for Multi Thread Slave */
-    if ((m_pos.m_index_2 >= 1) && (m_pos.m_index_2 <= wc)) {
-      worker = mi->rli->get_worker(m_pos.m_index_2 - 1);
-
+    /* Multi Thread Slave */
+    if (m_pos.m_index_2 < wc) {
+      worker = mi->rli->get_worker(m_pos.m_index_2);
       if (worker != NULL) {
-        res = make_row(worker);
+        make_row(worker);
+        res = 0;
       }
     }
   }
@@ -352,11 +358,17 @@ int table_replication_applier_status_by_worker::index_next(void) {
        m_pos.next_channel()) {
     mi = channel_map.get_mi_at_pos(m_pos.m_index_1);
 
-    if (mi == nullptr) continue;
+    if (mi == nullptr) {
+      continue;
+    }
 
-    if (!mi->host[0]) continue;
+    if (!mi->host[0]) {
+      continue;
+    }
 
-    if (mi->rli == nullptr) continue;
+    if (mi->rli == nullptr) {
+      continue;
+    }
 
     wc = mi->rli->get_worker_count();
 
@@ -525,14 +537,24 @@ void table_replication_applier_status_by_worker::populate_trx_info(
                                 &m_row.applying_trx_length,
                                 &m_row.applying_trx_original_commit_timestamp,
                                 &m_row.applying_trx_immediate_commit_timestamp,
-                                &m_row.applying_trx_start_apply_timestamp);
+                                &m_row.applying_trx_start_apply_timestamp,
+                                &m_row.applying_trx_last_retry_err_number,
+                                m_row.applying_trx_last_retry_err_msg,
+                                &m_row.applying_trx_last_retry_err_msg_length,
+                                &m_row.applying_trx_last_retry_timestamp,
+                                &m_row.applying_trx_retries_count);
 
   last_applied_trx.copy_to_ps_table(
       global_sid_map, m_row.last_applied_trx, &m_row.last_applied_trx_length,
       &m_row.last_applied_trx_original_commit_timestamp,
       &m_row.last_applied_trx_immediate_commit_timestamp,
       &m_row.last_applied_trx_start_apply_timestamp,
-      &m_row.last_applied_trx_end_apply_timestamp);
+      &m_row.last_applied_trx_end_apply_timestamp,
+      &m_row.last_applied_trx_last_retry_err_number,
+      m_row.last_applied_trx_last_retry_err_msg,
+      &m_row.last_applied_trx_last_retry_err_msg_length,
+      &m_row.last_applied_trx_last_retry_timestamp,
+      &m_row.last_applied_trx_retries_count);
 }
 
 int table_replication_applier_status_by_worker::read_row_values(
@@ -600,6 +622,33 @@ int table_replication_applier_status_by_worker::read_row_values(
           break;
         case 15: /*applying_trx_start_apply_timestamp*/
           set_field_timestamp(f, m_row.applying_trx_start_apply_timestamp);
+          break;
+        case 16: /*last_applied_trx_retries_count*/
+          set_field_ulonglong(f, m_row.last_applied_trx_retries_count);
+          break;
+        case 17: /*last_applied_trx_last_trans_errno*/
+          set_field_ulong(f, m_row.last_applied_trx_last_retry_err_number);
+          break;
+        case 18: /*last_applied_trx_last_retry_err_msg*/
+          set_field_varchar_utf8(
+              f, m_row.last_applied_trx_last_retry_err_msg,
+              m_row.last_applied_trx_last_retry_err_msg_length);
+          break;
+        case 19: /*last_applied_trx_last_retry_timestamp*/
+          set_field_timestamp(f, m_row.last_applied_trx_last_retry_timestamp);
+          break;
+        case 20: /*applying_trx_retries_count*/
+          set_field_ulonglong(f, m_row.applying_trx_retries_count);
+          break;
+        case 21: /*applying_trx_last_trans_errno*/
+          set_field_ulong(f, m_row.applying_trx_last_retry_err_number);
+          break;
+        case 22: /*applying_trx_last_retry_err_msg*/
+          set_field_varchar_utf8(f, m_row.applying_trx_last_retry_err_msg,
+                                 m_row.applying_trx_last_retry_err_msg_length);
+          break;
+        case 23: /*applying_trx_last_retry_timestamp*/
+          set_field_timestamp(f, m_row.applying_trx_last_retry_timestamp);
           break;
         default:
           DBUG_ASSERT(false);

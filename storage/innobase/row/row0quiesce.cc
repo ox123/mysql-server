@@ -33,15 +33,16 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include <errno.h>
 #include <my_aes.h>
 
+#include "dict0dd.h"
 #include "fsp0sysspace.h"
 #include "ha_prototypes.h"
 #include "ibuf0ibuf.h"
-#include "my_compiler.h"
-#include "my_dbug.h"
 #include "row0mysql.h"
 #include "row0quiesce.h"
 #include "srv0start.h"
 #include "trx0purge.h"
+
+#include "my_dbug.h"
 
 /** Write the meta data (index user fields) config file.
  @return DB_SUCCESS or error code. */
@@ -224,6 +225,44 @@ static MY_ATTRIBUTE((nonnull, warn_unused_result)) dberr_t
   return (err);
 }
 
+/** Write the metadata (table columns) config file. Serialise the contents
+of dict_col_t default value part if exists.
+@param[in]	col	column to which the default value belongs
+@param[in]	file	file to write to
+@return DB_SUCCESS or DB_IO_ERROR. */
+static MY_ATTRIBUTE((warn_unused_result)) dberr_t
+    row_quiesce_write_default_value(const dict_col_t *col, FILE *file) {
+  byte row[6];
+
+  if (col->instant_default != nullptr) {
+    bool null = (col->instant_default->len == UNIV_SQL_NULL);
+    uint8_t to_write = 2;
+
+    mach_write_to_1(&row[0], 1);
+    mach_write_to_1(&row[1], null);
+
+    if (!null) {
+      mach_write_to_4(&row[2], col->instant_default->len);
+      to_write += 4;
+    }
+
+    if (fwrite(row, 1, to_write, file) != to_write ||
+        (!null &&
+         fwrite(col->instant_default->value, 1, col->instant_default->len,
+                file) != col->instant_default->len)) {
+      return (DB_IO_ERROR);
+    }
+  } else {
+    row[0] = 0;
+
+    if (fwrite(row, 1, 1, file) != 1) {
+      return (DB_IO_ERROR);
+    }
+  }
+
+  return (DB_SUCCESS);
+}
+
 /** Write the meta data (table columns) config file. Serialise the contents of
  dict_col_t structure, along with the column name. All fields are serialized
  as ib_uint32_t.
@@ -293,6 +332,12 @@ static MY_ATTRIBUTE((warn_unused_result)) dberr_t row_quiesce_write_table(
 
       return (DB_IO_ERROR);
     }
+
+    if (row_quiesce_write_default_value(col, file) != DB_SUCCESS) {
+      ib_senderrf(thd, IB_LOG_LEVEL_WARN, ER_IO_WRITE_ERROR, errno,
+                  strerror(errno), "while writing table column default.");
+      return (DB_IO_ERROR);
+    }
   }
 
   return (DB_SUCCESS);
@@ -309,7 +354,7 @@ static MY_ATTRIBUTE((warn_unused_result)) dberr_t row_quiesce_write_header(
   byte value[sizeof(ib_uint32_t)];
 
   /* Write the meta-data version number. */
-  mach_write_to_4(value, IB_EXPORT_CFG_VERSION_V2);
+  mach_write_to_4(value, IB_EXPORT_CFG_VERSION_V3);
 
   DBUG_EXECUTE_IF("ib_export_io_write_failure_4", close(fileno(file)););
 
@@ -560,7 +605,7 @@ static MY_ATTRIBUTE((nonnull, warn_unused_result)) dberr_t
   char name[OS_FILE_MAX_PATH];
 
   /* If table is not encrypted, return. */
-  if (!dict_table_is_encrypted(table)) {
+  if (!dd_is_table_in_encrypted_tablespace(table)) {
     return (DB_SUCCESS);
   }
 
@@ -684,14 +729,14 @@ void row_quiesce_table_start(dict_table_t *table, /*!< in: quiesce this table */
   if (!trx_is_interrupted(trx)) {
     extern ib_mutex_t master_key_id_mutex;
 
-    if (dict_table_is_encrypted(table)) {
+    if (dd_is_table_in_encrypted_tablespace(table)) {
       /* Require the mutex to block key rotation. */
       mutex_enter(&master_key_id_mutex);
     }
 
     buf_LRU_flush_or_remove_pages(table->space, BUF_REMOVE_FLUSH_WRITE, trx);
 
-    if (dict_table_is_encrypted(table)) {
+    if (dd_is_table_in_encrypted_tablespace(table)) {
       mutex_exit(&master_key_id_mutex);
     }
 
@@ -752,7 +797,7 @@ void row_quiesce_table_complete(
   ib::info(ER_IB_MSG_1024) << "Deleting the meta-data file '" << cfg_name
                            << "'";
 
-  if (dict_table_is_encrypted(table)) {
+  if (dd_is_table_in_encrypted_tablespace(table)) {
     char cfp_name[OS_FILE_MAX_PATH];
 
     srv_get_encryption_data_filename(table, cfp_name, sizeof(cfp_name));

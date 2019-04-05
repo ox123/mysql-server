@@ -42,17 +42,19 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "ut0dbg.h"
 
 /** Report a failed assertion. */
-void ut_dbg_assertion_failed(
+[[noreturn]] void ut_dbg_assertion_failed(
     const char *expr, /*!< in: the failed assertion (optional) */
     const char *file, /*!< in: source file containing the assertion */
     ulint line)       /*!< in: line number of the assertion */
 {
 #if !defined(UNIV_HOTBACKUP) && !defined(UNIV_NO_ERR_MSGS)
-  sql_print_error("InnoDB: Assertion failure: %s:" ULINTPF
-                  "%s%s\n"
-                  "InnoDB: thread " UINT64PF,
-                  innobase_basename(file), line, expr != nullptr ? ":" : "",
-                  expr != nullptr ? expr : "", os_thread_handle());
+  ib::error(ER_IB_MSG_1273)
+      << "Assertion failure: " << innobase_basename(file) << ":" << line
+      << ((expr != nullptr) ? ":" : "") << ((expr != nullptr) ? expr : "")
+      << " thread " << os_thread_handle();
+
+  flush_error_log_messages();
+
 #else  /* !UNIV_HOTBACKUP && !defined(UNIV_NO_ERR_MSGS) */
   auto filename = base_name(file);
 

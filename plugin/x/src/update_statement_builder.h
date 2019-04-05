@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0,
@@ -22,8 +22,8 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
-#ifndef UPDATE_STATEMENT_BUILDER_H_
-#define UPDATE_STATEMENT_BUILDER_H_
+#ifndef PLUGIN_X_SRC_UPDATE_STATEMENT_BUILDER_H_
+#define PLUGIN_X_SRC_UPDATE_STATEMENT_BUILDER_H_
 
 #include "plugin/x/src/statement_builder.h"
 
@@ -40,7 +40,7 @@ class Update_statement_builder : public Crud_statement_builder {
 
  protected:
   using Update_operation = ::Mysqlx::Crud::UpdateOperation;
-  using Operation_list = ::google::protobuf::RepeatedPtrField<Update_operation>;
+  using Operation_list = Repeated_field_list<Update_operation>;
   using Operation_iterator = Operation_list::const_iterator;
 
   void add_operation(const Operation_list &operation,
@@ -60,4 +60,4 @@ class Update_statement_builder : public Crud_statement_builder {
 
 }  // namespace xpl
 
-#endif  // UPDATE_STATEMENT_BUILDER_H_
+#endif  // PLUGIN_X_SRC_UPDATE_STATEMENT_BUILDER_H_

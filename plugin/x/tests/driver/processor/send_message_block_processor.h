@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0,
@@ -22,8 +22,8 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
-#ifndef X_TESTS_DRIVER_PROCESSOR_SEND_MESSAGE_BLOCK_PROCESSOR_H_
-#define X_TESTS_DRIVER_PROCESSOR_SEND_MESSAGE_BLOCK_PROCESSOR_H_
+#ifndef PLUGIN_X_TESTS_DRIVER_PROCESSOR_SEND_MESSAGE_BLOCK_PROCESSOR_H_
+#define PLUGIN_X_TESTS_DRIVER_PROCESSOR_SEND_MESSAGE_BLOCK_PROCESSOR_H_
 
 #include <string>
 
@@ -42,8 +42,7 @@ class Send_message_block_processor : public Block_processor {
   bool feed_ended_is_state_ok() override;
 
  protected:
-  virtual std::string get_message_name(const char *linebuf);
-
+  bool is_eating() const;
   virtual int process(const xcl::XProtocol::Client_message_type_id msg_id,
                       const xcl::XProtocol::Message &message);
 
@@ -54,13 +53,9 @@ class Send_message_block_processor : public Block_processor {
 
   std::string message_to_bindump(const xcl::XProtocol::Message &message);
 
-  xcl::XProtocol::Message *text_to_client_message(
-      const std::string &name, const std::string &data,
-      xcl::XProtocol::Client_message_type_id *msg_id);
-
   Execution_context *m_context;
   std::string m_buffer;
   std::string m_full_name;
 };
 
-#endif  // X_TESTS_DRIVER_PROCESSOR_SEND_MESSAGE_BLOCK_PROCESSOR_H_
+#endif  // PLUGIN_X_TESTS_DRIVER_PROCESSOR_SEND_MESSAGE_BLOCK_PROCESSOR_H_

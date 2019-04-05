@@ -181,7 +181,7 @@ struct lock_t {
   }
 
   /** @return the lock mode */
-  ulint type() const { return (type_mode & LOCK_TYPE_MASK); }
+  uint32_t type() const { return (type_mode & LOCK_TYPE_MASK); }
 
   /** @return the precise lock mode */
   lock_mode mode() const {
@@ -730,7 +730,7 @@ class RecLock {
   @param[in, out] wait_for	The lock that the the joining
                                   transaction is waiting for
   @param[in] prdt			Predicate [optional]
-  @return DB_LOCK_WAIT, DB_DEADLOCK, or DB_QUE_THR_SUSPENDED, or
+  @return DB_LOCK_WAIT, DB_DEADLOCK, or
           DB_SUCCESS_LOCKED_REC; DB_SUCCESS_LOCKED_REC means that
           there was a deadlock, but another transaction was chosen
           as a victim, and we got the lock immediately: no need to
@@ -836,7 +836,7 @@ class RecLock {
   /**
   Check and resolve any deadlocks
   @param[in, out] lock		The lock being acquired
-  @return DB_LOCK_WAIT, DB_DEADLOCK, or DB_QUE_THR_SUSPENDED, or
+  @return DB_LOCK_WAIT, DB_DEADLOCK, or
           DB_SUCCESS_LOCKED_REC; DB_SUCCESS_LOCKED_REC means that
           there was a deadlock, but another transaction was chosen
           as a victim, and we got the lock immediately: no need to
@@ -971,6 +971,16 @@ waiting behind it.
 @param[in,out]	lock		Waiting lock request
 @param[in]	use_fcfs	true -> use first come first served strategy */
 void lock_cancel_waiting_and_release(lock_t *lock, bool use_fcfs);
+
+/** This function is a wrapper around several functions which need to be called
+in particular order to wake up a transaction waiting for a lock.
+You should not call lock_wait_release_thread_if_suspended(thr) directly,
+but rather use this wrapper, as this makes it much easier to reason about all
+possible states in which lock, trx, and thr can be.
+It makes sure that trx is woken up exactly once, and only if it already went to
+sleep.
+@param[in, out]   lock    The lock for which lock->trx is waiting */
+void lock_reset_wait_and_release_thread_if_suspended(lock_t *lock);
 
 /** Checks if some transaction has an implicit x-lock on a record in a clustered
  index.
@@ -1164,35 +1174,6 @@ struct Lock_iter {
 
     for (auto lock = first(list, rec_id); lock != nullptr;
          lock = advance(rec_id, lock)) {
-      ut_ad(lock->is_record_lock());
-
-      if (!f(lock)) {
-        return (lock);
-      }
-    }
-
-    return (nullptr);
-  }
-
-  /** Iterate over locks starting from begin and up to end
-  @param[in]	begin		Starting point
-  @param[in]	end		Up to but not including
-  @param[in]	heap_no		Heap number in the block
-  @param[in]	f		Function to call for each entry
-  @return lock where where the iteration ended */
-  template <typename F>
-  static const lock_t *for_each(const lock_t *begin, const lock_t *end,
-                                uint32_t heap_no, F &&f) {
-    ut_ad(lock_mutex_own());
-    ut_ad(end->is_record_lock());
-    ut_ad(begin->is_record_lock());
-
-    ut_ad(begin->rec_lock.space == end->rec_lock.space);
-
-    ut_ad(begin->rec_lock.page_no == end->rec_lock.page_no);
-
-    for (auto lock = begin; lock != nullptr && lock != end;
-         lock = lock_rec_get_next_const(heap_no, lock)) {
       ut_ad(lock->is_record_lock());
 
       if (!f(lock)) {

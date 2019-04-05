@@ -163,31 +163,28 @@ class Log_event_handler {
   /**
      Log a query to the slow log.
 
-     @param thd               THD of the query
-     @param current_utime     Current timestamp in micro seconds
-     @param query_start_arg   Command start timestamp in micro seconds
-     @param user_host         The pointer to the string with user\@host info
-     @param user_host_len     Length of the user_host string. this is computed
-     once and passed to all general log event handlers
-     @param query_utime       Amount of time the query took to execute (in
-     microseconds)
-     @param lock_utime        Amount of time the query was locked (in
-     microseconds)
-     @param is_command        The flag which determines whether the sql_text is
-     a query or an administrator command (these are treated differently by the
-     old logging routines)
-     @param sql_text          The very text of the query or administrator
-     command processed
-     @param sql_text_len      The length of sql_text string
+     @param thd                THD of the query
+     @param current_utime      Current timestamp in microseconds
+     @param query_start_arg    Command start timestamp in microseconds
+     @param user_host          The pointer to the string with user\@host info
+     @param user_host_len      Length of the user_host string
+     @param query_utime        Number of microseconds query execution took
+     @param lock_utime         Number of microseconds the query was locked
+     @param is_command         The flag which determines whether the sql_text
+                               is a query or an administrator command
+     @param sql_text           The query or administrator in textual form
+     @param sql_text_len       The length of sql_text string
+     @param query_start_status Pointer to a snapshot of thd->status_var taken
+                               at the start of execution
 
-     @retval  false   OK
-     @retval  true    error occured
+     @return true if error, false otherwise.
   */
   virtual bool log_slow(THD *thd, ulonglong current_utime,
                         ulonglong query_start_arg, const char *user_host,
                         size_t user_host_len, ulonglong query_utime,
                         ulonglong lock_utime, bool is_command,
-                        const char *sql_text, size_t sql_text_len) = 0;
+                        const char *sql_text, size_t sql_text_len,
+                        struct System_status_var *query_start_status) = 0;
 
   /**
      Log command to the general log.
@@ -233,7 +230,8 @@ class Log_to_csv_event_handler : public Log_event_handler {
                         ulonglong query_start_arg, const char *user_host,
                         size_t user_host_len, ulonglong query_utime,
                         ulonglong lock_utime, bool is_command,
-                        const char *sql_text, size_t sql_text_len);
+                        const char *sql_text, size_t sql_text_len,
+                        struct System_status_var *query_start_status);
 
   /** @see Log_event_handler::log_general(). */
   virtual bool log_general(THD *thd, ulonglong event_utime,
@@ -332,13 +330,16 @@ class Query_logger {
   /**
      Log slow query with all enabled log event handlers.
 
-     @param thd           THD of the statement being logged.
-     @param query         The query string being logged.
-     @param query_length  The length of the query string.
+     @param thd                 THD of the statement being logged.
+     @param query               The query string being logged.
+     @param query_length        The length of the query string.
+     @param query_start_status  Pointer to a snapshot of thd->status_var taken
+                                at the start of execution
 
      @return true if error, false otherwise.
   */
-  bool slow_log_write(THD *thd, const char *query, size_t query_length);
+  bool slow_log_write(THD *thd, const char *query, size_t query_length,
+                      struct System_status_var *query_start_status);
 
   /**
      Write printf style message to general query log.
@@ -467,9 +468,11 @@ bool log_slow_applicable(THD *thd);
   Unconditionally writes the current statement (or its rewritten version if it
   exists) to the slow query log.
 
-  @param thd              thread handle
+  @param thd                 thread handle
+  @param query_start_status  Pointer to a snapshot of thd->status_var taken
+                             at the start of execution
 */
-void log_slow_do(THD *thd);
+void log_slow_do(THD *thd, struct System_status_var *query_start_status);
 
 /**
   Check whether we need to write the current statement to the slow query
@@ -481,9 +484,11 @@ void log_slow_do(THD *thd);
   A digest of suppressed statements may be logged instead of the current
   statement.
 
-  @param thd              thread handle
+  @param thd                 thread handle
+  @param query_start_status  Pointer to a snapshot of thd->status_var taken
+                             at the start of execution
 */
-void log_slow_statement(THD *thd);
+void log_slow_statement(THD *thd, struct System_status_var *query_start_status);
 
 /**
   @class Log_throttle
@@ -537,7 +542,7 @@ class Log_throttle {
     will want to print a summary (if the logging of any lines was suppressed),
     and start a new window.)
   */
-  bool in_window(ulonglong now) const { return (now < window_end); };
+  bool in_window(ulonglong now) const { return (now < window_end); }
 
   /**
     Prepare a summary of suppressed lines for logging.
@@ -606,7 +611,7 @@ class Slow_log_throttle : public Log_throttle {
     The routine we call to actually log a line (i.e. our summary).
     The signature miraculously coincides with slow_log_print().
   */
-  bool (*log_summary)(THD *, const char *, size_t);
+  bool (*log_summary)(THD *, const char *, size_t, struct System_status_var *);
 
   /**
     Slow_log_throttle is shared between THDs.
@@ -633,7 +638,8 @@ class Slow_log_throttle : public Log_throttle {
     @param msg           use this template containing %lu as only non-literal
   */
   Slow_log_throttle(ulong *threshold, mysql_mutex_t *lock, ulong window_usecs,
-                    bool (*logger)(THD *, const char *, size_t),
+                    bool (*logger)(THD *, const char *, size_t,
+                                   struct System_status_var *),
                     const char *msg);
 
   /**
@@ -795,11 +801,10 @@ extern Slow_log_throttle log_throttle_qni;
   Table_check_intact::report_error, and others.
 
   @param level          The level of the msg significance
-  @param format         Printf style format of message
+  @param ecode          Error code of the error message.
   @param args           va_list list of arguments for the message
 */
-void error_log_printf(enum loglevel level, const char *format, va_list args)
-    MY_ATTRIBUTE((format(printf, 2, 0)));
+void error_log_print(enum loglevel level, uint ecode, va_list args);
 
 /**
   Initialize structures (e.g. mutex) needed by the error log.
@@ -809,8 +814,11 @@ void error_log_printf(enum loglevel level, const char *format, va_list args)
 
   @note The error log can still be used before this function is called,
   but that should only be done single-threaded.
+
+  @retval true   an error occurred
+  @retval false  basic error logging is now available in multi-threaded mode
 */
-void init_error_log();
+bool init_error_log();
 
 /**
   Open the error log and redirect stderr and optionally stdout
@@ -825,8 +833,9 @@ void init_error_log();
   have been buffered by calling flush_error_log_messages().
 
   @param filename        Name of error log file
+  @param get_lock        Should we acquire LOCK_error_log?
 */
-bool open_error_log(const char *filename);
+bool open_error_log(const char *filename, bool get_lock);
 
 /**
   Free any error log resources.
@@ -1409,18 +1418,29 @@ int make_iso8601_timestamp(char *buf, ulonglong utime, int mode);
 /**
   Set up custom error logging stack.
 
-  @param   conf        The configuration string
-  @param   check_only  if true, report on whether configuration is valid
-                       (i.e. whether all requested services are available),
-                       but do not apply the new configuration.
-                       if false, set the configuration (acquire the necessary
-                       services, update the hash by adding/deleting entries
-                       as necessary)
+  @param        conf        The configuration string
+  @param        check_only  If true, report on whether configuration is valid
+                            (i.e. whether all requested services are available),
+                            but do not apply the new configuration.
+                            if false, set the configuration (acquire the
+                            necessary services, update the hash by
+                            adding/deleting entries as necessary)
+  @param[out]   pos         If an error occurs and this pointer is non-null,
+                            the position in the configuration string where
+                            the error occurred will be written to the
+                            pointed-to size_t.
 
-  @retval              <0   failure
-  @retval              >=0  success
+  @retval              0    success
+  @retval             -1    expected delimiter not found
+  @retval             -2    one or more services not found
+  @retval             -3    failed to create service cache entry
+  @retval             -4    tried to open multiple instances of a singleton
+  @retval             -5    failed to create service instance entry
+  @retval             -6    last element in pipeline should be a sink
+  @retval             -101  service name may not start with a delimiter
+  @retval             -102  delimiters ',' and ';' may not be mixed
 */
-int log_builtins_error_stack(const char *conf, bool check_only);
+int log_builtins_error_stack(const char *conf, bool check_only, size_t *pos);
 
 /**
   Call flush() on all log_services.
@@ -1435,10 +1455,18 @@ int log_builtins_error_stack_flush();
 /**
   Initialize the structured logging subsystem.
 
+  Since we're initializing various locks here, we must call this late enough
+  so this is clean, but early enough so it still happens while we're running
+  single-threaded -- this specifically also means we must call it before we
+  start plug-ins / storage engines / external components!
+
   @retval  0  no errors
-  @retval -1  couldn't initialize lock
+  @retval -1  couldn't initialize stack lock
   @retval -2  couldn't initialize built-in default filter
   @retval -3  couldn't set up service hash
+  @retval -4  couldn't initialize syseventlog lock
+  @retval -5  couldn't set service pipeline
+  @retval -6  couldn't initialize buffered logging lock
 */
 int log_builtins_init();
 
@@ -1446,6 +1474,7 @@ int log_builtins_init();
   De-initialize the structured logging subsystem.
 
   @retval  0  no errors
+  @retval -1  not stopping, never started
 */
 int log_builtins_exit();
 
@@ -1456,29 +1485,5 @@ int log_builtins_exit();
   @param         length       number of bytes in buffer
 */
 void log_write_errstream(const char *buffer, size_t length);
-
-/**
-   Temporary helper class to implement services' system variables
-   handling against until the component framework supports
-   per-component variables.
-*/
-class LogVar {
- private:
-  log_item lv;
-  const char *service_group = "log_sink";
-
- public:
-  LogVar(LEX_CSTRING &s); /**< constructor with variable name */
-
-  LogVar &val(LEX_STRING &s); /**< set a  value from a lex string */
-  LogVar &val(const char *s); /**< set a  value from a C-string */
-  LogVar &val(longlong i);    /**< set an integer value */
-  LogVar &val(double d);      /**< set a  float value */
-
-  LogVar &group(const char *g); /**< set non-default service group */
-
-  int check();  /**< check value. true: failure */
-  int update(); /**< apply new value */
-};
 
 #endif /* LOG_H */

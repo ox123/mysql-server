@@ -1,4 +1,4 @@
-/* Copyright (c) 2002, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2002, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -35,6 +35,8 @@
 #include <stdlib.h>
 #include <sys/types.h>
 #include <array>
+#include <bitset>
+#include <type_traits>
 
 #include "m_ctype.h"
 #include "m_string.h"
@@ -426,13 +428,13 @@ int my_handle_options(int *argc, char ***argv, const struct my_option *longopts,
               if (my_getopt_print_errors)
                 my_getopt_error_reporter(
                     option_is_loose ? WARNING_LEVEL : ERROR_LEVEL,
-                    "unknown variable '%s'", cur_arg);
+                    EE_UNKNOWN_VARIABLE, cur_arg);
               if (!option_is_loose) return EXIT_UNKNOWN_VARIABLE;
             } else {
               if (my_getopt_print_errors)
                 my_getopt_error_reporter(
                     option_is_loose ? WARNING_LEVEL : ERROR_LEVEL,
-                    "unknown option '--%s'", cur_arg);
+                    EE_UNKNOWN_OPTION, cur_arg);
               if (!(option_is_loose || ignore_unknown_option))
                 return EXIT_UNKNOWN_OPTION;
             }
@@ -445,8 +447,7 @@ int my_handle_options(int *argc, char ***argv, const struct my_option *longopts,
         if ((optp->var_type & GET_TYPE_MASK) == GET_DISABLED) {
           if (my_getopt_print_errors)
             my_message_local(option_is_loose ? WARNING_LEVEL : ERROR_LEVEL,
-                             "%s: Option '%s' used, but is disabled",
-                             my_progname, opt_str);
+                             EE_USING_DISABLED_OPTION, my_progname, opt_str);
           if (option_is_loose) {
             (*argc)--;
             continue;
@@ -468,9 +469,8 @@ int my_handle_options(int *argc, char ***argv, const struct my_option *longopts,
           */
           if (optend && (optp->var_type & GET_TYPE_MASK) != GET_BOOL) {
             if (my_getopt_print_errors)
-              my_getopt_error_reporter(
-                  ERROR_LEVEL, "%s: option '--%s' cannot take an argument",
-                  my_progname, optp->name);
+              my_getopt_error_reporter(ERROR_LEVEL, EE_OPTION_WITHOUT_ARGUMENT,
+                                       my_progname, optp->name);
             return EXIT_NO_ARGUMENT_ALLOWED;
           }
           if ((optp->var_type & GET_TYPE_MASK) == GET_BOOL) {
@@ -488,8 +488,7 @@ int my_handle_options(int *argc, char ***argv, const struct my_option *longopts,
               ret = get_bool_argument(optend, &error);
               if (error) {
                 my_getopt_error_reporter(WARNING_LEVEL,
-                                         "%s: ignoring option '--%s' "
-                                         "due to invalid value '%s'",
+                                         EE_OPTION_IGNORED_DUE_TO_INVALID_VALUE,
                                          my_progname, optp->name, optend);
                 continue;
               } else
@@ -512,8 +511,7 @@ int my_handle_options(int *argc, char ***argv, const struct my_option *longopts,
     */
           if (!is_cmdline_arg || !*++pos) {
             if (my_getopt_print_errors)
-              my_getopt_error_reporter(ERROR_LEVEL,
-                                       "%s: option '--%s' requires an argument",
+              my_getopt_error_reporter(ERROR_LEVEL, EE_OPTION_REQUIRES_ARGUMENT,
                                        my_progname, optp->name);
             return EXIT_ARGUMENT_REQUIRED;
           }
@@ -534,8 +532,7 @@ int my_handle_options(int *argc, char ***argv, const struct my_option *longopts,
               opt_found = true;
               if ((optp->var_type & GET_TYPE_MASK) == GET_DISABLED) {
                 if (my_getopt_print_errors)
-                  my_message_local(ERROR_LEVEL,
-                                   "%s: Option '-%c' used, but is disabled",
+                  my_message_local(ERROR_LEVEL, EE_USING_DISABLED_SHORT_OPTION,
                                    my_progname, optp->id);
                 return EXIT_OPTION_DISABLED;
               }
@@ -567,7 +564,7 @@ int my_handle_options(int *argc, char ***argv, const struct my_option *longopts,
                   if (!pos[1]) {
                     if (my_getopt_print_errors)
                       my_getopt_error_reporter(
-                          ERROR_LEVEL, "%s: option '-%c' requires an argument",
+                          ERROR_LEVEL, EE_SHORT_OPTION_REQUIRES_ARGUMENT,
                           my_progname, optp->id);
                     return EXIT_ARGUMENT_REQUIRED;
                   }
@@ -607,8 +604,7 @@ int my_handle_options(int *argc, char ***argv, const struct my_option *longopts,
               optend = (char *)" ";
             } else {
               if (my_getopt_print_errors)
-                my_getopt_error_reporter(ERROR_LEVEL,
-                                         "%s: unknown option '-%c'",
+                my_getopt_error_reporter(ERROR_LEVEL, EE_UNKNOWN_SHORT_OPTION,
                                          my_progname, *optend);
               return EXIT_UNKNOWN_OPTION;
             }
@@ -663,9 +659,7 @@ void print_cmdline_password_warning() {
   static bool password_warning_announced = false;
 
   if (!password_warning_announced) {
-    my_message_local(WARNING_LEVEL,
-                     "Using a password on the command line "
-                     "interface can be insecure.");
+    my_message_local(WARNING_LEVEL, EE_USING_PASSWORD_ON_CLI_IS_INSECURE);
     password_warning_announced = true;
   }
 }
@@ -775,7 +769,7 @@ static int setval(const struct my_option *opts, void *value, char *argument,
       (var_type == GET_INT || var_type == GET_UINT || var_type == GET_LONG ||
        var_type == GET_ULONG || var_type == GET_LL || var_type == GET_ULL ||
        var_type == GET_DOUBLE || var_type == GET_ENUM)) {
-    my_getopt_error_reporter(ERROR_LEVEL, "%s: Empty value for '%s' specified",
+    my_getopt_error_reporter(ERROR_LEVEL, EE_OPTION_WITH_EMPTY_VALUE,
                              my_progname, opts->name);
     return EXIT_ARGUMENT_REQUIRED;
   }
@@ -783,7 +777,7 @@ static int setval(const struct my_option *opts, void *value, char *argument,
   if (value) {
     if (set_maximum_value && !(value = opts->u_max_value)) {
       my_getopt_error_reporter(ERROR_LEVEL,
-                               "%s: Maximum value of '%s' cannot be set",
+                               EE_FAILED_TO_ASSIGN_MAX_VALUE_TO_OPTION,
                                my_progname, opts->name);
       return EXIT_NO_PTR_TO_VARIABLE;
     }
@@ -793,10 +787,9 @@ static int setval(const struct my_option *opts, void *value, char *argument,
                       */
         *((bool *)value) = get_bool_argument(argument, &error);
         if (error)
-          my_getopt_error_reporter(
-              WARNING_LEVEL,
-              "option '%s': boolean value '%s' wasn't recognized. Set to OFF.",
-              opts->name, argument);
+          my_getopt_error_reporter(WARNING_LEVEL,
+                                   EE_INCORRECT_BOOLEAN_VALUE_FOR_OPTION,
+                                   opts->name, argument);
         break;
       case GET_INT:
         *((int *)value) = (int)getopt_ll(argument, opts, &err);
@@ -894,8 +887,7 @@ static int setval(const struct my_option *opts, void *value, char *argument,
   return 0;
 
 ret:
-  my_getopt_error_reporter(ERROR_LEVEL,
-                           "%s: Error while setting value '%s' to '%s'",
+  my_getopt_error_reporter(ERROR_LEVEL, EE_FAILED_TO_SET_OPTION_VALUE,
                            my_progname, argument, opts->name);
   return res;
 }
@@ -944,91 +936,134 @@ bool getopt_compare_strings(const char *s, const char *t, uint length) {
   function: eval_num_suffix
 
   Transforms a number with a suffix to real number. Suffix can
-  be k|K for kilo, m|M for mega or g|G for giga.
+  be:
+  * k|K for kilo
+  * m|M for mega
+  * g|G for giga
+  * t|T for tera
+  * p|P for peta
+  * e|E for exa
+
+ @tparam LLorULL longlong or ulonglong
+ @param  [in]  argument    string containing number, plus possible suffix.
+ @param  [out] error       set to non-zero in case of conversion errors.
+ @param  [in]  option_name used for better error reporting in case of errors.
 */
 
-static longlong eval_num_suffix(char *argument, int *error, char *option_name) {
+template <typename LLorULL>
+LLorULL eval_num_suffix(const char *argument, int *error,
+                        const char *option_name) {
   char *endchar;
-  longlong num;
+  LLorULL num;
+  ulonglong result = 0;
 
   *error = 0;
   errno = 0;
-  num = my_strtoll(argument, &endchar, 10);
+  // Note: some platforms leave errno == 0, others set it to EINVAL
+  // for input "X"
+  if (std::is_unsigned<LLorULL>::value)
+    num = my_strtoull(argument, &endchar, 10);
+  else
+    num = my_strtoll(argument, &endchar, 10);
+
+  if (*endchar == '\0' && errno == 0) return num;
+
+  bool is_negative = false;
+  // Avoid left-shift of negative values.
+  if (std::is_signed<LLorULL>::value && num < 0) {
+    is_negative = true;
+    if (static_cast<long long>(num) == LLONG_MIN)
+      errno = ERANGE;  // This will overflow
+    else
+      num = -num;
+  }
+
+  unsigned long long ull_num = num;
+
+  const size_t num_input_bits = std::bitset<64>(ull_num).count();
+
+  if (errno != ERANGE) {
+    switch (*endchar) {
+      case 'k':
+      case 'K':
+        result = ull_num << 10;
+        break;
+      case 'm':
+      case 'M':
+        result = ull_num << 20;
+        break;
+      case 'g':
+      case 'G':
+        result = ull_num << 30;
+        break;
+      case 't':
+      case 'T':
+        result = ull_num << 40;
+        break;
+      case 'p':
+      case 'P':
+        result = ull_num << 50;
+        break;
+      case 'e':
+      case 'E':
+        result = ull_num << 60;
+        break;
+      default:
+        my_message_local(ERROR_LEVEL, EE_UNKNOWN_SUFFIX_FOR_VARIABLE, *endchar,
+                         option_name, argument);
+        *error = 1;
+        return 0;
+    }
+  }
+
+  const size_t num_output_bits = std::bitset<64>(result).count();
+
+  // Check over/underflow for signed values.
+  if (std::is_signed<LLorULL>::value) {
+    if (is_negative) {
+      if (result > LLONG_MAX + 1ULL) errno = ERANGE;
+    } else {
+      if (result > LLONG_MAX) errno = ERANGE;
+    }
+  }
+
+  // If we have lost some bits, then there is overflow.
+  if (num_input_bits != num_output_bits) {
+    errno = ERANGE;
+  }
+
   if (errno == ERANGE) {
-    my_getopt_error_reporter(ERROR_LEVEL, "Incorrect integer value: '%s'",
-                             argument);
+    const uint ecode = std::is_unsigned<LLorULL>::value
+                           ? EE_INCORRECT_UINT_VALUE_FOR_OPTION
+                           : EE_INCORRECT_INT_VALUE_FOR_OPTION;
+
+    my_getopt_error_reporter(ERROR_LEVEL, ecode, argument);
     *error = 1;
     return 0;
   }
-  if (*endchar == 'k' || *endchar == 'K')
-    num *= 1024L;
-  else if (*endchar == 'm' || *endchar == 'M')
-    num *= 1024L * 1024L;
-  else if (*endchar == 'g' || *endchar == 'G')
-    num *= 1024L * 1024L * 1024L;
-  else if (*endchar) {
-    my_message_local(ERROR_LEVEL,
-                     "Unknown suffix '%c' used for variable '%s' (value '%s')",
-                     *endchar, option_name, argument);
-    *error = 1;
-    return 0;
-  }
-  return num;
+  if (is_negative) return -result;
+  return result;
 }
 
-/**
-  function: eval_num_suffix_ull
-  This is the same as eval_num_suffix, but is meant for unsigned long long
-  values. Transforms an unsigned number with a suffix to real number. Suffix can
-  be k|K for kilo, m|M for mega or g|G for giga.
-  @param [in]        argument      argument value for option_name
-  @param [in, out]   error         error no.
-  @param [in]        option_name   name of option
-*/
-
-static ulonglong eval_num_suffix_ull(char *argument, int *error,
-                                     char *option_name) {
-  char *endchar;
-  ulonglong num;
-
-  *error = 0;
-  errno = 0;
-  num = my_strtoull(argument, &endchar, 10);
-  if (errno == ERANGE) {
-    my_getopt_error_reporter(
-        ERROR_LEVEL, "Incorrect unsigned integer value: '%s'", argument);
-    *error = 1;
-    return 0;
-  }
-  if (*endchar == 'k' || *endchar == 'K')
-    num *= 1024L;
-  else if (*endchar == 'm' || *endchar == 'M')
-    num *= 1024L * 1024L;
-  else if (*endchar == 'g' || *endchar == 'G')
-    num *= 1024L * 1024L * 1024L;
-  else if (*endchar) {
-    my_message_local(ERROR_LEVEL,
-                     "Unknown suffix '%c' used for variable '%s' (value '%s')",
-                     *endchar, option_name, argument);
-    *error = 1;
-    return 0;
-  }
-  return num;
-}
+// Some platforms need explicit instantiation of these:
+template longlong eval_num_suffix<longlong>(const char *, int *, const char *);
+template ulonglong eval_num_suffix<ulonglong>(const char *, int *,
+                                              const char *);
 
 /*
   function: getopt_ll
 
   Evaluates and returns the value that user gave as an argument
-  to a variable. Recognizes (case insensitive) K as KILO, M as MEGA
-  and G as GIGA bytes. Some values must be in certain blocks, as
+  to a variable. Recognizes (case insensitive) K as KILO, M as MEGA,
+  G as GIGA, T as in TERA, P as PETA and E as EXA bytes.
+  Some values must be in certain blocks, as
   defined in the given my_option struct, this function will check
   that those values are honored.
   In case of an error, set error value in *err.
 */
 
 static longlong getopt_ll(char *arg, const struct my_option *optp, int *err) {
-  longlong num = eval_num_suffix(arg, err, (char *)optp->name);
+  longlong num = eval_num_suffix<longlong>(arg, err, (char *)optp->name);
   return getopt_ll_limit_value(num, optp, NULL);
 }
 
@@ -1096,8 +1131,7 @@ longlong getopt_ll_limit_value(longlong num, const struct my_option *optp,
   if (fix)
     *fix = old != num;
   else if (adjusted)
-    my_getopt_error_reporter(WARNING_LEVEL,
-                             "option '%s': signed value %s adjusted to %s",
+    my_getopt_error_reporter(WARNING_LEVEL, EE_ADJUSTED_SIGNED_VALUE_FOR_OPTION,
                              optp->name, llstr(old, buf1), llstr(num, buf2));
   return num;
 }
@@ -1123,10 +1157,10 @@ static ulonglong getopt_ull(char *arg, const struct my_option *optp, int *err) {
   if (arg == NULL || is_negative_num(arg) == true) {
     num = (ulonglong)optp->min_value;
     my_getopt_error_reporter(WARNING_LEVEL,
-                             "option '%s': value %s adjusted to %s", optp->name,
+                             EE_ADJUSTED_ULONGLONG_VALUE_FOR_OPTION, optp->name,
                              arg, ullstr(num, buf));
   } else
-    num = eval_num_suffix_ull(arg, err, (char *)optp->name);
+    num = eval_num_suffix<ulonglong>(arg, err, (char *)optp->name);
 
   return getopt_ull_limit_value(num, optp, NULL);
 }
@@ -1165,8 +1199,8 @@ ulonglong getopt_ull_limit_value(ulonglong num, const struct my_option *optp,
     *fix = old != num;
   else if (adjusted)
     my_getopt_error_reporter(WARNING_LEVEL,
-                             "option '%s': unsigned value %s adjusted to %s",
-                             optp->name, ullstr(old, buf1), ullstr(num, buf2));
+                             EE_ADJUSTED_UNSIGNED_VALUE_FOR_OPTION, optp->name,
+                             ullstr(old, buf1), ullstr(num, buf2));
 
   return num;
 }
@@ -1190,9 +1224,8 @@ double getopt_double_limit_value(double num, const struct my_option *optp,
   if (fix)
     *fix = adjusted;
   else if (adjusted)
-    my_getopt_error_reporter(WARNING_LEVEL,
-                             "option '%s': value %g adjusted to %g", optp->name,
-                             old, num);
+    my_getopt_error_reporter(WARNING_LEVEL, EE_ADJUSTED_DOUBLE_VALUE_FOR_OPTION,
+                             optp->name, old, num);
   return num;
 }
 
@@ -1214,8 +1247,8 @@ static double getopt_double(char *arg, const struct my_option *optp, int *err) {
   char *end = arg + 1000; /* Big enough as *arg is \0 terminated */
   num = my_strtod(arg, &end, &error);
   if (end[0] != 0 || error) {
-    my_getopt_error_reporter(
-        ERROR_LEVEL, "Invalid decimal value for option '%s'\n", optp->name);
+    my_getopt_error_reporter(ERROR_LEVEL, EE_INVALID_DECIMAL_VALUE_FOR_OPTION,
+                             optp->name);
     *err = EXIT_ARGUMENT_INVALID;
     return 0.0;
   }

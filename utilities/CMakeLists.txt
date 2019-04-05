@@ -98,27 +98,8 @@ SET_TARGET_PROPERTIES(my_print_defaults PROPERTIES LINKER_LANGUAGE CXX)
 
 MYSQL_ADD_EXECUTABLE(perror perror.cc)
 ADD_DEPENDENCIES(perror GenError)
-IF(WITH_NDBCLUSTER_STORAGE_ENGINE)
-  # In case NDB is compiled in.
-  TARGET_INCLUDE_DIRECTORIES(perror PUBLIC
-    ${CMAKE_SOURCE_DIR}/storage/ndb/include
-    ${CMAKE_BINARY_DIR}/storage/ndb/include
-    ${CMAKE_SOURCE_DIR}/storage/ndb/include/ndbapi
-    ${CMAKE_SOURCE_DIR}/storage/ndb/include/mgmapi)
-ENDIF()
 TARGET_LINK_LIBRARIES(perror mysys mysys_ssl)
 SET_TARGET_PROPERTIES(perror PROPERTIES LINKER_LANGUAGE CXX)
-
-MYSQL_ADD_EXECUTABLE(resolveip resolveip.cc)
-TARGET_LINK_LIBRARIES(resolveip mysys mysys_ssl)
-SET_TARGET_PROPERTIES(resolveip PROPERTIES LINKER_LANGUAGE CXX)
-IF(CMAKE_SYSTEM_NAME STREQUAL "SunOS")
-  INCLUDE(CheckFunctionExists)
-  INCLUDE(CheckLibraryExists)
-  MY_SEARCH_LIBS(inet_aton  "nsl;socket;resolv" SOLARIS_NSL)
-  TARGET_LINK_LIBRARIES(resolveip ${SOLARIS_NSL})
-ENDIF()
-
 
 IF (BUILD_BUNDLED_LZ4)
   MYSQL_ADD_EXECUTABLE(lz4_decompress lz4_decompress.cc)
@@ -160,10 +141,12 @@ IF(WITH_INNOBASE_STORAGE_ENGINE)
     ENDIF()
   ENDIF(NOT MSVC)
 
-  # Add path to the InnoDB headers
+  # Add path to the InnoDB headers and DD
   INCLUDE_DIRECTORIES(
-    ${CMAKE_SOURCE_DIR}/storage/innobase/
+    ${CMAKE_SOURCE_DIR}/storage/innobase
     ${CMAKE_SOURCE_DIR}/storage/innobase/include
+    ${CMAKE_SOURCE_DIR}/sql
+    ${CMAKE_SOURCE_DIR}/libbinlogevents/include
   )
 
   # We use the InnoDB code directly in case the code changes.
@@ -185,11 +168,6 @@ IF(WITH_INNOBASE_STORAGE_ENGINE)
     mysys_ssl innodb_zipdecompress ${LZ4_LIBRARY})
   ADD_DEPENDENCIES(ibd2sdi GenError)
 
-ENDIF()
-
-IF(UNIX)
-  MYSQL_ADD_EXECUTABLE(resolve_stack_dump resolve_stack_dump.cc)
-  TARGET_LINK_LIBRARIES(resolve_stack_dump mysys mysys_ssl)
 ENDIF()
 
 # In published release builds on Solaris, we need to bundle gcc source.

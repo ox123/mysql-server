@@ -90,7 +90,7 @@ if (!$mysqlbinlog_skip_replace)
   replace_regex
     /TIMESTAMP=[0-9]*/TIMESTAMP=#/
     /#[0-9]*[ ]*[0-9]*:[0-9]*:[0-9]* server id [0-9]*/# # server id #/
-    /SQL_LOAD_MB-[0-9]-[0-9]/SQL_LOAD_MB-#-#/
+    /SQL_LOAD_MB-[a-f0-9]-[a-f0-9]/SQL_LOAD_MB-#-#/
     /exec_time=[0-9]*/exec_time=#/
     /last_committed=[0-9]*/last_committed=#/
     /sequence_number=[0-9]*/sequence_number=#/
@@ -109,6 +109,8 @@ if (!$mysqlbinlog_skip_replace)
     /# immediate_commit_timestamp=[0-9]* \([0-9]*-[0-9]*-[0-9]* [0-9]*:[0-9]*:[0-9]*.[0-9]* GMT\)/# immediate_commit_timestamp= MICROSECONDS-FROM-EPOCH (YYYY-MM-DD HOURS:MINUTES:SECONDS TZ)/
     /# original_commit_timestamp=[0-9]* \([0-9]*-[0-9]*-[0-9]* [0-9]*:[0-9]*:[0-9]*.[0-9]* GMT\)/# original_commit_timestamp= MICROSECONDS-FROM-EPOCH (YYYY-MM-DD HOURS:MINUTES:SECONDS TZ)/
     /SET @@session.original_commit_timestamp=[0-9]*/SET @@session.original_commit_timestamp= MICROSECONDS-FROM-EPOCH/
+    /SET @@session.original_server_version=[0-9]*/SET @@session.original_server_version= ORIGINAL_SERVER_VERSION/
+    /SET @@session.immediate_server_version=[0-9]*/SET @@session.immediate_server_version= IMMEDIATE_SERVER_VERSION/
     /SET @@SESSION.GTID_NEXT= '.*'/SET @@SESSION.GTID_NEXT= '#'/
     /CRC32 0x[0-9a-f]{8}/CRC32 #/
     /# [a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}:/# #:/;

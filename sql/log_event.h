@@ -1,3 +1,4 @@
+
 /* Copyright (c) 2000, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
@@ -35,22 +36,20 @@
 #define _log_event_h
 
 #include <atomic>
+#include <functional>
 #include <list>
 #include <map>
 #include <set>
 #include <string>
-#include <vector>
 
 #include "binlog_event.h"
 #include "control_events.h"
 #include "lex_string.h"
 #include "load_data_events.h"
-#include "m_ctype.h"
 #include "m_string.h"   // native_strncasecmp
 #include "my_bitmap.h"  // MY_BITMAP
 #include "my_dbug.h"
 #include "my_inttypes.h"
-#include "my_io.h"
 #include "my_psi_config.h"
 #include "my_sharedlib.h"
 #include "my_sys.h"
@@ -60,40 +59,29 @@
 #include "mysql/udf_registration_types.h"
 #include "mysql_com.h"  // SERVER_VERSION_LENGTH
 #include "rows_event.h"
-#include "sql/psi_memory_key.h"
 #include "sql/query_options.h"  // OPTION_AUTO_IS_NULL
 #include "sql/rpl_gtid.h"       // enum_gtid_type
 #include "sql/rpl_utility.h"    // Hash_slave_rows
 #include "sql/sql_const.h"
+#include "sql/thr_malloc.h"
 #include "sql_string.h"
 #include "statement_events.h"
 #include "typelib.h"  // TYPELIB
 #include "uuid.h"
 
-class String;
 class THD;
 class Table_id;
-struct mysql_mutex_t;
+struct CHARSET_INFO;
 
 enum class enum_row_image_type;
+class Basic_ostream;
 
 #ifdef MYSQL_SERVER
 #include <stdio.h>
 
-#include "my_byteorder.h"
 #include "my_compiler.h"
-#include "my_psi_config.h"
-#include "mysql/psi/mysql_mutex.h"
-#include "mysql/psi/mysql_statement.h"
-#include "mysql/psi/psi_stage.h"
-#include "sql/field.h"
 #include "sql/key.h"
 #include "sql/rpl_filter.h"  // rpl_filter
-#include "sql/rpl_record.h"  // unpack_row
-#include "sql/sql_class.h"   // THD
-#include "sql/sql_plugin.h"
-#include "sql/sql_plugin_ref.h"
-#include "sql/sql_profile.h"
 #include "sql/table.h"
 #include "sql/xa.h"
 #endif
@@ -104,7 +92,6 @@ enum class enum_row_image_type;
 
 #include <limits.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <string.h>
 #include <sys/types.h>
 #include <time.h>
@@ -115,9 +102,6 @@ enum class enum_row_image_type;
 
 #ifndef MYSQL_SERVER
 class Format_description_log_event;
-
-typedef bool (*read_log_event_filter_function)(
-    char **buf, ulong *, const Format_description_log_event *);
 #endif
 
 extern PSI_memory_key key_memory_Incident_log_event_message;
@@ -171,14 +155,6 @@ int ignored_error_code(int err_code);
 #else
 #define ASSERT_OR_RETURN_ERROR(COND, ERRNO) DBUG_ASSERT(COND)
 #endif
-
-#define LOG_READ_EOF -1
-#define LOG_READ_BOGUS -2
-#define LOG_READ_IO -3
-#define LOG_READ_MEM -5
-#define LOG_READ_TRUNC -6
-#define LOG_READ_TOO_LARGE -7
-#define LOG_READ_CHECKSUM_FAILURE -8
 
 #define LOG_EVENT_OFFSET 4
 
@@ -237,6 +213,7 @@ int ignored_error_code(int err_code);
 
 /* 4 bytes which all binlogs should begin with */
 #define BINLOG_MAGIC "\xfe\x62\x69\x6e"
+#define BINLOG_MAGIC_SIZE 4
 
 /**
   @addtogroup group_cs_binglog_event_header_flags Binlog Event Header Flags
@@ -382,14 +359,10 @@ int ignored_error_code(int err_code);
 const int64 SEQ_MAX_TIMESTAMP = LLONG_MAX;
 
 #ifdef MYSQL_SERVER
-class Format_description_log_event;
 class Item;
-class MYSQL_BIN_LOG;
 class Protocol;
 class Slave_reporting_capability;
 class Slave_worker;
-class String;
-class THD;
 class sql_exchange;
 template <class T>
 class List;
@@ -438,6 +411,7 @@ struct PRINT_EVENT_INFO {
   uint lc_time_names_number;
   uint charset_database_number;
   uint default_collation_for_utf8mb4_number;
+  uint8_t sql_require_primary_key;
   my_thread_id thread_id;
   bool thread_id_printed;
 
@@ -598,7 +572,6 @@ class Log_event {
     EVENT_CACHE_LOGGING_COUNT
   };
 
-  bool is_valid_param;
   /**
     Writes the common header of this event to the given memory buffer.
 
@@ -619,17 +592,17 @@ class Log_event {
   */
   uint32 write_header_to_memory(uchar *buf);
   /**
-    Writes the common-header of this event to the given IO_CACHE and
+    Writes the common-header of this event to the given output stream and
     updates the checksum.
 
-    @param file The event will be written to this IO_CACHE.
+    @param ostream The event will be written to this output stream.
 
     @param data_length The length of the post-header section plus the
     length of the data section; i.e., the length of the event minus
     the common-header and the checksum.
   */
-  bool write_header(IO_CACHE *file, size_t data_length);
-  bool write_footer(IO_CACHE *file);
+  bool write_header(Basic_ostream *ostream, size_t data_length);
+  bool write_footer(Basic_ostream *ostream);
   bool need_checksum();
 
  public:
@@ -722,95 +695,6 @@ class Log_event {
             enum_event_logging_type logging_type_arg, Log_event_header *header,
             Log_event_footer *footer);
   /*
-    read_log_event() functions read an event from a binlog or relay
-    log; used by SHOW BINLOG EVENTS, the binlog_dump thread on the
-    master (reads master's binlog), the slave IO thread (reads the
-    event sent by binlog_dump), the slave SQL thread (reads the event
-    from the relay log).  If mutex is 0, the read will proceed without
-    mutex.  We need the description_event to be able to parse the
-    event (to know the post-header's size); in fact in read_log_event
-    we detect the event's type, then call the specific event's
-    constructor and pass description_event as an argument.
-  */
-  static Log_event *read_log_event(
-      IO_CACHE *file, mysql_mutex_t *log_lock,
-      const Format_description_log_event *description_event, bool crc_check);
-
-  /*
-   This function will read the common header into the buffer.
-
-   @param[in]         log_cache The IO_CACHE to read from.
-   @param[in,out]     header The buffer where to read the common header. This
-                      buffer must be at least LOG_EVENT_MINIMAL_HEADER_LEN long.
-
-   @returns           false on success, true otherwise.
-  */
-  inline static bool peek_event_header(char *header, IO_CACHE *log_cache) {
-    DBUG_ENTER("Log_event::peek_event_header");
-    if (my_b_read(log_cache, (uchar *)header, LOG_EVENT_MINIMAL_HEADER_LEN))
-      DBUG_RETURN(true);
-    DBUG_RETURN(false);
-  }
-
-  /**
-   This static function will read the event length from the common
-   header that is on the IO_CACHE. Note that the IO_CACHE read position
-   will not be updated.
-
-   @param[in]         log_cache The IO_CACHE to read from.
-   @param[out]        length A pointer to the memory position where to store
-                      the length value.
-   @param[out]        header_buffer An optional pointer to a buffer to store
-                      the event header.
-
-   @returns           false on success, true otherwise.
-  */
-
-  inline static bool peek_event_length(uint32 *length, IO_CACHE *log_cache,
-                                       char *header_buffer) {
-    DBUG_ENTER("Log_event::peek_event_length");
-    char local_header_buffer[LOG_EVENT_MINIMAL_HEADER_LEN];
-    char *header = header_buffer != NULL ? header_buffer : local_header_buffer;
-    if (peek_event_header(header, log_cache)) DBUG_RETURN(true);
-    *length = uint4korr(header + EVENT_LEN_OFFSET);
-    DBUG_RETURN(false);
-  }
-
-  /**
-    Reads an event from a binlog or relay log. Used by the dump thread
-    this method reads the event into a raw buffer without parsing it.
-
-    @note If mutex is 0, the read will proceed without mutex.
-
-    @note If a log name is given than the method will check if the
-    given binlog is still active.
-
-    @param[in]  file                log file to be read
-    @param[out] packet              packet to hold the event
-    @param[in]  log_lock            the lock to be used upon read
-    @param[in]  checksum_alg_arg    the checksum algorithm
-    @param[in]  log_file_name_arg   the log's file name
-    @param[out] is_binlog_active    is the current log still active
-    @param[in]  event_header        the actual event header. Passing this
-                                    parameter will make the function to skip
-                                    reading the event header.
-
-    @retval 0                   success
-    @retval LOG_READ_EOF        end of file, nothing was read
-    @retval LOG_READ_BOGUS      malformed event
-    @retval LOG_READ_IO         io error while reading
-    @retval LOG_READ_MEM        packet memory allocation failed
-    @retval LOG_READ_TRUNC      only a partial event could be read
-    @retval LOG_READ_TOO_LARGE  event too large
-   */
-  static int read_log_event(IO_CACHE *file, String *packet,
-                            mysql_mutex_t *log_lock,
-                            enum_binlog_checksum_alg checksum_alg_arg,
-                            const char *log_file_name_arg = NULL,
-                            bool *is_binlog_active = NULL,
-                            char *event_header = NULL);
-
-  /*
     init_show_field_list() prepares the column names and types for the
     output of SHOW BINLOG EVENTS; it is used only by SHOW BINLOG
     EVENTS.
@@ -828,28 +712,15 @@ class Log_event {
   */
   virtual int pack_info(Protocol *protocol);
 
-  virtual const char *get_db() { return thd ? thd->db().str : NULL; }
+  virtual const char *get_db();
 #else   // ifdef MYSQL_SERVER
-  /* Log_event(Log_event_header *header, Log_event_footer *footer,
-             enum_event_cache_type cache_type_arg= EVENT_INVALID_CACHE,
-             enum_event_logging_type logging_type_arg= EVENT_INVALID_LOGGING)
-   : temp_buf(0),  event_cache_type(cache_type_arg),
-     event_logging_type(logging_type_arg), is_valid(false)
-   {
-     common_header= header;
-     common_footer= footer;
-   }*/
-  /* avoid having to link mysqlbinlog against libpthread */
-  static Log_event *read_log_event(
-      IO_CACHE *file, const Format_description_log_event *description_event,
-      bool crc_check, read_log_event_filter_function f);
   /* print*() functions are used by mysqlbinlog */
-  virtual void print(FILE *file, PRINT_EVENT_INFO *print_event_info) = 0;
-  void print_timestamp(IO_CACHE *file, time_t *ts);
+  virtual void print(FILE *file, PRINT_EVENT_INFO *print_event_info) const = 0;
+  void print_timestamp(IO_CACHE *file, time_t *ts) const;
   void print_header(IO_CACHE *file, PRINT_EVENT_INFO *print_event_info,
-                    bool is_more);
+                    bool is_more) const;
   void print_base64(IO_CACHE *file, PRINT_EVENT_INFO *print_event_info,
-                    bool is_more);
+                    bool is_more) const;
 #endif  // ifdef MYSQL_SERVER ... else
 
   void *operator new(size_t size);
@@ -860,30 +731,31 @@ class Log_event {
   static void *operator new(size_t, void *ptr) { return ptr; }
   static void operator delete(void *, void *) {}
   /**
-    Write the given buffer to the given IO_CACHE, updating the
+    Write the given buffer to the given output stream, updating the
     checksum if checksums are enabled.
 
-    @param file The IO_CACHE to write to.
+    @param ostream The output stream to write to.
     @param buf The buffer to write.
     @param data_length The number of bytes to write.
 
     @retval false Success.
     @retval true Error.
   */
-  bool wrapper_my_b_safe_write(IO_CACHE *file, const uchar *buf,
+  bool wrapper_my_b_safe_write(Basic_ostream *ostream, const uchar *buf,
                                size_t data_length);
 
 #ifdef MYSQL_SERVER
-  virtual bool write(IO_CACHE *file) {
-    return (write_header(file, get_data_size()) || write_data_header(file) ||
-            write_data_body(file) || write_footer(file));
+  virtual bool write(Basic_ostream *ostream) {
+    return (write_header(ostream, get_data_size()) ||
+            write_data_header(ostream) || write_data_body(ostream) ||
+            write_footer(ostream));
   }
 
   time_t get_time();
-#endif
 
-  virtual bool write_data_header(IO_CACHE *) { return 0; }
-  virtual bool write_data_body(IO_CACHE *) { return 0; }
+  virtual bool write_data_header(Basic_ostream *) { return 0; }
+  virtual bool write_data_body(Basic_ostream *) { return 0; }
+#endif
 
   Log_event_type get_type_code() const { return common_header->type_code; }
 
@@ -900,9 +772,14 @@ class Log_event {
    is_valid is event specific sanity checks to determine that the
     object is correctly initialized.
   */
-  bool is_valid() { return is_valid_param; }
+  bool is_valid();
   void set_artificial_event() {
     common_header->flags |= LOG_EVENT_ARTIFICIAL_F;
+    /*
+      Artificial events are automatically generated and do not exist
+      in master's binary log, so log_pos should be set to 0.
+    */
+    common_header->log_pos = 0;
   }
   void set_relay_log_event() { common_header->flags |= LOG_EVENT_RELAY_LOG_F; }
   bool is_artificial_event() const {
@@ -950,9 +827,6 @@ class Log_event {
     is calculated during write()
   */
   virtual size_t get_data_size() { return 0; }
-  static Log_event *read_log_event(
-      const char *buf, uint event_len, const char **error,
-      const Format_description_log_event *description_event, bool crc_check);
   /**
     Returns the human readable name of the given event type.
   */
@@ -960,7 +834,7 @@ class Log_event {
   /**
     Returns the human readable name of this event's type.
   */
-  const char *get_type_str();
+  const char *get_type_str() const;
   /* Return start of query time or current time */
 
 #if defined(MYSQL_SERVER)
@@ -1433,23 +1307,24 @@ class Query_log_event : public virtual binary_log::Query_event,
 
   int pack_info(Protocol *protocol) override;
 #else
-  void print_query_header(IO_CACHE *file, PRINT_EVENT_INFO *print_event_info);
-  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) override;
+  void print_query_header(IO_CACHE *file,
+                          PRINT_EVENT_INFO *print_event_info) const;
+  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) const override;
   static bool rewrite_db_in_buffer(char **buf, ulong *event_len,
-                                   const Format_description_log_event *fde);
+                                   const Format_description_event &fde);
 #endif
 
   Query_log_event();
 
-  Query_log_event(const char *buf, uint event_len,
+  Query_log_event(const char *buf,
                   const Format_description_event *description_event,
                   Log_event_type event_type);
-  ~Query_log_event() {
+  ~Query_log_event() override {
     if (data_buf) my_free(data_buf);
   }
 #ifdef MYSQL_SERVER
-  bool write(IO_CACHE *file) override;
-  virtual bool write_post_header_for_derived(IO_CACHE *) { return false; }
+  bool write(Basic_ostream *ostream) override;
+  virtual bool write_post_header_for_derived(Basic_ostream *) { return false; }
 #endif
 
   /*
@@ -1524,12 +1399,17 @@ class Query_log_event : public virtual binary_log::Query_event,
            !strncmp(query, STRING_WITH_LEN("XA ROLLBACK"));
   }
   static size_t get_query(const char *buf, size_t length,
-                          const Format_description_log_event *fd_event,
+                          const Format_description_event *fd_event,
                           char **query);
 
   bool is_query_prefix_match(const char *pattern, uint p_len) {
     return !strncmp(query, pattern, p_len);
   }
+
+ private:
+  /** Whether or not the statement represented by this event requires
+      `Q_SQL_REQUIRE_PRIMARY_KEY` to be logged along aside. */
+  bool need_sql_require_primary_key{false};
 };
 
 /**
@@ -1580,25 +1460,13 @@ class Format_description_log_event : public Format_description_event,
 
   Format_description_log_event();
   Format_description_log_event(
-      const char *buf, uint event_len,
-      const Format_description_event *description_event);
+      const char *buf, const Format_description_event *description_event);
 #ifdef MYSQL_SERVER
-  bool write(IO_CACHE *file) override;
+  bool write(Basic_ostream *ostream) override;
   int pack_info(Protocol *protocol) override;
 #else
-  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) override;
+  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) const override;
 #endif
-
-  bool header_is_valid() const {
-    return ((common_header_len >= LOG_EVENT_MINIMAL_HEADER_LEN) &&
-            (!post_header_len.empty()));
-  }
-
-  bool version_is_valid() const {
-    /* It is invalid only when all version numbers are 0 */
-    return !(server_version_split[0] == 0 && server_version_split[1] == 0 &&
-             server_version_split[2] == 0);
-  }
 
   size_t get_data_size() override {
     /*
@@ -1650,22 +1518,22 @@ class Intvar_log_event : public binary_log::Intvar_event, public Log_event {
       : binary_log::Intvar_event(type_arg, val_arg),
         Log_event(thd_arg, 0, cache_type_arg, logging_type_arg, header(),
                   footer()) {
-    is_valid_param = true;
+    common_header->set_is_valid(true);
   }
   int pack_info(Protocol *protocol) override;
 #else
-  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) override;
+  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) const override;
 #endif
 
   Intvar_log_event(const char *buf,
                    const Format_description_event *description_event);
-  ~Intvar_log_event() {}
+  ~Intvar_log_event() override {}
   size_t get_data_size() override {
     return 9; /* sizeof(type) + sizeof(val) */
     ;
   }
 #ifdef MYSQL_SERVER
-  bool write(IO_CACHE *file) override;
+  bool write(Basic_ostream *ostream) override;
 #endif
 
   bool is_sbr_logging_format() const override { return true; }
@@ -1712,19 +1580,19 @@ class Rand_log_event : public binary_log::Rand_event, public Log_event {
       : binary_log::Rand_event(seed1_arg, seed2_arg),
         Log_event(thd_arg, 0, cache_type_arg, logging_type_arg, header(),
                   footer()) {
-    is_valid_param = true;
+    common_header->set_is_valid(true);
   }
   int pack_info(Protocol *protocol) override;
 #else
-  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) override;
+  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) const override;
 #endif
 
   Rand_log_event(const char *buf,
                  const Format_description_event *description_event);
-  ~Rand_log_event() {}
+  ~Rand_log_event() override {}
   size_t get_data_size() override { return 16; /* sizeof(ulonglong) * 2*/ }
 #ifdef MYSQL_SERVER
-  bool write(IO_CACHE *file) override;
+  bool write(Basic_ostream *ostream) override;
 #endif
 
   bool is_sbr_logging_format() const override { return true; }
@@ -1772,12 +1640,12 @@ class Xid_apply_log_event : public Log_event {
   Xid_apply_log_event(THD *thd_arg, Log_event_header *header_arg,
                       Log_event_footer *footer_arg)
       : Log_event(thd_arg, 0, Log_event::EVENT_TRANSACTIONAL_CACHE,
-                  Log_event::EVENT_NORMAL_LOGGING, header_arg, footer_arg){};
+                  Log_event::EVENT_NORMAL_LOGGING, header_arg, footer_arg) {}
 #endif
   Xid_apply_log_event(Log_event_header *header_arg,
                       Log_event_footer *footer_arg)
       : Log_event(header_arg, footer_arg) {}
-  ~Xid_apply_log_event() {}
+  ~Xid_apply_log_event() override {}
   virtual bool ends_group() const override { return true; }
 #if defined(MYSQL_SERVER)
   virtual enum_skip_reason do_shall_skip(Relay_log_info *rli) override;
@@ -1793,19 +1661,19 @@ class Xid_log_event : public binary_log::Xid_event, public Xid_apply_log_event {
   Xid_log_event(THD *thd_arg, my_xid x)
       : binary_log::Xid_event(x),
         Xid_apply_log_event(thd_arg, header(), footer()) {
-    is_valid_param = true;
+    common_header->set_is_valid(true);
   }
   int pack_info(Protocol *protocol) override;
 #else
-  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) override;
+  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) const override;
 #endif
 
   Xid_log_event(const char *buf,
                 const Format_description_event *description_event);
-  ~Xid_log_event() {}
+  ~Xid_log_event() override {}
   size_t get_data_size() override { return sizeof(xid); }
 #ifdef MYSQL_SERVER
-  bool write(IO_CACHE *file) override;
+  bool write(Basic_ostream *ostream) override;
 #endif
  private:
 #if defined(MYSQL_SERVER)
@@ -1840,21 +1708,23 @@ class XA_prepare_log_event : public binary_log::XA_prepare_event,
         Xid_apply_log_event(thd_arg, header(), footer()) {}
 #endif
   XA_prepare_log_event(const char *buf,
-                       const Format_description_log_event *description_event)
+                       const Format_description_event *description_event)
       : binary_log::XA_prepare_event(buf, description_event),
         Xid_apply_log_event(header(), footer()) {
-    is_valid_param = !(my_xid.formatID == -1 && my_xid.gtrid_length == 0 &&
-                       my_xid.bqual_length == 0);
+    DBUG_ENTER(
+        "XA_prepare_log_event::XA_prepare_log_event(const char*, const "
+        "Format_description_log_event *)");
     xid = NULL;
+    DBUG_VOID_RETURN;
   }
   Log_event_type get_type_code() { return binary_log::XA_PREPARE_LOG_EVENT; }
   size_t get_data_size() override {
     return xid_bufs_size + my_xid.gtrid_length + my_xid.bqual_length;
   }
 #ifdef MYSQL_SERVER
-  bool write(IO_CACHE *file) override;
+  bool write(Basic_ostream *ostream) override;
 #else
-  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) override;
+  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) const override;
 #endif
 #if defined(MYSQL_SERVER)
   int pack_info(Protocol *protocol) override;
@@ -1893,23 +1763,22 @@ class User_var_log_event : public binary_log::User_var_event, public Log_event {
                      enum_event_cache_type cache_type_arg,
                      enum_event_logging_type logging_type_arg)
       : binary_log::User_var_event(name_arg, name_len_arg, val_arg, val_len_arg,
-                                   (Value_type)type_arg, charset_number_arg,
-                                   flags_arg),
+                                   type_arg, charset_number_arg, flags_arg),
         Log_event(thd_arg, 0, cache_type_arg, logging_type_arg, header(),
                   footer()),
         deferred(false) {
-    if (name != 0) is_valid_param = true;
+    common_header->set_is_valid(name != 0);
   }
   int pack_info(Protocol *protocol) override;
 #else
-  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) override;
+  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) const override;
 #endif
 
-  User_var_log_event(const char *buf, uint event_len,
+  User_var_log_event(const char *buf,
                      const Format_description_event *description_event);
-  ~User_var_log_event() {}
+  ~User_var_log_event() override {}
 #ifdef MYSQL_SERVER
-  bool write(IO_CACHE *file) override;
+  bool write(Basic_ostream *ostream) override;
   /*
      Getter and setter for deferred User-event.
      Returns true if the event is not applied directly
@@ -1946,21 +1815,24 @@ class Stop_log_event : public binary_log::Stop_event, public Log_event {
   Stop_log_event()
       : Log_event(header(), footer(), Log_event::EVENT_INVALID_CACHE,
                   Log_event::EVENT_INVALID_LOGGING) {
-    is_valid_param = true;
+    common_header->set_is_valid(true);
   }
 
 #else
-  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) override;
+  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) const override;
 #endif
 
   Stop_log_event(const char *buf,
                  const Format_description_event *description_event)
       : binary_log::Stop_event(buf, description_event),
         Log_event(header(), footer()) {
-    is_valid_param = true;
+    DBUG_ENTER(
+        "Stop_log_event::Stop_log_event(const char*, const "
+        "Format_description_log_event *)");
+    DBUG_VOID_RETURN;
   }
 
-  ~Stop_log_event() {}
+  ~Stop_log_event() override {}
   Log_event_type get_type_code() { return binary_log::STOP_EVENT; }
 
  private:
@@ -2010,17 +1882,17 @@ class Rotate_log_event : public binary_log::Rotate_event, public Log_event {
                    ulonglong pos_arg, uint flags);
   int pack_info(Protocol *protocol) override;
 #else
-  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) override;
+  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) const override;
 #endif
 
-  Rotate_log_event(const char *buf, uint event_len,
+  Rotate_log_event(const char *buf,
                    const Format_description_event *description_event);
-  ~Rotate_log_event() {}
+  ~Rotate_log_event() override {}
   size_t get_data_size() override {
     return ident_len + Binary_log_event::ROTATE_HEADER_LEN;
   }
 #ifdef MYSQL_SERVER
-  bool write(IO_CACHE *file) override;
+  bool write(Basic_ostream *ostream) override;
 #endif
 
  private:
@@ -2064,17 +1936,17 @@ class Append_block_log_event : public virtual binary_log::Append_block_event,
   int pack_info(Protocol *protocol) override;
   virtual int get_create_or_append() const;
 #else
-  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) override;
+  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) const override;
 #endif
 
-  Append_block_log_event(const char *buf, uint event_len,
+  Append_block_log_event(const char *buf,
                          const Format_description_event *description_event);
-  ~Append_block_log_event() {}
+  ~Append_block_log_event() override {}
   size_t get_data_size() override {
     return block_len + Binary_log_event::APPEND_BLOCK_HEADER_LEN;
   }
 #ifdef MYSQL_SERVER
-  bool write(IO_CACHE *file) override;
+  bool write(Basic_ostream *ostream) override;
   const char *get_db() override { return db; }
 #endif
 
@@ -2122,18 +1994,18 @@ class Delete_file_log_event : public binary_log::Delete_file_event,
   Delete_file_log_event(THD *thd, const char *db_arg, bool using_trans);
   int pack_info(Protocol *protocol) override;
 #else
-  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) override;
+  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) const override;
   void print(FILE *file, PRINT_EVENT_INFO *print_event_info, bool enable_local);
 #endif
 
-  Delete_file_log_event(const char *buf, uint event_len,
+  Delete_file_log_event(const char *buf,
                         const Format_description_event *description_event);
-  ~Delete_file_log_event() {}
+  ~Delete_file_log_event() override {}
   size_t get_data_size() override {
     return Binary_log_event::DELETE_FILE_HEADER_LEN;
   }
 #ifdef MYSQL_SERVER
-  bool write(IO_CACHE *file) override;
+  bool write(Basic_ostream *ostream) override;
   const char *get_db() override { return db; }
 #endif
 
@@ -2191,9 +2063,9 @@ class Begin_load_query_log_event : public Append_block_log_event,
   Begin_load_query_log_event(THD *thd);
   int get_create_or_append() const override;
 #endif
-  Begin_load_query_log_event(const char *buf, uint event_len,
+  Begin_load_query_log_event(const char *buf,
                              const Format_description_event *description_event);
-  ~Begin_load_query_log_event() {}
+  ~Begin_load_query_log_event() override {}
 
  private:
 #if defined(MYSQL_SERVER)
@@ -2249,19 +2121,18 @@ class Execute_load_query_log_event
       bool immediate, bool suppress_use, int errcode);
   int pack_info(Protocol *protocol) override;
 #else
-  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) override;
+  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) const override;
   /* Prints the query as LOAD DATA LOCAL and with rewritten filename */
   void print(FILE *file, PRINT_EVENT_INFO *print_event_info,
-             const char *local_fname);
+             const char *local_fname) const;
 #endif
   Execute_load_query_log_event(
-      const char *buf, uint event_len,
-      const Format_description_event *description_event);
-  ~Execute_load_query_log_event() {}
+      const char *buf, const Format_description_event *description_event);
+  ~Execute_load_query_log_event() override {}
 
   ulong get_post_header_size_for_derived() override;
 #ifdef MYSQL_SERVER
-  bool write_post_header_for_derived(IO_CACHE *file) override;
+  bool write_post_header_for_derived(Basic_ostream *ostream) override;
 #endif
 
   bool is_sbr_logging_format() const override { return true; }
@@ -2313,11 +2184,16 @@ class Unknown_log_event : public binary_log::Unknown_event, public Log_event {
                     const Format_description_event *description_event)
       : binary_log::Unknown_event(buf, description_event),
         Log_event(header(), footer()) {
-    is_valid_param = true;
+    DBUG_ENTER(
+        "Unknown_log_event::Unknown_log_event(const char *, const "
+        "Format_description_log_event *)");
+    if (!is_valid()) DBUG_VOID_RETURN;
+    common_header->set_is_valid(true);
+    DBUG_VOID_RETURN;
   }
 
-  ~Unknown_log_event() {}
-  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) override;
+  ~Unknown_log_event() override {}
+  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) const override;
   Log_event_type get_type_code() { return binary_log::UNKNOWN_EVENT; }
 };
 #endif
@@ -2384,10 +2260,10 @@ class Table_map_log_event : public binary_log::Table_map_event,
   Table_map_log_event(THD *thd_arg, TABLE *tbl, const Table_id &tid,
                       bool is_transactional);
 #endif
-  Table_map_log_event(const char *buf, uint event_len,
+  Table_map_log_event(const char *buf,
                       const Format_description_event *description_event);
 
-  virtual ~Table_map_log_event();
+  ~Table_map_log_event() override;
 
 #ifndef MYSQL_SERVER
   table_def *create_table_def() {
@@ -2396,7 +2272,7 @@ class Table_map_log_event : public binary_log::Table_map_event,
                          m_field_metadata_size, m_null_bits, m_flags);
   }
   static bool rewrite_db_in_buffer(char **buf, ulong *event_len,
-                                   const Format_description_log_event *fde);
+                                   const Format_description_event &fde);
 #endif
   const Table_id &get_table_id() const { return m_table_id; }
   const char *get_table_name() const { return m_tblnam.c_str(); }
@@ -2405,8 +2281,8 @@ class Table_map_log_event : public binary_log::Table_map_event,
   virtual size_t get_data_size() override { return m_data_size; }
 #ifdef MYSQL_SERVER
   virtual int save_field_metadata();
-  virtual bool write_data_header(IO_CACHE *file) override;
-  virtual bool write_data_body(IO_CACHE *file) override;
+  virtual bool write_data_header(Basic_ostream *ostream) override;
+  virtual bool write_data_body(Basic_ostream *ostream) override;
   virtual const char *get_db() override { return m_dbnam.c_str(); }
   virtual uint8 mts_number_dbs() override {
     return get_flags(TM_REFERRED_FK_DB_F) ? OVER_MAX_DBS_IN_EVENT_MTS : 1;
@@ -2443,7 +2319,8 @@ class Table_map_log_event : public binary_log::Table_map_event,
 #endif
 
 #ifndef MYSQL_SERVER
-  virtual void print(FILE *file, PRINT_EVENT_INFO *print_event_info) override;
+  virtual void print(FILE *file,
+                     PRINT_EVENT_INFO *print_event_info) const override;
 
   /**
     Print column metadata. Its format looks like:
@@ -2453,8 +2330,9 @@ class Table_map_log_event : public binary_log::Table_map_event,
 
     @@param[out] file the place where colume metadata is printed
     @@param[in]  The metadata extracted from optional metadata fields
- */
-  void print_columns(IO_CACHE *file, const Optional_metadata_fields &fields);
+   */
+  void print_columns(IO_CACHE *file,
+                     const Optional_metadata_fields &fields) const;
   /**
     Print primary information. Its format looks like:
     # Primary Key(colume_name, column_name(prifix), ...)
@@ -2463,9 +2341,9 @@ class Table_map_log_event : public binary_log::Table_map_event,
 
     @@param[out] file the place where primary key is printed
     @@param[in]  The metadata extracted from optional metadata fields
- */
+   */
   void print_primary_key(IO_CACHE *file,
-                         const Optional_metadata_fields &fields);
+                         const Optional_metadata_fields &fields) const;
 #endif
 
   bool is_rbr_logging_format() const override { return true; }
@@ -2484,17 +2362,44 @@ class Table_map_log_event : public binary_log::Table_map_event,
   StringBuffer<1024> m_metadata_buf;
 
   /**
-    Initialize the optional metadata fields should be logged into
-    table_map_log_event and write them into m_metadata_buf.
+    Capture the optional metadata fields which should be logged into
+    table_map_log_event and serialize them into m_metadata_buf.
   */
   void init_metadata_fields();
   bool init_signedness_field();
-  bool init_charset_field();
+  /**
+    Capture and serialize character sets.  Character sets for
+    character columns (TEXT etc) and character sets for ENUM and SET
+    columns are stored in different metadata fields. The reason is
+    that TEXT character sets are included even when
+    binlog_row_metadata=MINIMAL, whereas ENUM and SET character sets
+    are included only when binlog_row_metadata=FULL.
+
+    @param include_type Predicate to determine if a given Field object
+    is to be included in the metadata field.
+
+    @param default_charset_type Type code when storing in "default
+    charset" format.  (See comment above Table_maps_log_event in
+    libbinlogevents/include/rows_event.h)
+
+    @param column_charset_type Type code when storing in "column
+    charset" format.  (See comment above Table_maps_log_event in
+    libbinlogevents/include/rows_event.h)
+  */
+  bool init_charset_field(std::function<bool(const Field *)> include_type,
+                          Optional_metadata_field_type default_charset_type,
+                          Optional_metadata_field_type column_charset_type);
   bool init_column_name_field();
   bool init_set_str_value_field();
   bool init_enum_str_value_field();
   bool init_geometry_type_field();
   bool init_primary_key_field();
+#endif
+
+#ifndef MYSQL_SERVER
+  class Charset_iterator;
+  class Default_charset_iterator;
+  class Column_charset_iterator;
 #endif
 };
 
@@ -2650,7 +2555,7 @@ class Rows_log_event : public virtual binary_log::Rows_event, public Log_event {
   /* Special constants representing sets of flags */
   enum { RLE_NO_FLAGS = 0U };
 
-  virtual ~Rows_log_event();
+  ~Rows_log_event() override;
 
   void set_flags(flag_set flags_arg) { m_flags |= flags_arg; }
   void clear_flags(flag_set flags_arg) { m_flags &= ~flags_arg; }
@@ -2664,9 +2569,6 @@ class Rows_log_event : public virtual binary_log::Rows_event, public Log_event {
 #endif
 
 #ifndef MYSQL_SERVER
-  /* not for direct call, each derived has its own ::print() */
-  virtual void print(FILE *file,
-                     PRINT_EVENT_INFO *print_event_info) override = 0;
   void print_verbose(IO_CACHE *file, PRINT_EVENT_INFO *print_event_info);
   size_t print_verbose_one_row(IO_CACHE *file, table_def *td,
                                PRINT_EVENT_INFO *print_event_info,
@@ -2706,8 +2608,8 @@ class Rows_log_event : public virtual binary_log::Rows_event, public Log_event {
 #endif
 
 #ifdef MYSQL_SERVER
-  virtual bool write_data_header(IO_CACHE *file) override;
-  virtual bool write_data_body(IO_CACHE *file) override;
+  virtual bool write_data_header(Basic_ostream *ostream) override;
+  virtual bool write_data_body(Basic_ostream *ostream) override;
   virtual const char *get_db() override { return m_table->s->db.str; }
 #endif
 
@@ -2725,11 +2627,11 @@ class Rows_log_event : public virtual binary_log::Rows_event, public Log_event {
                  MY_BITMAP const *cols, bool is_transactional,
                  Log_event_type event_type, const uchar *extra_row_info);
 #endif
-  Rows_log_event(const char *row_data, uint event_len,
+  Rows_log_event(const char *row_data,
                  const Format_description_event *description_event);
 
 #ifndef MYSQL_SERVER
-  void print_helper(FILE *, PRINT_EVENT_INFO *);
+  void print_helper(FILE *, PRINT_EVENT_INFO *) const;
 #endif
 
 #ifdef MYSQL_SERVER
@@ -2864,11 +2766,7 @@ class Rows_log_event : public virtual binary_log::Rows_event, public Log_event {
     @return true if there is an autoincrement field on the extra
             columns, false otherwise.
    */
-  inline bool is_auto_inc_in_extra_columns() {
-    DBUG_ASSERT(m_table);
-    return (m_table->next_number_field &&
-            m_table->next_number_field->field_index >= m_width);
-  }
+  bool is_auto_inc_in_extra_columns();
 #endif
 
   bool is_rbr_logging_format() const override { return true; }
@@ -3066,6 +2964,14 @@ class Rows_log_event : public virtual binary_log::Rows_event, public Log_event {
 #endif /* defined(MYSQL_SERVER) */
 
   friend class Old_rows_log_event;
+
+  /**
+    This bitmap is used as a backup for the write set while we calculate
+    the values for any hidden generated columns (functional indexes). In order
+    to calculate the values, the columns must be marked in the write set. After
+    the values are caluclated, we set the write set back to it's original value.
+  */
+  MY_BITMAP write_set_backup;
 };
 
 /**
@@ -3116,15 +3022,13 @@ class Write_rows_log_event : public Rows_log_event,
   Write_rows_log_event(THD *, TABLE *, const Table_id &table_id,
                        bool is_transactional, const uchar *extra_row_info);
 #endif
-  Write_rows_log_event(const char *buf, uint event_len,
+  Write_rows_log_event(const char *buf,
                        const Format_description_event *description_event);
 #if defined(MYSQL_SERVER)
   static bool binlog_row_logging_function(
       THD *thd, TABLE *table, bool is_transactional,
       const uchar *before_record MY_ATTRIBUTE((unused)),
-      const uchar *after_record) {
-    return thd->binlog_write_row(table, is_transactional, after_record, NULL);
-  }
+      const uchar *after_record);
   bool read_write_bitmaps_cmp(const TABLE *table) const override {
     return bitmap_cmp(get_cols(), table->write_set);
   }
@@ -3139,7 +3043,7 @@ class Write_rows_log_event : public Rows_log_event,
   }
 
 #ifndef MYSQL_SERVER
-  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) override;
+  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) const override;
 #endif
 
 #if defined(MYSQL_SERVER)
@@ -3207,22 +3111,19 @@ class Update_rows_log_event : public Rows_log_event,
   Update_rows_log_event(THD *, TABLE *, const Table_id &table_id,
                         bool is_transactional, const uchar *extra_row_info);
 
-  void init(MY_BITMAP const *cols);
+  void init(MY_BITMAP const *cols, const MY_BITMAP &cols_to_subtract);
 #endif
 
-  virtual ~Update_rows_log_event();
+  ~Update_rows_log_event() override;
 
-  Update_rows_log_event(const char *buf, uint event_len,
+  Update_rows_log_event(const char *buf,
                         const Format_description_event *description_event);
 
 #ifdef MYSQL_SERVER
   static bool binlog_row_logging_function(THD *thd, TABLE *table,
                                           bool is_transactional,
                                           const uchar *before_record,
-                                          const uchar *after_record) {
-    return thd->binlog_update_row(table, is_transactional, before_record,
-                                  after_record, NULL);
-  }
+                                          const uchar *after_record);
   bool read_write_bitmaps_cmp(const TABLE *table) const override {
     return (bitmap_cmp(get_cols(), table->read_set) &&
             bitmap_cmp(get_cols_ai(), table->write_set));
@@ -3235,7 +3136,7 @@ class Update_rows_log_event : public Rows_log_event,
   }
 
 #ifndef MYSQL_SERVER
-  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) override;
+  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) const override;
 #endif
 
 #if defined(MYSQL_SERVER)
@@ -3322,14 +3223,12 @@ class Delete_rows_log_event : public Rows_log_event,
   Delete_rows_log_event(THD *, TABLE *, const Table_id &, bool is_transactional,
                         const uchar *extra_row_info);
 #endif
-  Delete_rows_log_event(const char *buf, uint event_len,
+  Delete_rows_log_event(const char *buf,
                         const Format_description_event *description_event);
 #ifdef MYSQL_SERVER
   static bool binlog_row_logging_function(
       THD *thd, TABLE *table, bool is_transactional, const uchar *before_record,
-      const uchar *after_record MY_ATTRIBUTE((unused))) {
-    return thd->binlog_delete_row(table, is_transactional, before_record, NULL);
-  }
+      const uchar *after_record MY_ATTRIBUTE((unused)));
   bool read_write_bitmaps_cmp(const TABLE *table) const override {
     return bitmap_cmp(get_cols(), table->read_set);
   }
@@ -3341,7 +3240,7 @@ class Delete_rows_log_event : public Rows_log_event,
   }
 
 #ifndef MYSQL_SERVER
-  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) override;
+  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) const override;
 #endif
 
 #if defined(MYSQL_SERVER)
@@ -3391,8 +3290,8 @@ class Incident_log_event : public binary_log::Incident_event, public Log_event {
                   Log_event::EVENT_IMMEDIATE_LOGGING, header(), footer()) {
     DBUG_ENTER("Incident_log_event::Incident_log_event");
     DBUG_PRINT("enter", ("incident: %d", incident));
-    if (incident > INCIDENT_NONE && incident < INCIDENT_COUNT)
-      is_valid_param = true;
+    common_header->set_is_valid(incident > INCIDENT_NONE &&
+                                incident < INCIDENT_COUNT);
     DBUG_ASSERT(message == NULL && message_length == 0);
     DBUG_VOID_RETURN;
   }
@@ -3403,8 +3302,8 @@ class Incident_log_event : public binary_log::Incident_event, public Log_event {
                   Log_event::EVENT_IMMEDIATE_LOGGING, header(), footer()) {
     DBUG_ENTER("Incident_log_event::Incident_log_event");
     DBUG_PRINT("enter", ("incident: %d", incident));
-    if (incident > INCIDENT_NONE && incident < INCIDENT_COUNT)
-      is_valid_param = true;
+    common_header->set_is_valid(incident > INCIDENT_NONE &&
+                                incident < INCIDENT_COUNT);
     DBUG_ASSERT(message == NULL && message_length == 0);
     if (!(message = (char *)my_malloc(key_memory_Incident_log_event_message,
                                       msg.length + 1, MYF(MY_WME)))) {
@@ -3426,21 +3325,21 @@ class Incident_log_event : public binary_log::Incident_event, public Log_event {
   int pack_info(Protocol *) override;
 #endif
 
-  Incident_log_event(const char *buf, uint event_len,
+  Incident_log_event(const char *buf,
                      const Format_description_event *description_event);
 
-  virtual ~Incident_log_event();
+  ~Incident_log_event() override;
 
 #ifndef MYSQL_SERVER
-  virtual void print(FILE *file, PRINT_EVENT_INFO *print_event_info) override;
+  virtual void print(FILE *file,
+                     PRINT_EVENT_INFO *print_event_info) const override;
 #endif
 
 #if defined(MYSQL_SERVER)
   virtual int do_apply_event(Relay_log_info const *rli) override;
+  virtual bool write_data_header(Basic_ostream *ostream) override;
+  virtual bool write_data_body(Basic_ostream *ostream) override;
 #endif
-
-  virtual bool write_data_header(IO_CACHE *file) override;
-  virtual bool write_data_body(IO_CACHE *file) override;
 
   virtual size_t get_data_size() override {
     return Binary_log_event::INCIDENT_HEADER_LEN + 1 + message_length;
@@ -3485,21 +3384,22 @@ class Ignorable_log_event : public virtual binary_log::Ignorable_event,
       : Log_event(thd_arg, LOG_EVENT_IGNORABLE_F, Log_event::EVENT_STMT_CACHE,
                   Log_event::EVENT_NORMAL_LOGGING, header(), footer()) {
     DBUG_ENTER("Ignorable_log_event::Ignorable_log_event");
-    is_valid_param = true;
+    common_header->set_is_valid(true);
     DBUG_VOID_RETURN;
   }
 #endif
 
   Ignorable_log_event(const char *buf,
                       const Format_description_event *descr_event);
-  virtual ~Ignorable_log_event();
+  ~Ignorable_log_event() override;
 
 #ifdef MYSQL_SERVER
   int pack_info(Protocol *) override;
 #endif
 
 #ifndef MYSQL_SERVER
-  virtual void print(FILE *file, PRINT_EVENT_INFO *print_event_info) override;
+  virtual void print(FILE *file,
+                     PRINT_EVENT_INFO *print_event_info) const override;
 #endif
 
   virtual size_t get_data_size() override {
@@ -3560,26 +3460,24 @@ class Rows_query_log_event : public Ignorable_log_event,
 
 #ifdef MYSQL_SERVER
   int pack_info(Protocol *) override;
+  virtual int do_apply_event(Relay_log_info const *rli) override;
+  virtual bool write_data_body(Basic_ostream *ostream) override;
 #endif
 
-  Rows_query_log_event(const char *buf, uint event_len,
+  Rows_query_log_event(const char *buf,
                        const Format_description_event *descr_event);
 
-  virtual ~Rows_query_log_event() {
+  ~Rows_query_log_event() override {
     if (m_rows_query) my_free(m_rows_query);
     m_rows_query = NULL;
   }
 #ifndef MYSQL_SERVER
-  virtual void print(FILE *file, PRINT_EVENT_INFO *print_event_info) override;
+  virtual void print(FILE *file,
+                     PRINT_EVENT_INFO *print_event_info) const override;
 #endif
-  virtual bool write_data_body(IO_CACHE *file) override;
-
   virtual size_t get_data_size() override {
     return Binary_log_event::IGNORABLE_HEADER_LEN + 1 + strlen(m_rows_query);
   }
-#if defined(MYSQL_SERVER)
-  virtual int do_apply_event(Relay_log_info const *rli) override;
-#endif
 };
 
 static inline bool copy_event_cache_to_file_and_reinit(IO_CACHE *cache,
@@ -3603,7 +3501,7 @@ static inline bool copy_event_cache_to_file_and_reinit(IO_CACHE *cache,
 class Heartbeat_log_event : public binary_log::Heartbeat_event,
                             public Log_event {
  public:
-  Heartbeat_log_event(const char *buf, uint event_len,
+  Heartbeat_log_event(const char *buf,
                       const Format_description_event *description_event);
 };
 
@@ -3653,7 +3551,9 @@ class Gtid_log_event : public binary_log::Gtid_event, public Log_event {
   Gtid_log_event(THD *thd_arg, bool using_trans, int64 last_committed_arg,
                  int64 sequence_number_arg, bool may_have_sbr_stmts_arg,
                  ulonglong original_commit_timestamp_arg,
-                 ulonglong immediate_commit_timestamp_arg);
+                 ulonglong immediate_commit_timestamp_arg,
+                 uint32_t original_server_version_arg,
+                 uint32_t immediate_server_version_arg);
 
   /**
     Create a new event using the GTID from the given Gtid_specification
@@ -3664,21 +3564,23 @@ class Gtid_log_event : public binary_log::Gtid_event, public Log_event {
                  bool may_have_sbr_stmts_arg,
                  ulonglong original_commit_timestamp_arg,
                  ulonglong immediate_commit_timestamp_arg,
-                 const Gtid_specification spec_arg);
+                 const Gtid_specification spec_arg,
+                 uint32_t original_server_version_arg,
+                 uint32_t immediate_server_version_arg);
 #endif
 
 #ifdef MYSQL_SERVER
   int pack_info(Protocol *) override;
 #endif
-  Gtid_log_event(const char *buffer, uint event_len,
+  Gtid_log_event(const char *buffer,
                  const Format_description_event *description_event);
 
-  virtual ~Gtid_log_event() {}
+  ~Gtid_log_event() override {}
 
   size_t get_data_size() override {
     DBUG_EXECUTE_IF("do_not_write_rpl_timestamps", return POST_HEADER_LENGTH;);
     return POST_HEADER_LENGTH + get_commit_timestamp_length() +
-           net_length_size(transaction_length);
+           net_length_size(transaction_length) + get_server_version_length();
   }
 
   size_t get_event_length() { return LOG_EVENT_HEADER_LEN + get_data_size(); }
@@ -3689,18 +3591,18 @@ class Gtid_log_event : public binary_log::Gtid_event, public Log_event {
 
 #ifdef MYSQL_SERVER
   /**
-    Writes the post-header to the given IO_CACHE file.
+    Writes the post-header to the given output stream.
 
     This is an auxiliary function typically used by the write() member
     function.
 
-    @param file The file to write to.
+    @param ostream The output stream to write to.
 
     @retval true Error.
     @retval false Success.
   */
-  bool write_data_header(IO_CACHE *file) override;
-  bool write_data_body(IO_CACHE *file) override;
+  bool write_data_header(Basic_ostream *ostream) override;
+  bool write_data_body(Basic_ostream *ostream) override;
   /**
     Writes the post-header to the given memory buffer.
 
@@ -3731,7 +3633,7 @@ class Gtid_log_event : public binary_log::Gtid_event, public Log_event {
 
  public:
 #ifndef MYSQL_SERVER
-  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) override;
+  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) const override;
 #endif
 #ifdef MYSQL_SERVER
   /**
@@ -3783,17 +3685,8 @@ class Gtid_log_event : public binary_log::Gtid_event, public Log_event {
     @retval SIDNO if successful
     @retval negative if adding SID to global_sid_map causes an error.
   */
-  rpl_sidno get_sidno(bool need_lock) {
-    if (spec.gtid.sidno < 0) {
-      if (need_lock)
-        global_sid_lock->rdlock();
-      else
-        global_sid_lock->assert_some_lock();
-      spec.gtid.sidno = global_sid_map->add_sid(sid);
-      if (need_lock) global_sid_lock->unlock();
-    }
-    return spec.gtid.sidno;
-  }
+  rpl_sidno get_sidno(bool need_lock);
+
   /**
     Return the SIDNO relative to the given Sid_map for this GTID.
 
@@ -3888,17 +3781,17 @@ class Previous_gtids_log_event : public binary_log::Previous_gtids_event,
   int pack_info(Protocol *) override;
 #endif
 
-  Previous_gtids_log_event(const char *buf, uint event_len,
+  Previous_gtids_log_event(const char *buf,
                            const Format_description_event *description_event);
-  virtual ~Previous_gtids_log_event() {}
+  ~Previous_gtids_log_event() override {}
 
   size_t get_data_size() override { return buf_size; }
 
 #ifndef MYSQL_SERVER
-  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) override;
+  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) const override;
 #endif
 #ifdef MYSQL_SERVER
-  bool write(IO_CACHE *file) override {
+  bool write(Basic_ostream *ostream) override {
     if (DBUG_EVALUATE_IF("skip_writing_previous_gtids_log_event", 1, 0) &&
         /*
           The skip_writing_previous_gtids_log_event debug point was designed
@@ -3921,15 +3814,15 @@ class Previous_gtids_log_event : public binary_log::Previous_gtids_event,
       DBUG_PRINT("info",
                  ("writing partial Previous_gtids_log_event because of"
                   "debug option 'write_partial_previous_gtids_log_event'"));
-      return (Log_event::write_header(file, get_data_size()) ||
-              Log_event::write_data_header(file));
+      return (Log_event::write_header(ostream, get_data_size()) ||
+              Log_event::write_data_header(ostream));
     }
 
-    return (Log_event::write_header(file, get_data_size()) ||
-            Log_event::write_data_header(file) || write_data_body(file) ||
-            Log_event::write_footer(file));
+    return (Log_event::write_header(ostream, get_data_size()) ||
+            Log_event::write_data_header(ostream) || write_data_body(ostream) ||
+            Log_event::write_footer(ostream));
   }
-  bool write_data_body(IO_CACHE *file) override;
+  bool write_data_body(Basic_ostream *ostream) override;
 #endif
 
   /// Return the encoded buffer, or NULL on error.
@@ -3996,13 +3889,13 @@ class Transaction_context_log_event
   Gtid_set *snapshot_version;
 
 #ifdef MYSQL_SERVER
-  bool write_data_header(IO_CACHE *file) override;
+  bool write_data_header(Basic_ostream *ostream) override;
 
-  bool write_data_body(IO_CACHE *file) override;
+  bool write_data_body(Basic_ostream *ostream) override;
 
-  bool write_snapshot_version(IO_CACHE *file);
+  bool write_snapshot_version(Basic_ostream *ostream);
 
-  bool write_data_set(IO_CACHE *file, std::list<const char *> *set);
+  bool write_data_set(Basic_ostream *ostream, std::list<const char *> *set);
 #endif
 
   size_t get_snapshot_version_size();
@@ -4018,10 +3911,10 @@ class Transaction_context_log_event
                                 bool is_gtid_specified_arg);
 #endif
 
-  Transaction_context_log_event(const char *buffer, uint event_len,
+  Transaction_context_log_event(const char *buffer,
                                 const Format_description_event *descr_event);
 
-  virtual ~Transaction_context_log_event();
+  ~Transaction_context_log_event() override;
 
   size_t get_data_size() override;
 
@@ -4030,7 +3923,7 @@ class Transaction_context_log_event
 #endif
 
 #ifndef MYSQL_SERVER
-  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) override;
+  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) const override;
 #endif
 
 #if defined(MYSQL_SERVER)
@@ -4089,7 +3982,7 @@ class Transaction_context_log_event
   /**
    Return true if transaction has GTID_NEXT specified, false otherwise.
    */
-  bool is_gtid_specified() { return gtid_specified == true; };
+  bool is_gtid_specified() { return gtid_specified == true; }
 };
 
 /**
@@ -4123,11 +4016,12 @@ class View_change_log_event : public binary_log::View_change_event,
   size_t to_string(char *buf, ulong len) const;
 
 #ifdef MYSQL_SERVER
-  bool write_data_header(IO_CACHE *file) override;
+  bool write_data_header(Basic_ostream *ostream) override;
 
-  bool write_data_body(IO_CACHE *file) override;
+  bool write_data_body(Basic_ostream *ostream) override;
 
-  bool write_data_map(IO_CACHE *file, std::map<std::string, std::string> *map);
+  bool write_data_map(Basic_ostream *ostream,
+                      std::map<std::string, std::string> *map);
 #endif
 
   size_t get_size_data_map(std::map<std::string, std::string> *map);
@@ -4135,10 +4029,10 @@ class View_change_log_event : public binary_log::View_change_event,
  public:
   View_change_log_event(char *view_id);
 
-  View_change_log_event(const char *buffer, uint event_len,
+  View_change_log_event(const char *buffer,
                         const Format_description_event *descr_event);
 
-  virtual ~View_change_log_event();
+  ~View_change_log_event() override;
 
   size_t get_data_size() override;
 
@@ -4147,7 +4041,7 @@ class View_change_log_event : public binary_log::View_change_event,
 #endif
 
 #ifndef MYSQL_SERVER
-  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) override;
+  void print(FILE *file, PRINT_EVENT_INFO *print_event_info) const override;
 #endif
 
 #if defined(MYSQL_SERVER)
@@ -4161,9 +4055,17 @@ class View_change_log_event : public binary_log::View_change_event,
   char *get_view_id() { return view_id; }
 
   /**
-    Sets the certification info
-  */
-  void set_certification_info(std::map<std::string, std::string> *info);
+     Sets the certification info in the event
+
+     @note size is calculated on this method as the size of the data
+     might render the log even invalid. Also due to its size doing it
+     here avoid looping over the data multiple times.
+
+     @param[in] info    certification info to be written
+     @param[out] event_size  the event size after this operation
+   */
+  void set_certification_info(std::map<std::string, std::string> *info,
+                              size_t *event_size);
 
   /**
     Returns the certification info
@@ -4226,6 +4128,17 @@ inline bool is_atomic_ddl_event(Log_event *evt) {
 bool is_atomic_ddl(THD *thd, bool using_trans);
 
 #ifdef MYSQL_SERVER
+/**
+   Serialize an binary event to the given output stream. It is more general
+   than call ev->write() directly. The caller will not be affected if any
+   change happens in serialization process. For example, serializing the
+   event in different format.
+ */
+template <class EVENT>
+bool binary_event_serialize(EVENT *ev, Basic_ostream *ostream) {
+  return ev->write(ostream);
+}
+
 /*
   This is an utility function that adds a quoted identifier into the a buffer.
   This also escapes any existance of the quote string inside the identifier.

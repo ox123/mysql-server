@@ -64,6 +64,7 @@
 #include "errmsg.h"
 #include "lex_string.h"
 #include "map_helpers.h"
+#include "my_byteorder.h"
 #include "my_compiler.h"
 #include "my_dbug.h"
 #include "my_default.h"
@@ -108,6 +109,10 @@
 #include <errno.h>
 
 #define SOCKET_ERROR -1
+#endif
+
+#ifdef HAVE_OPENSSL
+#include <openssl/x509v3.h>
 #endif
 
 #include <mysql/client_plugin.h>
@@ -374,13 +379,18 @@ static HANDLE create_named_pipe(MYSQL *mysql, DWORD connect_timeout,
   pipe_name[sizeof(pipe_name) - 1] = 0; /* Safety if too long string */
   strxnmov(pipe_name, sizeof(pipe_name) - 1, "\\\\.\\pipe\\", unix_socket,
            NullS);
+
   DBUG_PRINT("info", ("Server name: '%s'.  Named Pipe: %s", host, unix_socket));
 
   for (i = 0; i < 100; i++) /* Don't retry forever */
   {
-    if ((hPipe = CreateFile(pipe_name, GENERIC_READ | GENERIC_WRITE, 0, NULL,
-                            OPEN_EXISTING, FILE_FLAG_OVERLAPPED, NULL)) !=
-        INVALID_HANDLE_VALUE)
+    if ((hPipe = CreateFile(pipe_name,
+                            FILE_READ_ATTRIBUTES | FILE_READ_DATA |
+                                FILE_WRITE_ATTRIBUTES | FILE_WRITE_DATA,
+                            0, NULL, OPEN_EXISTING,
+                            FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT |
+                                SECURITY_IDENTIFICATION,
+                            NULL)) != INVALID_HANDLE_VALUE)
       break;
     if (GetLastError() != ERROR_PIPE_BUSY) {
       set_mysql_extended_error(mysql, CR_NAMEDPIPEOPEN_ERROR, unknown_sqlstate,
@@ -1866,7 +1876,7 @@ void mysql_read_default_options(struct st_mysql_options *options,
           case OPT_protocol:
             if ((options->protocol = find_type(opt_arg, &sql_protocol_typelib,
                                                FIND_TYPE_BASIC)) <= 0) {
-              my_message_local(ERROR_LEVEL, "Unknown option to protocol: %s",
+              my_message_local(ERROR_LEVEL, EE_UNKNOWN_PROTOCOL_OPTION,
                                opt_arg);
               exit(1);
             }
@@ -2080,7 +2090,9 @@ MYSQL_FIELD *unpack_fields(MYSQL *mysql, MYSQL_ROWS *data, MEM_ROOT *alloc,
   memset(field, 0, sizeof(MYSQL_FIELD) * fields);
   for (row = data; row; row = row->next, field++) {
     /* fields count may be wrong */
-    DBUG_ASSERT((uint)(field - result) < fields);
+    if (field < result || static_cast<uint>(field - result) >= fields) {
+      DBUG_RETURN(NULL);
+    }
     if (unpack_field(mysql, alloc, default_value, server_capabilities, row,
                      field)) {
       DBUG_RETURN(NULL);
@@ -2235,6 +2247,8 @@ MYSQL_DATA *cli_read_rows(MYSQL *mysql, MYSQL_FIELD *mysql_fields,
 
   if ((pkt_len = cli_safe_read(mysql, &is_data_packet)) == packet_error)
     DBUG_RETURN(0);
+
+  if (pkt_len == 0) DBUG_RETURN(0);
   if (!(result =
             (MYSQL_DATA *)my_malloc(key_memory_MYSQL_DATA, sizeof(MYSQL_DATA),
                                     MYF(MY_WME | MY_ZEROFILL))) ||
@@ -2584,12 +2598,15 @@ static int ssl_verify_server_cert(Vio *vio, const char *server_hostname,
                                   const char **errptr) {
   SSL *ssl;
   X509 *server_cert = NULL;
-  char *cn = NULL;
+  int ret_validation = 1;
+
+#if !(OPENSSL_VERSION_NUMBER >= 0x10002000L || defined(HAVE_WOLFSSL))
   int cn_loc = -1;
+  char *cn = NULL;
   ASN1_STRING *cn_asn1 = NULL;
   X509_NAME_ENTRY *cn_entry = NULL;
   X509_NAME *subject = NULL;
-  int ret_validation = 1;
+#endif
 
   DBUG_ENTER("ssl_verify_server_cert");
   DBUG_PRINT("enter", ("server_hostname: %s", server_hostname));
@@ -2613,20 +2630,33 @@ static int ssl_verify_server_cert(Vio *vio, const char *server_hostname,
     *errptr = "Failed to verify the server certificate";
     goto error;
   }
-  /*
-    We already know that the certificate exchanged was valid; the SSL library
-    handled that. Now we need to verify that the contents of the certificate
-    are what we expect.
-  */
+    /*
+      We already know that the certificate exchanged was valid; the SSL library
+      handled that. Now we need to verify that the contents of the certificate
+      are what we expect.
+    */
 
-  /*
-   Some notes for future development
-   We should check host name in alternative name first and then if needed check
-   in common name. Currently yssl doesn't support alternative name.
-   openssl 1.0.2 support X509_check_host method for host name validation, we may
-   need to start using X509_check_host in the future.
-  */
+    /* Use OpenSSL certificate matching functions instead of our own if we
+       have OpenSSL. The X509_check_* functions return 1 on success.
+    */
+#if OPENSSL_VERSION_NUMBER >= 0x10002000L || defined(HAVE_WOLFSSL)
+  if ((X509_check_host(server_cert, server_hostname, strlen(server_hostname), 0,
+                       0) != 1) &&
+      (X509_check_ip_asc(server_cert, server_hostname, 0) != 1)) {
+    *errptr =
+        "Failed to verify the server certificate via X509 certificate "
+        "matching functions";
+    goto error;
 
+  } else {
+    /* Success */
+    ret_validation = 0;
+  }
+#else  /* OPENSSL_VERSION_NUMBER < 0x10002000L */
+  /*
+     OpenSSL prior to 1.0.2 do not support X509_check_host() function.
+     Use deprecated X509_get_subject_name() instead.
+  */
   subject = X509_get_subject_name((X509 *)server_cert);
   // Find the CN location in the subject
   cn_loc = X509_NAME_get_index_by_NID(subject, NID_commonName, -1);
@@ -2649,11 +2679,7 @@ static int ssl_verify_server_cert(Vio *vio, const char *server_hostname,
     goto error;
   }
 
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
   cn = (char *)ASN1_STRING_data(cn_asn1);
-#else  /* OPENSSL_VERSION_NUMBER < 0x10100000L */
-  cn = (char *)ASN1_STRING_get0_data(cn_asn1);
-#endif /* OPENSSL_VERSION_NUMBER < 0x10100000L */
 
   // There should not be any NULL embedded in the CN
   if ((size_t)ASN1_STRING_length(cn_asn1) != strlen(cn)) {
@@ -2666,6 +2692,7 @@ static int ssl_verify_server_cert(Vio *vio, const char *server_hostname,
     /* Success */
     ret_validation = 0;
   }
+#endif /* OPENSSL_VERSION_NUMBER >= 0x10002000L */
 
   *errptr = "SSL certificate validation failure";
 
@@ -3409,7 +3436,7 @@ static int cli_establish_ssl(MYSQL *mysql) {
     /* Do the SSL layering. */
     struct st_mysql_options *options = &mysql->options;
     struct st_VioSSLFd *ssl_fd;
-    enum enum_ssl_init_error ssl_init_error;
+    enum enum_ssl_init_error ssl_init_error = SSL_INITERR_NOERROR;
     const char *cert_error;
     unsigned long ssl_error;
     char buff[33], *end;
@@ -4414,8 +4441,8 @@ MYSQL *STDCALL mysql_real_connect(MYSQL *mysql, const char *host,
 
         while (curr_bind_ai != NULL) {
           /* Attempt to bind the socket to the given address */
-          bind_result =
-              bind(sock, curr_bind_ai->ai_addr, curr_bind_ai->ai_addrlen);
+          bind_result = bind(sock, curr_bind_ai->ai_addr,
+                             static_cast<int>(curr_bind_ai->ai_addrlen));
           if (!bind_result) break; /* Success */
 
           DBUG_PRINT("info", ("bind failed, attempting another bind address"));

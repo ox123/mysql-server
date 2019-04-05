@@ -1,4 +1,4 @@
-/* Copyright (c) 2017, 2018 Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -32,6 +32,7 @@
 #include "sql/item_regexp_func.h"
 
 #include "my_dbug.h"
+#include "mysql_com.h"  // MAX_BLOB_WIDTH
 #include "nullable.h"
 #include "sql/item_func.h"  // agg_arg_charsets_for_comparison()
 #include "sql/sql_class.h"  // THD
@@ -95,23 +96,9 @@ bool Item_func_regexp::resolve_type(THD *) {
 bool Item_func_regexp::fix_fields(THD *thd, Item **arguments) {
   if (Item_func::fix_fields(thd, arguments)) return true;
 
-  bool is_case_sensitive =
-      ((m_cmp_collation.collation->state & MY_CS_CSSORT) != 0 ||
-       (m_cmp_collation.collation->state & MY_CS_BINSORT) != 0);
-
-  uint32_t icu_flags = 0;  // Avoids compiler warning on gcc 4.8.5.
-  // match_parameter overrides coercion type.
-  auto mp = match_parameter();
-  if (mp.has_value() &&
-      ParseRegexpOptions(mp.value(), is_case_sensitive, &icu_flags)) {
-    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
-    return true;
-  }
-
   // Make sure that cleanup() deleted the facade in case of re-resolution.
   DBUG_ASSERT(m_facade.get() == nullptr);
-  m_facade =
-      make_unique_destroy_only<regexp::Regexp_facade>(*THR_MALLOC, icu_flags);
+  m_facade = make_unique_destroy_only<regexp::Regexp_facade>(thd->mem_root);
 
   fixed = true;
 
@@ -122,6 +109,24 @@ bool Item_func_regexp::fix_fields(THD *thd, Item **arguments) {
 void Item_func_regexp::cleanup() {
   m_facade.reset();
   Item_func::cleanup();
+}
+
+bool Item_func_regexp::set_pattern() {
+  auto mp = match_parameter();
+  if (!mp.has_value()) return true;
+
+  bool is_case_sensitive =
+      ((m_cmp_collation.collation->state & MY_CS_CSSORT) != 0 ||
+       (m_cmp_collation.collation->state & MY_CS_BINSORT) != 0);
+
+  uint32_t icu_flags = 0;  // Avoids compiler warning on gcc 4.8.5.
+  // match_parameter overrides coercion type.
+  if (ParseRegexpOptions(mp.value(), is_case_sensitive, &icu_flags)) {
+    my_error(ER_WRONG_ARGUMENTS, MYF(0), func_name());
+    return true;
+  }
+
+  return m_facade->SetPattern(pattern(), icu_flags);
 }
 
 bool Item_func_regexp_instr::fix_fields(THD *thd, Item **arguments) {
@@ -143,12 +148,13 @@ longlong Item_func_regexp_instr::val_int() {
   Nullable<int> pos = position();
   Nullable<int> occ = occurrence();
   Nullable<int> retopt = return_option();
-  if (!pos.has_value() || !occ.has_value() || !retopt.has_value() ||
-      !match_parameter().has_value()) {
+
+  if (set_pattern() || !pos.has_value() || !occ.has_value() ||
+      !retopt.has_value()) {
     null_value = true;
     DBUG_RETURN(0);
   }
-  if (m_facade->SetPattern(pattern())) DBUG_RETURN(0);
+
   Nullable<int32_t> result =
       m_facade->Find(subject(), pos.value(), occ.value(), retopt.value());
   if (result.has_value()) DBUG_RETURN(result.value());
@@ -159,11 +165,12 @@ longlong Item_func_regexp_instr::val_int() {
 longlong Item_func_regexp_like::val_int() {
   DBUG_ENTER("Item_func_regexp_like::val_int");
   DBUG_ASSERT(fixed);
-  if (!match_parameter().has_value()) {
+
+  if (set_pattern()) {
     null_value = true;
     DBUG_RETURN(0);
   }
-  if (m_facade->SetPattern(pattern())) DBUG_RETURN(0);
+
   /*
     REGEXP_LIKE() does not take position and occurence arguments, so we trust
     that the calls to their accessors below will return the default values.
@@ -178,19 +185,17 @@ longlong Item_func_regexp_like::val_int() {
 
 bool Item_func_regexp_replace::resolve_type(THD *thd) {
   if (Item_func_regexp::resolve_type(thd)) return true;
-  collation.collation = regexp::regexp_lib_charset;
+  set_data_type_string(ulonglong{MAX_BLOB_WIDTH}, regexp::regexp_lib_charset);
   return false;
 }
 
 String *Item_func_regexp_replace::val_str(String *buf) {
+  DBUG_ASSERT(fixed);
+
   Nullable<int> pos = position();
   Nullable<int> occ = occurrence();
-  DBUG_ASSERT(fixed);
-  if (!pos.has_value() || !occ.has_value() || !match_parameter().has_value()) {
-    null_value = true;
-    return 0;
-  }
-  if (m_facade->SetPattern(pattern())) {
+
+  if (set_pattern() || !pos.has_value() || !occ.has_value()) {
     null_value = true;
     return nullptr;
   }
@@ -209,7 +214,8 @@ String *Item_func_regexp_replace::val_str(String *buf) {
 
 bool Item_func_regexp_substr::resolve_type(THD *thd) {
   if (Item_func_regexp::resolve_type(thd)) return true;
-  collation.collation = regexp::regexp_lib_charset;
+  set_data_type_string(subject()->max_char_length(),
+                       regexp::regexp_lib_charset);
   return false;
 }
 
@@ -218,11 +224,7 @@ String *Item_func_regexp_substr::val_str(String *buf) {
   Nullable<int> pos = position();
   Nullable<int> occ = occurrence();
 
-  if (!pos.has_value() || !occ.has_value() || !match_parameter().has_value()) {
-    null_value = true;
-    return 0;
-  }
-  if (m_facade->SetPattern(pattern())) {
+  if (set_pattern() || !pos.has_value() || !occ.has_value()) {
     null_value = true;
     return nullptr;
   }

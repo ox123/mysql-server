@@ -33,6 +33,8 @@
 #include <sys/types.h>
 #include <time.h>
 #include <algorithm>
+#include <bitset>
+#include <functional>
 #include <random>  // std::mt19937
 #include <set>
 #include <string>
@@ -43,6 +45,7 @@
 #include "map_helpers.h"
 #include "my_alloc.h"
 #include "my_base.h"
+#include "my_bitmap.h"
 #include "my_compiler.h"
 #include "my_dbug.h"
 #include "my_double2ulonglong.h"
@@ -51,12 +54,10 @@
 #include "my_sys.h"
 #include "my_thread_local.h"  // my_errno
 #include "mysql/components/services/psi_table_bits.h"
-#include "sql/dd/object_id.h"   // dd::Object_id
-#include "sql/dd/properties.h"  // dd::Properties
+#include "sql/dd/object_id.h"  // dd::Object_id
 #include "sql/dd/string_type.h"
 #include "sql/dd/types/object_table.h"  // dd::Object_table
 #include "sql/discrete_interval.h"      // Discrete_interval
-#include "sql/json_dom.h"
 #include "sql/key.h"
 #include "sql/sql_const.h"       // SHOW_COMP_OPTION
 #include "sql/sql_list.h"        // SQL_I_List
@@ -68,6 +69,7 @@ class Alter_info;
 class Create_field;
 class Field;
 class Item;
+class Json_dom;
 class Partition_handler;
 class Plugin_table;
 class Plugin_tablespace;
@@ -93,9 +95,11 @@ struct Tablespace_options;
 struct handlerton;
 
 typedef struct xid_t XID;
+typedef struct st_xarecover_txn XA_recover_txn;
 struct MDL_key;
 
 namespace dd {
+enum class enum_column_types;
 class Table;
 class Tablespace;
 struct sdi_key;
@@ -173,7 +177,8 @@ enum enum_alter_inplace_result {
   HA_ALTER_INPLACE_SHARED_LOCK_AFTER_PREPARE,
   HA_ALTER_INPLACE_SHARED_LOCK,
   HA_ALTER_INPLACE_NO_LOCK_AFTER_PREPARE,
-  HA_ALTER_INPLACE_NO_LOCK
+  HA_ALTER_INPLACE_NO_LOCK,
+  HA_ALTER_INPLACE_INSTANT
 };
 
 /* Bits in table_flags() to show what database can do */
@@ -305,7 +310,7 @@ enum enum_alter_inplace_result {
 #define HA_CAN_BIT_FIELD (1 << 28)
 #define HA_ANY_INDEX_MAY_BE_UNIQUE (1 << 30)
 #define HA_NO_COPY_ON_ALTER (1LL << 31)
-#define HA_HAS_RECORDS (1LL << 32) /* records() gives exact count*/
+#define HA_COUNT_ROWS_INSTANT (1LL << 32) /* records() gives exact count*/
 /* Has it's own method of binlog logging */
 #define HA_HAS_OWN_BINLOGGING (1LL << 33)
 /*
@@ -463,6 +468,21 @@ enum enum_alter_inplace_result {
   restriction is also supported if this isn't defined.
 */
 #define HA_SUPPORTS_GEOGRAPHIC_GEOMETRY_COLUMN (1LL << 50)
+
+/**
+  Handler supports expressions as DEFAULT for a column.
+*/
+#define HA_SUPPORTS_DEFAULT_EXPRESSION (1LL << 51)
+
+/**
+  Handlers with this flag set do not support UPDATE operations.
+*/
+#define HA_UPDATE_NOT_SUPPORTED (1LL << 52)
+
+/**
+  Handlers with this flag set do not support DELETE operations.
+*/
+#define HA_DELETE_NOT_SUPPORTED (1LL << 53)
 
 /*
   Bits in index_flags(index_number) for what you can do with index.
@@ -703,12 +723,22 @@ given at all. */
 /** COMPRESSION="zlib|lz4|none" used during table create. */
 #define HA_CREATE_USED_COMPRESS (1L << 26)
 
+/** ENCRYPTION="Y" used during table create. */
+#define HA_CREATE_USED_ENCRYPT (1L << 27)
+
 /**
   CREATE|ALTER SCHEMA|DATABASE|TABLE has an explicit COLLATE clause.
 
   Implies HA_CREATE_USED_DEFAULT_CHARSET.
 */
-#define HA_CREATE_USED_DEFAULT_COLLATE (1L << 27)
+#define HA_CREATE_USED_DEFAULT_COLLATE (1L << 28)
+
+/** SECONDARY_ENGINE used during table create. */
+#define HA_CREATE_USED_SECONDARY_ENGINE (1L << 29)
+
+/*
+  End of bits used in used_fields
+*/
 
 /*
   Structure to hold list of database_name.table_name.
@@ -725,9 +755,6 @@ struct st_handler_tablename {
 #define COMPATIBLE_DATA_YES 0
 #define COMPATIBLE_DATA_NO 1
 
-/** ENCRYPTION="Y" used during table create. */
-#define HA_CREATE_USED_ENCRYPT (1L << 27)
-
 /*
   These structures are used to pass information from a set of SQL commands
   on add/drop/change tablespace definitions to the proper hton.
@@ -743,16 +770,21 @@ enum ts_command_type {
   ALTER_LOGFILE_GROUP = 3,
   DROP_TABLESPACE = 4,
   DROP_LOGFILE_GROUP = 5,
-  // FUTURE: Remove these as they are never used, execpt as case labels in SE
   CHANGE_FILE_TABLESPACE = 6,
-  ALTER_ACCESS_MODE_TABLESPACE = 7
+  ALTER_ACCESS_MODE_TABLESPACE = 7,
+  CREATE_UNDO_TABLESPACE = 8,
+  ALTER_UNDO_TABLESPACE = 9,
+  DROP_UNDO_TABLESPACE = 10
 };
 
 enum ts_alter_tablespace_type {
   TS_ALTER_TABLESPACE_TYPE_NOT_DEFINED = -1,
   ALTER_TABLESPACE_ADD_FILE = 1,
   ALTER_TABLESPACE_DROP_FILE = 2,
-  ALTER_TABLESPACE_RENAME = 3
+  ALTER_TABLESPACE_RENAME = 3,
+  ALTER_TABLESPACE_OPTIONS = 4,
+  ALTER_UNDO_TABLESPACE_SET_ACTIVE = 5,
+  ALTER_UNDO_TABLESPACE_SET_INACTIVE = 6
 };
 
 /**
@@ -833,10 +865,28 @@ enum enum_schema_tables {
 enum ha_stat_type { HA_ENGINE_STATUS, HA_ENGINE_LOGS, HA_ENGINE_MUTEX };
 enum ha_notification_type : int { HA_NOTIFY_PRE_EVENT, HA_NOTIFY_POST_EVENT };
 
+/** Clone start operation mode */
+enum Ha_clone_mode {
+  /** Start a new clone operation */
+  HA_CLONE_MODE_START,
+
+  /** Re-start a clone operation after failure */
+  HA_CLONE_MODE_RESTART,
+
+  /** Add a new task to a running clone operation */
+  HA_CLONE_MODE_ADD_TASK,
+
+  /** Get version for transfer data format */
+  HA_CLONE_MODE_VERSION,
+
+  /** Max value for clone mode */
+  HA_CLONE_MODE_MAX
+};
+
 /** Clone operation types. */
-enum Ha_clone_type {
+enum Ha_clone_type : size_t {
   /** Caller must block all write operation to the SE. */
-  HA_CLONE_BLOCKING = 1,
+  HA_CLONE_BLOCKING,
 
   /** For transactional SE, archive redo to support concurrent dml */
   HA_CLONE_REDO,
@@ -846,8 +896,19 @@ enum Ha_clone_type {
 
   /** For transactional SE, use both page tracking and redo to optimize
   clone with concurrent dml. Currently supported by Innodb. */
-  HA_CLONE_HYBRID
+  HA_CLONE_HYBRID,
+
+  /** SE supports multiple threads for clone */
+  HA_CLONE_MULTI_TASK,
+
+  /** SE supports restarting clone after network failure */
+  HA_CLONE_RESTART,
+
+  /** Maximum value of clone type */
+  HA_CLONE_TYPE_MAX
 };
+
+using Ha_clone_flagset = std::bitset<HA_CLONE_TYPE_MAX>;
 
 /** File reference for clone */
 struct Ha_clone_file {
@@ -873,6 +934,18 @@ struct Ha_clone_file {
 
 /* Abstract callback interface to stream data back to the caller. */
 class Ha_clone_cbk {
+ protected:
+  /** Constructor to initialize members. */
+  Ha_clone_cbk()
+      : m_hton(),
+        m_loc_idx(),
+        m_client_buff_size(),
+        m_data_desc(),
+        m_desc_len(),
+        m_src_name(),
+        m_dest_name(),
+        m_flag() {}
+
  public:
   /** Callback providing data from current position of a
   file descriptor of specific length.
@@ -925,7 +998,7 @@ class Ha_clone_cbk {
   data transferred by the callbacks.
   @param[in]  desc  serialized data descriptor
   @param[in]  len   length of the descriptor byte stream  */
-  void set_data_desc(uchar *desc, uint len) {
+  void set_data_desc(const uchar *desc, uint len) {
     m_data_desc = desc;
     m_desc_len = len;
   }
@@ -934,7 +1007,7 @@ class Ha_clone_cbk {
   data transferred by the callbacks.
   @param[out]  lenp  length of the descriptor byte stream
   @return pointer to the serialized data descriptor */
-  uchar *get_data_desc(uint *lenp) {
+  const uchar *get_data_desc(uint *lenp) {
     if (lenp != nullptr) {
       *lenp = m_desc_len;
     }
@@ -961,7 +1034,7 @@ class Ha_clone_cbk {
   /** Clear all flags set by SE */
   void clear_flags() { m_flag = 0; }
 
-  /* Mark that ACK is needed for the data transfer before returning
+  /** Mark that ACK is needed for the data transfer before returning
   from callback. Set by SE. */
   void set_ack() { m_flag |= HA_CLONE_ACK; }
 
@@ -969,7 +1042,7 @@ class Ha_clone_cbk {
   @return true if ACK is needed */
   bool is_ack_needed() { return (m_flag & HA_CLONE_ACK); }
 
-  /* Mark that the file descriptor is opened for read/write
+  /** Mark that the file descriptor is opened for read/write
   with OS buffer cache. For O_DIRECT, the flag is not set. */
   void set_os_buffer_cache() { m_flag |= HA_CLONE_FILE_CACHE; }
 
@@ -978,6 +1051,12 @@ class Ha_clone_cbk {
   if SE is using O_DIRECT. This improves data copy performance.
   @return true if O_DIRECT is not used */
   bool is_os_buffer_cache() { return (m_flag & HA_CLONE_FILE_CACHE); }
+
+  /** Mark that the file can be transferred with zero copy. */
+  void set_zero_copy() { m_flag |= HA_CLONE_ZERO_COPY; }
+
+  /** Check if zero copy optimization is suggested. */
+  bool is_zero_copy() { return (m_flag & HA_CLONE_ZERO_COPY); }
 
  private:
   /** Handlerton for the SE */
@@ -990,7 +1069,7 @@ class Ha_clone_cbk {
   uint m_client_buff_size;
 
   /** SE's Serialized data descriptor */
-  uchar *m_data_desc;
+  const uchar *m_data_desc;
   uint m_desc_len;
 
   /** Current source file name */
@@ -1007,6 +1086,30 @@ class Ha_clone_cbk {
 
   /** Data file is opened for read/write with OS buffer cache. */
   const int HA_CLONE_FILE_CACHE = 0x02;
+
+  /** Data file can be transferred with zero copy. */
+  const int HA_CLONE_ZERO_COPY = 0x04;
+};
+
+/**
+  Column type description for foreign key columns compatibility check.
+
+  Contains subset of information from dd::Column class. It is inconvenient
+  to use dd::Column class directly for such checks because it requires valid
+  dd::Table object and in some cases we want to produce Ha_fk_column_type
+  right from column description in Create_field format.
+*/
+struct Ha_fk_column_type {
+  dd::enum_column_types type;
+  /*
+    Note that both dd::Column::char_length() and length here are really
+    in bytes.
+  */
+  size_t char_length;
+  const CHARSET_INFO *field_charset;
+  size_t elements_count;
+  uint numeric_scale;
+  bool is_unsigned;
 };
 
 /* handlerton methods */
@@ -1064,7 +1167,8 @@ typedef int (*rollback_t)(handlerton *hton, THD *thd, bool all);
 
 typedef int (*prepare_t)(handlerton *hton, THD *thd, bool all);
 
-typedef int (*recover_t)(handlerton *hton, XID *xid_list, uint len);
+typedef int (*recover_t)(handlerton *hton, XA_recover_txn *xid_list, uint len,
+                         MEM_ROOT *mem_root);
 
 /** X/Open XA distributed transaction status codes */
 enum xa_status_code {
@@ -1166,14 +1270,14 @@ typedef uint (*partition_flags_t)();
   This function will ask the relevant SE whether the submitted tablespace
   name is valid.
 
-  @param tablespace_ddl     Purpose of usage - is this tablespace DDL?
+  @param ts_cmd             Purpose of usage - is this tablespace DDL?
   @param tablespace_name    Name of the tablespace.
 
   @return Tablespace name validity.
     @retval == false: The tablespace name is invalid.
     @retval == true:  The tablespace name is valid.
 */
-typedef bool (*is_valid_tablespace_name_t)(bool tablespace_ddl,
+typedef bool (*is_valid_tablespace_name_t)(ts_command_type ts_cmd,
                                            const char *tablespace_name);
 
 /**
@@ -1214,6 +1318,12 @@ typedef int (*alter_tablespace_t)(handlerton *hton, THD *thd,
                                   st_alter_tablespace *ts_info,
                                   const dd::Tablespace *old_ts_def,
                                   dd::Tablespace *new_ts_def);
+
+/**
+  SE interface for getting tablespace extension.
+  @return Extension of tablespace datafile name.
+*/
+typedef const char *(*get_tablespace_filename_ext_t)();
 
 /**
   Get the tablespace data from SE and insert it into Data dictionary
@@ -1261,6 +1371,28 @@ typedef int (*finish_upgrade_t)(THD *thd, bool failed_upgrade);
   @retval != 0  Error (handler error code returned)
 */
 typedef int (*upgrade_logs_t)(THD *thd);
+
+enum class Tablespace_type {
+  SPACE_TYPE_DICTIONARY,
+  SPACE_TYPE_SYSTEM,
+  SPACE_TYPE_UNDO,
+  SPACE_TYPE_TEMPORARY,
+  SPACE_TYPE_SHARED,
+  SPACE_TYPE_IMPLICIT
+};
+
+/**
+  Get the tablespace type from the SE.
+
+  @param[in]  space          tablespace object
+  @param[out] space_type     type of space
+
+  @return Operation status.
+  @retval == 0  Success.
+  @retval != 0  Error (unknown space type, no error code returned)
+*/
+typedef bool (*get_tablespace_type_t)(const dd::Tablespace &space,
+                                      Tablespace_type *space_type);
 
 typedef int (*fill_is_table_t)(handlerton *hton, THD *thd, TABLE_LIST *tables,
                                class Item *cond, enum enum_schema_tables);
@@ -1457,10 +1589,10 @@ typedef void (*replace_native_transaction_in_thd_t)(THD *thd, void *new_trx_arg,
 
 /** Mode for initializing the data dictionary. */
 enum dict_init_mode_t {
-  DICT_INIT_CREATE_FILES,      //< Create all required SE files
-  DICT_INIT_CHECK_FILES,       //< Verify existence of expected files
-  DICT_INIT_UPGRADE_57_FILES,  //< Used for upgrade from mysql-5.7
-  DICT_INIT_IGNORE_FILES       //< Don't care about files at all
+  DICT_INIT_CREATE_FILES,      ///< Create all required SE files
+  DICT_INIT_CHECK_FILES,       ///< Verify existence of expected files
+  DICT_INIT_UPGRADE_57_FILES,  ///< Used for upgrade from mysql-5.7
+  DICT_INIT_IGNORE_FILES       ///< Don't care about files at all
 };
 
 /**
@@ -1501,8 +1633,6 @@ typedef bool (*ddse_dict_init_t)(
 
 /**
   Initialize the set of hard coded DD table ids.
-
-  @param dd_table_id  SE_private_id of DD table..
 */
 typedef void (*dict_register_dd_table_id_t)(dd::Object_id hard_coded_tables);
 
@@ -1513,7 +1643,7 @@ typedef void (*dict_register_dd_table_id_t)(dd::Object_id hard_coded_tables);
   dictionary cache is in sync with the global DD.
 
   @param   schema_name    Schema name.
-  @param   table name     Table name.
+  @param   table_name     Table name.
  */
 
 typedef void (*dict_cache_reset_t)(const char *schema_name,
@@ -1529,9 +1659,9 @@ typedef void (*dict_cache_reset_tables_and_tablespaces_t)();
 
 /** Mode for data dictionary recovery. */
 enum dict_recovery_mode_t {
-  DICT_RECOVERY_INITIALIZE_SERVER,       //< First start of a new server
-  DICT_RECOVERY_INITIALIZE_TABLESPACES,  //< First start, create tablespaces
-  DICT_RECOVERY_RESTART_SERVER           //< Restart of an existing server
+  DICT_RECOVERY_INITIALIZE_SERVER,       ///< First start of a new server
+  DICT_RECOVERY_INITIALIZE_TABLESPACES,  ///< First start, create tablespaces
+  DICT_RECOVERY_RESTART_SERVER           ///< Restart of an existing server
 };
 
 /**
@@ -1551,6 +1681,25 @@ enum dict_recovery_mode_t {
 
 typedef bool (*dict_recover_t)(dict_recovery_mode_t dict_recovery_mode,
                                uint version);
+
+/**
+  Get the server version id stored in the header of the
+  dictionary tablespace.
+
+  @param [out] version  Version number from the DD
+                        tablespace header.
+
+  @retval Operation outcome, false if no error, otherwise true.
+*/
+typedef bool (*dict_get_server_version_t)(uint *version);
+
+/**
+  Store the current server version number into the
+  header of the dictionary tablespace.
+
+  @retval Operation outcome, false if no error, otherwise true.
+*/
+typedef bool (*dict_set_server_version_t)();
 
 /**
   Notify/get permission from storage engine before acquisition or after
@@ -1696,26 +1845,105 @@ typedef bool (*get_tablespace_statistics_t)(
     const dd::Properties &ts_se_private_data, ha_tablespace_statistics *stats);
 
 /* Database physical clone interfaces */
-using Clone_begin_t = int (*)(handlerton *hton, THD *thd, uchar *&loc,
-                              uint &loc_len, Ha_clone_type type);
 
-using Clone_copy_t = int (*)(handlerton *hton, THD *thd, uchar *loc,
-                             Ha_clone_cbk *desc);
+/** Get capability flags for clone operation
+@param[out]     flags   capability flag */
+using Clone_capability_t = void (*)(Ha_clone_flagset &flags);
 
-using Clone_end_t = int (*)(handlerton *hton, THD *thd, uchar *loc);
+/** Begin copy from source database
+@param[in]      hton    handlerton for SE
+@param[in]      thd     server thread handle
+@param[in,out]  loc     locator
+@param[in,out]  loc_len locator length
+@param[out]     task_id task identifier
+@param[in]      type    clone type
+@param[in]      mode    mode for starting clone
+@return error code */
+using Clone_begin_t = int (*)(handlerton *hton, THD *thd, const uchar *&loc,
+                              uint &loc_len, uint &task_id, Ha_clone_type type,
+                              Ha_clone_mode mode);
 
-using Clone_apply_begin_t = int (*)(handlerton *hton, THD *thd, uchar *&loc,
-                                    uint &loc_len, const char *data_dir);
+/** Copy data from source database in chunks via callback
+@param[in]      hton    handlerton for SE
+@param[in]      thd     server thread handle
+@param[in]      loc     locator
+@param[in]      loc_len locator length in bytes
+@param[in]      task_id task identifier
+@param[in]      cbk     callback interface for sending data
+@return error code */
+using Clone_copy_t = int (*)(handlerton *hton, THD *thd, const uchar *loc,
+                             uint loc_len, uint task_id, Ha_clone_cbk *cbk);
 
-using Clone_apply_t = int (*)(handlerton *hton, THD *thd, uchar *loc,
-                              Ha_clone_cbk *desc);
+/** Acknowledge data transfer to source database
+@param[in]      hton    handlerton for SE
+@param[in]      thd     server thread handle
+@param[in]      loc     locator
+@param[in]      loc_len locator length in bytes
+@param[in]      task_id task identifier
+@param[in]      in_err  inform any error occurred
+@param[in]      cbk     callback interface
+@return error code */
+using Clone_ack_t = int (*)(handlerton *hton, THD *thd, const uchar *loc,
+                            uint loc_len, uint task_id, int in_err,
+                            Ha_clone_cbk *cbk);
 
-using Clone_apply_end_t = int (*)(handlerton *hton, THD *thd, uchar *loc);
+/** End copy from source database
+@param[in]      hton    handlerton for SE
+@param[in]      thd     server thread handle
+@param[in]      loc     locator
+@param[in]	loc_len	locator length in bytes
+@param[in]      task_id task identifier
+@param[in]      in_err  error code when ending after error
+@return error code */
+using Clone_end_t = int (*)(handlerton *hton, THD *thd, const uchar *loc,
+                            uint loc_len, uint task_id, int in_err);
+
+/** Begin apply to destination database
+@param[in]      hton            handlerton for SE
+@param[in]      thd             server thread handle
+@param[in,out]  loc             locator
+@param[in,out]  loc_len         locator length
+@param[in]      task_id         task identifier
+@param[in]      mode            mode for starting clone
+@param[in]      data_dir        target data directory
+@return error code */
+using Clone_apply_begin_t = int (*)(handlerton *hton, THD *thd,
+                                    const uchar *&loc, uint &loc_len,
+                                    uint &task_id, Ha_clone_mode mode,
+                                    const char *data_dir);
+
+/** Apply data to destination database in chunks via callback
+@param[in]      hton    handlerton for SE
+@param[in]      thd     server thread handle
+@param[in]      loc     locator
+@param[in]	loc_len	locator length in bytes
+@param[in]      task_id task identifier
+@param[in]      in_err  inform any error occurred
+@param[in]      cbk     callback interface for receiving data
+@return error code */
+using Clone_apply_t = int (*)(handlerton *hton, THD *thd, const uchar *loc,
+                              uint loc_len, uint task_id, int in_err,
+                              Ha_clone_cbk *cbk);
+
+/** End apply to destination database
+@param[in]      hton    handlerton for SE
+@param[in]      thd     server thread handle
+@param[in]      loc     locator
+@param[in]	loc_len	locator length in bytes
+@param[in]      task_id task identifier
+@param[in]      in_err  error code when ending after error
+@return error code */
+using Clone_apply_end_t = int (*)(handlerton *hton, THD *thd, const uchar *loc,
+                                  uint loc_len, uint task_id, int in_err);
 
 struct Clone_interface_t {
+  /* Get clone capabilities of an SE */
+  Clone_capability_t clone_capability;
+
   /* Interfaces to copy data. */
   Clone_begin_t clone_begin;
   Clone_copy_t clone_copy;
+  Clone_ack_t clone_ack;
   Clone_end_t clone_end;
 
   /* Interfaces to apply data. */
@@ -1764,6 +1992,25 @@ typedef bool (*unlock_hton_log_t)(handlerton *hton);
 */
 
 typedef bool (*collect_hton_log_info_t)(handlerton *hton, Json_dom *json);
+
+/**
+  Check SE considers types of child and parent columns in foreign key
+  to be compatible.
+
+  @param  child_column_type   Child column type description.
+  @param  parent_column_type  Parent column type description.
+  @param  check_charsets      Indicates whether we need to check
+                              that charsets of string columns
+                              match. Which is true in most cases.
+
+  @returns True if types are compatible, False if not.
+*/
+
+typedef bool (*check_fk_column_compat_t)(
+    const Ha_fk_column_type *child_column_type,
+    const Ha_fk_column_type *parent_column_type, bool check_charsets);
+
+typedef bool (*is_reserved_db_name_t)(handlerton *hton, const char *name);
 
 /**
   handlerton is a singleton structure - one instance per storage engine -
@@ -1833,8 +2080,10 @@ struct handlerton {
   is_valid_tablespace_name_t is_valid_tablespace_name;
   get_tablespace_t get_tablespace;
   alter_tablespace_t alter_tablespace;
+  get_tablespace_filename_ext_t get_tablespace_filename_ext;
   upgrade_tablespace_t upgrade_tablespace;
   upgrade_space_version_t upgrade_space_version;
+  get_tablespace_type_t get_tablespace_type;
   upgrade_logs_t upgrade_logs;
   finish_upgrade_t finish_upgrade;
   fill_is_table_t fill_is_table;
@@ -1845,6 +2094,9 @@ struct handlerton {
   dict_cache_reset_tables_and_tablespaces_t
       dict_cache_reset_tables_and_tablespaces;
   dict_recover_t dict_recover;
+  dict_get_server_version_t dict_get_server_version;
+  dict_set_server_version_t dict_set_server_version;
+  is_reserved_db_name_t is_reserved_db_name;
 
   /** Global handler flags. */
   uint32 flags;
@@ -1924,6 +2176,11 @@ struct handlerton {
   lock_hton_log_t lock_hton_log;
   unlock_hton_log_t unlock_hton_log;
   collect_hton_log_info_t collect_hton_log_info;
+
+  /** Flags describing details of foreign key support by storage engine. */
+  uint32 foreign_keys_flags;
+
+  check_fk_column_compat_t check_fk_column_compat;
 };
 
 /* Possible flags of a handlerton (there can be 32 of them) */
@@ -1979,9 +2236,64 @@ struct handlerton {
 
 #define HTON_SUPPORTS_ATOMIC_DDL (1 << 12)
 
+/* Engine supports packed keys. */
+#define HTON_SUPPORTS_PACKED_KEYS (1 << 13)
+
+/** Engine is a secondary storage engine. */
+#define HTON_IS_SECONDARY_ENGINE (1 << 14)
+
+/** Engine supports secondary storage engines. */
+#define HTON_SUPPORTS_SECONDARY_ENGINE (1 << 15)
+
 inline bool ddl_is_atomic(const handlerton *hton) {
   return (hton->flags & HTON_SUPPORTS_ATOMIC_DDL) != 0;
 }
+
+/* Bits for handlerton::foreign_keys_flags bitmap. */
+
+/**
+  Engine supports both unique and non-unique parent keys for
+  foreign keys which contain full foreign key as its prefix.
+
+  Storage engines which support foreign keys but do not have
+  this flag set are assumed to support only parent keys which
+  are primary/unique and contain exactly the same columns as
+  the foreign key, possibly, in different order.
+*/
+
+static const uint32 HTON_FKS_WITH_PREFIX_PARENT_KEYS = (1 << 0);
+
+/**
+  Storage engine supports hash keys as supporting keys for foreign
+  keys. Hash key should contain all foreign key columns and only
+  them (altough in any order).
+
+  Storage engines which support foreign keys but do not have this
+  flag set are assumed to not allow hash keys as supporting keys.
+*/
+
+static const uint32 HTON_FKS_WITH_SUPPORTING_HASH_KEYS = (1 << 1);
+
+/**
+  Storage engine supports non-hash keys which have common prefix
+  with the foreign key as supporting keys for it. If there are
+  several such keys, one which shares biggest prefix with FK is
+  chosen.
+
+  Storage engines which support foreign keys but do not have this
+  flag set are assumed to require that supporting key contains full
+  foreign key as its prefix.
+*/
+
+static const uint32 HTON_FKS_WITH_ANY_PREFIX_SUPPORTING_KEYS = (1 << 2);
+
+/**
+  Storage engine does not support using the same key for both parent
+  and supporting key, but requires the two to be different.
+*/
+
+static const uint32 HTON_FKS_NEED_DIFFERENT_PARENT_AND_SUPPORTING_KEYS =
+    (1 << 3);
 
 enum enum_tx_isolation : int {
   ISO_READ_UNCOMMITTED,
@@ -2020,6 +2332,12 @@ struct HA_CREATE_INFO {
   and ignored by the Server layer. */
 
   LEX_STRING encrypt_type;
+
+  /**
+   * Secondary engine of the table.
+   * Is nullptr if no secondary engine defined.
+   */
+  LEX_STRING secondary_engine{nullptr, 0};
 
   const char *data_file_name, *index_file_name;
   const char *alias;
@@ -2284,6 +2602,25 @@ class Alter_inplace_info {
   static const HA_ALTER_FLAGS ALTER_REBUILD_PARTITION = 1ULL << 42;
 
   /**
+    Change in index length such that it does not require index rebuild.
+    For example, change in index length due to column expansion like
+    varchar(X) changed to varchar(X + N).
+  */
+  static const HA_ALTER_FLAGS ALTER_COLUMN_INDEX_LENGTH = 1ULL << 43;
+
+  /**
+    Change to one of columns on which virtual generated column depends,
+    so its values require re-evaluation.
+  */
+  static const HA_ALTER_FLAGS VIRTUAL_GCOL_REEVAL = 1ULL << 44;
+
+  /**
+    Change to one of columns on which stored generated column depends,
+    so its values require re-evaluation.
+  */
+  static const HA_ALTER_FLAGS STORED_GCOL_REEVAL = 1ULL << 45;
+
+  /**
     Create options (like MAX_ROWS) for the new version of table.
 
     @note The referenced instance of HA_CREATE_INFO object was already
@@ -2306,6 +2643,22 @@ class Alter_inplace_info {
           Field instance for old version of table.
   */
   Alter_info *alter_info;
+
+  /**
+    Indicates whether operation should fail if table is non-empty.
+    Storage engines should not suggest/allow execution of such operations
+    using INSTANT algorithm since check whether table is empty done from
+    SQL-layer is not "instant". Also SEs might choose different algorithm for
+    ALTER TABLE execution knowing that it will be allowed to proceed only if
+    table is empty.
+
+    Unlike for Alter_table_ctx::error_if_not_empty, we use bool for this flag
+    and not bitmap, since SEs are really interested in the fact that ALTER
+    will fail if table is not empty and not in exact reason behind this fact,
+    and because we want to avoid extra dependency between Alter_table_ctx and
+    Alter_inplace_info.
+  */
+  bool error_if_not_empty;
 
   /**
     Array of KEYs for new version of table - including KEYs to be added.
@@ -2400,6 +2753,14 @@ class Alter_inplace_info {
   bool online;
 
   /**
+    Can be set by handler along with handler_ctx. The difference is that
+    this flag can be used to store SE-specific in-place ALTER context in cases
+    when constructing full-blown inplace_alter_handler_ctx descendant is
+    inconvenient.
+  */
+  uint handler_trivial_ctx;
+
+  /**
      Can be set by handler to describe why a given operation cannot be done
      in-place (HA_ALTER_INPLACE_NOT_SUPPORTED) or why it cannot be done
      online (HA_ALTER_INPLACE_NO_LOCK or HA_ALTER_INPLACE_NO_LOCK_AFTER_PREPARE)
@@ -2414,10 +2775,12 @@ class Alter_inplace_info {
   const char *unsupported_reason;
 
   Alter_inplace_info(HA_CREATE_INFO *create_info_arg,
-                     Alter_info *alter_info_arg, KEY *key_info_arg,
-                     uint key_count_arg, partition_info *modified_part_info_arg)
+                     Alter_info *alter_info_arg, bool error_if_not_empty_arg,
+                     KEY *key_info_arg, uint key_count_arg,
+                     partition_info *modified_part_info_arg)
       : create_info(create_info_arg),
         alter_info(alter_info_arg),
+        error_if_not_empty(error_if_not_empty_arg),
         key_info_buffer(key_info_arg),
         key_count(key_count_arg),
         index_drop_count(0),
@@ -2432,6 +2795,7 @@ class Alter_inplace_info {
         handler_flags(0),
         modified_part_info(modified_part_info_arg),
         online(false),
+        handler_trivial_ctx(0),
         unsupported_reason(NULL) {}
 
   ~Alter_inplace_info() { destroy(handler_ctx); }
@@ -3226,8 +3590,6 @@ class Ft_hints {
   description of how the CREATE TABLE part to define FOREIGN KEY's is done.
   free_foreign_key_create_info is used to free the memory area that provided
   this description.
-  can_switch_engines checks if it is ok to switch to a new engine based on
-  the foreign key info in the table.
 
   Methods:
     get_parent_foreign_key_list()
@@ -3235,7 +3597,6 @@ class Ft_hints {
     free_foreign_key_create_info()
     get_foreign_key_list()
     referenced_by_foreign_key()
-    can_switch_engines()
 
   -------------------------------------------------------------------------
   MODULE fulltext index
@@ -3357,6 +3718,12 @@ class handler {
   key_range save_end_range;
   enum_range_scan_direction range_scan_direction;
   int key_compare_result_on_equal;
+
+  /**
+    Pointer to the handler of the table in the primary storage engine,
+    if this handler represents a table in a secondary storage engine.
+  */
+  handler *m_primary_handler{nullptr};
 
  protected:
   KEY_PART_INFO *range_key_part;
@@ -3552,6 +3919,7 @@ class handler {
     DBUG_PRINT("info", ("handler created F_UNLCK %d F_RDLCK %d F_WRLCK %d",
                         F_UNLCK, F_RDLCK, F_WRLCK));
   }
+
   virtual ~handler(void) {
     DBUG_ASSERT(m_psi == NULL);
     DBUG_ASSERT(m_psi_batch_mode == PSI_BATCH_MODE_NONE);
@@ -3559,6 +3927,7 @@ class handler {
     DBUG_ASSERT(m_lock_type == F_UNLCK);
     DBUG_ASSERT(inited == NONE);
   }
+
   /*
     @todo reorganize functions, make proper public/protected/private qualifiers
   */
@@ -3674,6 +4043,75 @@ class handler {
 
   int ha_create(const char *name, TABLE *form, HA_CREATE_INFO *info,
                 dd::Table *table_def);
+
+  int ha_load_table(const TABLE &table);
+
+  int ha_unload_table(const char *db_name, const char *table_name);
+
+  /**
+    Get number of threads that would be spawned for parallel read.
+    @return error code
+    @retval 0 on success
+   */
+  virtual int pread_adapter_scan_get_num_threads(size_t & /* num_threads */) {
+    return 0;
+  }
+
+  /**
+    This callback is called by each parallel load thread at the beginning of
+    the parallel load for the adapter scan.
+    @param cookie      The cookie for this thread
+    @param ncols       Number of columns in each row
+    @param row_len     The size of a row in bytes
+    @param col_offsets An array of size ncols, where each element represents
+                       the offset of a column in the row data. The memory of
+                       this array belongs to the caller and will be free-ed
+                       after the pload_end_cbk call.
+    @param null_byte_offsets An array of size ncols, where each element
+                       represents the offset of a column in the row data. The
+                       memory of this array belongs to the caller and will be
+                       free-ed after the pload_end_cbk call.
+    @param null_bitmasks An array of size ncols, where each element
+                       represents the bitmask required to get the null bit. The
+                       memory of this array belongs to the caller and will be
+                     free-ed after the pload_end_cbk call.
+   */
+  using pread_adapter_pload_init_cbk = std::function<void(
+      void *cookie, ulong ncols, ulong row_len, ulong *col_offsets,
+      ulong *null_byte_offsets, ulong *null_bitmasks)>;
+
+  /**
+    This callback is called by each parallel load thread when processing
+    of rows is required for the adapter scan.
+    @param[in] cookie    The cookie for this thread
+    @param[in] nrows     The nrows that are available
+    @param[in] rowdata   The mysql-in-memory row data buffer. This is a memory
+                         buffer for nrows records. The length of each record
+                         is fixed and communicated via
+                         pread_adapter_pload_init_cbk.
+   */
+  using pread_adapter_pload_row_cbk =
+      std::function<bool(void *cookie, uint nrows, void *rowdata)>;
+
+  /**
+    This callback is called by each parallel load thread when processing
+    of rows has ended for the adapter scan.
+    @param[in] cookie    The cookie for this thread
+   */
+  using pread_adapter_pload_end_cbk = std::function<void(void *cookie)>;
+
+  /**
+    Start parallel read of data.
+    @return error code
+    @retval 0 on success
+   */
+  virtual int pread_adapter_scan_parallel_load(
+      void ** /* thread_contexts */,
+      pread_adapter_pload_init_cbk /* load_init_fn */,
+      pread_adapter_pload_row_cbk /* load_rows_fn */,
+      pread_adapter_pload_end_cbk /* load_end_fn */) {
+    return (0);
+  }
 
   /**
     Submit a dd::Table object representing a core DD table having
@@ -3942,45 +4380,60 @@ class handler {
   virtual int multi_range_read_next(char **range_info);
 
   /**
-    Number of rows in table. It will only be called if
-    (table_flags() & (HA_HAS_RECORDS | HA_STATS_RECORDS_IS_EXACT)) != 0
-    @param[out]  num_rows number of rows in table.
+    Number of rows in table. If HA_COUNT_ROWS_INSTANT is set, count is
+    available instantly. Else do a table scan.
+
+    @param num_rows [out]  num_rows number of rows in table.
+
     @retval 0 for OK, one of the HA_xxx values in case of error.
   */
-  virtual int records(ha_rows *num_rows) {
-    *num_rows = stats.records;
-    return 0;
-  }
+  virtual int records(ha_rows *num_rows);
+
+  /**
+    Number of rows in table counted using the secondary index chosen by
+    optimizer. See comments in opt_sum_query(...) .
+
+      @param num_rows [out]  Number of rows in table.
+      @param index           Index chosen by optimizer for counting.
+
+      @retval 0 for OK, one of the HA_xxx values in case of error.
+  */
+  virtual int records_from_index(ha_rows *num_rows, uint index);
+
+ private:
+  /**
+    Function will handle the error code from call to records() and
+    records_from_index().
+
+      @param error     return code from records() and records_from_index().
+      @param num_rows  Check if it contains HA_POS_ERROR in case error < 0.
+
+      @retval 0 for OK, one of the HA_xxx values in case of error.
+  */
+  int handle_records_error(int error, ha_rows *num_rows);
 
  public:
   /**
-    Public function wrapping the actual handler call, and doing error checking.
-     @param[out]  num_rows number of rows in table.
-     @retval 0 for OK, one of the HA_xxx values in case of error.
+    Wrapper function to call records() in storage engine.
+
+      @param num_rows [out]  Number of rows in table.
+
+      @retval 0 for OK, one of the HA_xxx values in case of error.
   */
   int ha_records(ha_rows *num_rows) {
-    int error = records(num_rows);
-    // A return value of HA_POS_ERROR was previously used to indicate error.
-    if (error != 0) DBUG_ASSERT(*num_rows == HA_POS_ERROR);
-    if (*num_rows == HA_POS_ERROR) DBUG_ASSERT(error != 0);
-    if (error != 0) {
-      /*
-        ha_innobase::records may have rolled back internally.
-        In this case, thd_mark_transaction_to_rollback() will have been called.
-        For the errors below, we need to abort right away.
-      */
-      switch (error) {
-        case HA_ERR_LOCK_DEADLOCK:
-        case HA_ERR_LOCK_TABLE_FULL:
-        case HA_ERR_LOCK_WAIT_TIMEOUT:
-        case HA_ERR_QUERY_INTERRUPTED:
-          print_error(error, MYF(0));
-          return error;
-        default:
-          return error;
-      }
-    }
-    return 0;
+    return handle_records_error(records(num_rows), num_rows);
+  }
+
+  /**
+    Wrapper function to call records_from_index() in storage engine.
+
+      @param num_rows [out]  Number of rows in table.
+      @param index           Index chosen by optimizer for counting.
+
+      @retval 0 for OK, one of the HA_xxx values in case of error.
+  */
+  int ha_records(ha_rows *num_rows, uint index) {
+    return handle_records_error(records_from_index(num_rows, index), num_rows);
   }
 
   /**
@@ -4396,15 +4849,6 @@ class handler {
     return (NULL);
   } /* gets foreign key create string from InnoDB */
   /**
-    Used in ALTER TABLE to check if changing storage engine is allowed.
-
-    @note Called without holding thr_lock.c lock.
-
-    @retval true   Changing storage engine is allowed.
-    @retval false  Changing storage engine not allowed.
-  */
-  virtual bool can_switch_engines() { return true; }
-  /**
     Get the list of foreign keys in this table.
 
     @remark Returns the set of foreign keys where this table is the
@@ -4477,15 +4921,18 @@ class handler {
   uint max_key_length() const {
     return std::min(MAX_KEY_LENGTH, max_supported_key_length());
   }
-  uint max_key_part_length() const {
-    return std::min(MAX_KEY_LENGTH, max_supported_key_part_length());
+  uint max_key_part_length(HA_CREATE_INFO *create_info) const {
+    return std::min(MAX_KEY_LENGTH, max_supported_key_part_length(create_info));
   }
 
   virtual uint max_supported_record_length() const { return HA_MAX_REC_LENGTH; }
   virtual uint max_supported_keys() const { return 0; }
   virtual uint max_supported_key_parts() const { return MAX_REF_PARTS; }
   virtual uint max_supported_key_length() const { return MAX_KEY_LENGTH; }
-  virtual uint max_supported_key_part_length() const { return 255; }
+  virtual uint max_supported_key_part_length(
+      HA_CREATE_INFO *create_info MY_ATTRIBUTE((unused))) const {
+    return 255;
+  }
   virtual uint min_record_length(uint options MY_ATTRIBUTE((unused))) const {
     return 1;
   }
@@ -4611,7 +5058,7 @@ class handler {
     Calls to rnd_init/rnd_end, index_init/index_end etc do not affect the
     condition stack.
   */
-  virtual const Item *cond_push(const Item *cond) { return cond; };
+  virtual const Item *cond_push(const Item *cond) { return cond; }
   /**
     Pop the top condition from the condition stack of the handler instance.
 
@@ -4696,7 +5143,7 @@ class handler {
     return COMPATIBLE_DATA_NO;
   }
 
-  /* On-line/in-place ALTER TABLE interface. */
+  /* On-line/in-place/instant ALTER TABLE interface. */
 
   /*
     Here is an outline of on-line/in-place ALTER TABLE execution through
@@ -4711,23 +5158,28 @@ class handler {
     *) This phase starts by opening the table and preparing description
        of the new version of the table.
     *) Then we check if it is impossible even in theory to carry out
-       this ALTER TABLE using the in-place algorithm. For example, because
-       we need to change storage engine or the user has explicitly requested
-       usage of the "copy" algorithm.
-    *) If in-place ALTER TABLE is theoretically possible, we continue
+       this ALTER TABLE using the in-place/instant algorithm. For example,
+       because we need to change storage engine or the user has explicitly
+       requested usage of the "copy" algorithm.
+    *) If in-place/instant ALTER TABLE is theoretically possible, we continue
        by compiling differences between old and new versions of the table
        in the form of HA_ALTER_FLAGS bitmap. We also build a few
        auxiliary structures describing requested changes and store
        all these data in the Alter_inplace_info object.
     *) Then the handler::check_if_supported_inplace_alter() method is called
        in order to find if the storage engine can carry out changes requested
-       by this ALTER TABLE using the in-place algorithm. To determine this,
-       the engine can rely on data in HA_ALTER_FLAGS/Alter_inplace_info
-       passed to it as well as on its own checks. If the in-place algorithm
-       can be used for this ALTER TABLE, the level of required concurrency for
-       its execution is also returned.
+       by this ALTER TABLE using the in-place or instant algorithm.
+       To determine this, the engine can rely on data in HA_ALTER_FLAGS/
+       Alter_inplace_info passed to it as well as on its own checks.
+       If the in-place algorithm can be used for this ALTER TABLE, the level
+       of required concurrency for its execution is also returned.
        If any errors occur during the handler call, ALTER TABLE is aborted
        and no further handler functions are called.
+       Note that in cases when there is difference between in-place and
+       instant algorithm and user explicitly asked for usage of in-place
+       algorithm storage engine MUST return one of values corresponding
+       to in-place algorithm and not HA_ALTER_INPLACE_INSTANT from this
+       method.
     *) Locking requirements of the in-place algorithm are compared to any
        concurrency requirements specified by user. If there is a conflict
        between them, we either switch to the copy algorithm or emit an error.
@@ -4743,30 +5195,36 @@ class handler {
        duration of in-place ALTER (if HA_ALTER_INPLACE_SHARED_LOCK_AFTER_PREPARE
        or HA_ALTER_INPLACE_NO_LOCK_AFTER_PREPARE were returned we acquire an
        exclusive lock for duration of the next step only).
+       For HA_ALTER_INPLACE_INSTANT we keep shared upgradable metadata lock
+       which was acquired at table open time.
     *) After that we call handler::ha_prepare_inplace_alter_table() to give the
        storage engine a chance to update its internal structures with a higher
        lock level than the one that will be used for the main step of algorithm.
        After that we downgrade the lock if it is necessary.
+       This step should be no-op for instant algorithm.
     *) After that, the main step of this phase and algorithm is executed.
        We call the handler::ha_inplace_alter_table() method, which carries out
-    the changes requested by ALTER TABLE but does not makes them visible to
-    other connections yet.
+       the changes requested by ALTER TABLE but does not makes them visible to
+       other connections yet.
+       This step should be no-op for instant algorithm as well.
     *) We ensure that no other connection uses the table by upgrading our
        lock on it to exclusive.
     *) a) If the previous step succeeds,
     handler::ha_commit_inplace_alter_table() is called to allow the storage
     engine to do any final updates to its structures, to make all earlier
-    changes durable and visible to other connections. Engines that support
-    atomic DDL only prepare for the commit during this step but do not finalize
-    it. Real commit happens later when the whole statement is committed. Also in
-    some situations statement might be rolled back after call to
-    commit_inplace_alter_table() for such storage engines. In the latter special
-    case SE might require call to handlerton::dict_cache_reset() in order to
-    invalidate its internal table definition cache after rollback. b) If we have
-    failed to upgrade lock or any errors have occured during the handler
-    functions calls (including commit), we call
-          handler::ha_commit_inplace_alter_table()
-          to rollback all changes which were done during previous steps.
+    changes durable and visible to other connections.
+    For instant algorithm this is the step during which SE changes are done.
+    Engines that support atomic DDL only prepare for the commit during this
+    step but do not finalize it. Real commit happens later when the whole
+    statement is committed. Also in some situations statement might be rolled
+    back after call to commit_inplace_alter_table() for such storage engines.
+    In the latter special case SE might require call to
+    handlerton::dict_cache_reset() in order to invalidate its internal table
+    definition cache after rollback.
+    b) If we have failed to upgrade lock or any errors have occured during
+    the handler functions calls (including commit), we call
+    handler::ha_commit_inplace_alter_table() to rollback all changes which
+    were done during previous steps.
 
     All the above calls to SE are provided with dd::Table objects describing old
     and new version of table being altered. Engines which support atomic DDL are
@@ -4827,9 +5285,23 @@ class handler {
      reads/writes allowed. However, prepare phase requires X lock.
      @retval   HA_ALTER_INPLACE_NO_LOCK        Supported, concurrent
                                                reads/writes allowed.
+     @retval   HA_ALTER_INPLACE_INSTANT        Instant algorithm is supported.
+                                               Prepare and main phases are
+                                               no-op. Changes happen during
+                                               commit phase and it should be
+                                               "instant". We keep SU lock,
+                                               allowing concurrent reads and
+                                               writes during no-op phases and
+                                               upgrade it to X lock before
+                                               commit phase.
 
      @note The default implementation uses the old in-place ALTER API
      to determine if the storage engine supports in-place ALTER or not.
+
+     @note In cases when there is difference between in-place and instant
+     algorithm and explicit ALGORITHM=INPLACE clause was provided SE MUST
+     return one of values corresponding to in-place algorithm and not
+     HA_ALTER_INPLACE_INSTANT from this method.
 
      @note Called without holding thr_lock.c lock.
   */
@@ -4886,6 +5358,8 @@ class handler {
      exclusive lock otherwise the same level of locking as for
      inplace_alter_table() will be used.
 
+     @note Should be no-op for instant algorithm.
+
      @note Storage engines are responsible for reporting any errors by
      calling my_error()/print_error()
 
@@ -4927,6 +5401,8 @@ class handler {
      during this operation depends on the return value from
      check_if_supported_inplace_alter().
 
+     @note Should be no-op for instant algorithm.
+
      @note Storage engines are responsible for reporting any errors by
      calling my_error()/print_error()
 
@@ -4964,6 +5440,8 @@ class handler {
      might be higher than during prepare_inplace_alter_table(). (For example,
      concurrent writes were blocked during prepare, but might not be during
      rollback).
+
+     @note This is the place where SE changes happen for instant algorithm.
 
      @note For storage engines supporting atomic DDL this method should only
      prepare for the commit but do not finalize it. Real commit should happen
@@ -5032,7 +5510,7 @@ class handler {
            has to use ha_alter_info object to figure it out.
   */
   virtual void notify_table_changed(
-      Alter_inplace_info *ha_alter_info MY_ATTRIBUTE((unused))){};
+      Alter_inplace_info *ha_alter_info MY_ATTRIBUTE((unused))) {}
 
  public:
   /* End of On-line/in-place ALTER TABLE interface. */
@@ -5214,7 +5692,7 @@ class handler {
                             int lock_type MY_ATTRIBUTE((unused))) {
     return 0;
   }
-  virtual void release_auto_increment() { return; };
+  virtual void release_auto_increment() { return; }
   /** admin commands - called from mysql_admin_table */
   virtual int check_for_upgrade(HA_CHECK_OPT *) { return 0; }
   virtual int check(THD *, HA_CHECK_OPT *) { return HA_ADMIN_NOT_IMPLEMENTED; }
@@ -5263,6 +5741,36 @@ class handler {
   virtual int sample_init();
   virtual int sample_next(uchar *buf);
   virtual int sample_end();
+
+  /**
+   * Loads a table into its defined secondary storage engine.
+   *
+   * @param table Table opened in primary storage engine.
+   *
+   * @return 0 if success, error code otherwise.
+   */
+  virtual int load_table(const TABLE &table MY_ATTRIBUTE((unused))) {
+    /* purecov: begin inspected */
+    DBUG_ASSERT(false);
+    return HA_ERR_WRONG_COMMAND;
+    /* purecov: end */
+  }
+
+  /**
+   * Unloads a table from its defined secondary storage engine.
+   *
+   * @param db_name    Database name.
+   * @param table_name Table name.
+   *
+   * @return 0 if success, error code otherwise.
+   */
+  virtual int unload_table(const char *db_name MY_ATTRIBUTE((unused)),
+                           const char *table_name MY_ATTRIBUTE((unused))) {
+    /* purecov: begin inspected */
+    DBUG_ASSERT(false);
+    return HA_ERR_WRONG_COMMAND;
+    /* purecov: end */
+  }
 
  protected:
   virtual int index_read(uchar *buf MY_ATTRIBUTE((unused)),
@@ -5541,6 +6049,19 @@ class handler {
   bool ha_upgrade_table(THD *thd, const char *dbname, const char *table_name,
                         dd::Table *dd_table, TABLE *table_arg);
 
+  /**
+    Store a pointer to the handler of the primary table that
+    corresponds to the secondary table in this handler.
+  */
+  void ha_set_primary_handler(handler *primary_handler);
+
+  /**
+    Get a pointer to a handler for the table in the primary storage
+    engine, if this handler is for a table in a secondary storage
+    engine.
+  */
+  handler *ha_get_primary_handler() const { return m_primary_handler; }
+
  protected:
   Handler_share *get_ha_share_ptr();
   void set_ha_share_ptr(Handler_share *arg_ha_share);
@@ -5711,16 +6232,16 @@ void ha_close_connection(THD *thd);
 void ha_kill_connection(THD *thd);
 /** Invoke handlerton::pre_dd_shutdown() on every storage engine plugin. */
 void ha_pre_dd_shutdown(void);
+
 /**
   Flush the log(s) of storage engine(s).
 
-  @param db_type Handlerton of storage engine.
   @param binlog_group_flush true if we got invoked by binlog group
   commit during flush stage, false in other cases.
   @retval false Succeed
   @retval true Error
 */
-bool ha_flush_logs(handlerton *db_type, bool binlog_group_flush = false);
+bool ha_flush_logs(bool binlog_group_flush = false);
 void ha_drop_database(char *path);
 int ha_create_table(THD *thd, const char *path, const char *db,
                     const char *table_name, HA_CREATE_INFO *create_info,
@@ -5730,6 +6251,7 @@ int ha_create_table(THD *thd, const char *path, const char *db,
 int ha_delete_table(THD *thd, handlerton *db_type, const char *path,
                     const char *db, const char *alias,
                     const dd::Table *table_def, bool generate_warning);
+bool ha_check_reserved_db_name(const char *name);
 
 /* statistics and info */
 bool ha_show_status(THD *thd, handlerton *db_type, enum ha_stat_type stat);

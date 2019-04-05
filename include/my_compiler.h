@@ -1,7 +1,7 @@
 #ifndef MY_COMPILER_INCLUDED
 #define MY_COMPILER_INCLUDED
 
-/* Copyright (c) 2010, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2010, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -166,17 +166,37 @@ struct my_aligned_storage {
 #define ALWAYS_INLINE __attribute__((always_inline)) inline
 #endif
 
+#if defined(_MSC_VER)
+#define NO_INLINE __declspec(noinline)
+#else
+#define NO_INLINE __attribute__((noinline))
+#endif
+
 #ifndef __has_attribute
 #define __has_attribute(x) 0
 #endif
 
 #ifndef SUPPRESS_UBSAN
-#if __has_attribute(no_sanitize_undefined)
+// clang -fsanitize=undefined
+#if defined(HAVE_UBSAN) && defined(__clang__)
+#define SUPPRESS_UBSAN MY_ATTRIBUTE((no_sanitize("undefined")))
+// gcc -fsanitize=undefined
+#elif defined(HAVE_UBSAN) && __has_attribute(no_sanitize_undefined)
 #define SUPPRESS_UBSAN MY_ATTRIBUTE((no_sanitize_undefined))
 #else
 #define SUPPRESS_UBSAN
 #endif
 #endif /* SUPPRESS_UBSAN */
+
+#ifndef SUPPRESS_TSAN
+#if defined(HAVE_TSAN) && defined(__clang__)
+#define SUPPRESS_TSAN MY_ATTRIBUTE((no_sanitize("thread")))
+#elif defined(HAVE_TSAN) && __has_attribute(no_sanitize_thread)
+#define SUPPRESS_TSAN MY_ATTRIBUTE((no_sanitize_thread))
+#else
+#define SUPPRESS_TSAN
+#endif
+#endif /* SUPPRESS_TSAN */
 
 #ifdef _WIN32
 #define STDCALL __stdcall

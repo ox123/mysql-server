@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2017, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -776,7 +776,10 @@ HugoTransactions::loadTableStartFrom(Ndb* pNdb,
           return err.code;
         }
 	NDB_ERR(err);
-	NdbSleep_MilliSleep(50);
+        if (err.code == 410 || err.code == 1501)
+	  NdbSleep_MilliSleep(2000);
+        else
+	  NdbSleep_MilliSleep(50);
 	retryAttempt++;
         batch = 1;
 	continue;
@@ -2056,7 +2059,7 @@ HugoTransactions::indexReadRecords(Ndb* pNdb,
   int                  retryAttempt = 0;
   int                  check, a;
   NdbOperation *pOp;
-  NdbIndexScanOperation *sOp;
+  NdbIndexScanOperation *sOp = nullptr;
 
   const NdbDictionary::Index* pIndex
     = pNdb->getDictionary()->getIndex(idxName, tab.getName());
@@ -2216,8 +2219,8 @@ HugoTransactions::indexUpdateRecords(Ndb* pNdb,
   int                  r = 0;
   int                  retryAttempt = 0;
   int                  check, a, b;
-  NdbOperation *pOp;
-  NdbScanOperation * sOp;
+  NdbOperation *pOp = nullptr;
+  NdbScanOperation * sOp = nullptr;
 
   const NdbDictionary::Index* pIndex
     = pNdb->getDictionary()->getIndex(idxName, tab.getName());

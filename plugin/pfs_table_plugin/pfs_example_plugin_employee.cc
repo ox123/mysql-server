@@ -1,4 +1,4 @@
-/* Copyright (c) 2017, 2018 Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -28,6 +28,8 @@
 #include <mysql/components/my_service.h>
 #include <mysql/components/services/log_builtins.h>
 #include <mysqld_error.h>
+
+#include "mysql/psi/mysql_mutex.h"
 
 #include "plugin/pfs_table_plugin/pfs_example_employee_name.h"
 #include "plugin/pfs_table_plugin/pfs_example_employee_salary.h"
@@ -87,6 +89,25 @@ SERVICE_TYPE(pfs_plugin_table) *table_svc = NULL;
 /* Collection of table shares to be added to performance schema */
 PFS_engine_table_share_proxy* share_list[4]= {NULL, NULL, NULL, NULL};
 unsigned int share_list_count= 4;
+
+/* Mutex info definitions for the table mutexes */
+static PSI_mutex_key key_mutex_name;
+static PSI_mutex_key key_mutex_salary;
+static PSI_mutex_key key_mutex_machine;
+
+static PSI_mutex_info mutex_info[] = {
+  {&key_mutex_name, "LOCK_ename_records_array",
+   PSI_FLAG_SINGLETON, PSI_VOLATILITY_PERMANENT,
+   "Mutex for the pfs_example_employee_name table."},
+
+  {&key_mutex_salary, "LOCK_esalary_records_array",
+   0, PSI_VOLATILITY_PERMANENT,
+   "Mutex for the pfs_example_employee_salary table."},
+
+  {&key_mutex_machine, "LOCK_machine_records_array",
+   0, PSI_VOLATILITY_PERMANENT,
+   "Mutex for the pfs_example_machine table."}
+};
 
 /**
 * acquire_service_handles does following:
@@ -319,10 +340,16 @@ pfs_example_plugin_employee_init(void *p)
   if (init_logging_service_for_plugin(&reg_srv, &log_bi, &log_bs))
     DBUG_RETURN(1);
 
+  /* Register the mutex classes */
+  mysql_mutex_register("pfs_example2", mutex_info, 3);
+
   /* Initialize mutexes to be used for table records */
-  mysql_mutex_init(0, &LOCK_ename_records_array, MY_MUTEX_INIT_FAST);
-  mysql_mutex_init(0, &LOCK_esalary_records_array, MY_MUTEX_INIT_FAST);
-  mysql_mutex_init(0, &LOCK_machine_records_array, MY_MUTEX_INIT_FAST);
+  mysql_mutex_init(key_mutex_name, &LOCK_ename_records_array,
+                   MY_MUTEX_INIT_FAST);
+  mysql_mutex_init(key_mutex_salary, &LOCK_esalary_records_array,
+                   MY_MUTEX_INIT_FAST);
+  mysql_mutex_init(key_mutex_machine, &LOCK_machine_records_array,
+                   MY_MUTEX_INIT_FAST);
 
   /* In case the plugin has been unloaded, and reloaded */
   ename_delete_all_rows();

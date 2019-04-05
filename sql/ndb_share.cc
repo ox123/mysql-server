@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2011, 2017, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2011, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -28,8 +28,6 @@
 #include <sstream>
 
 #include "m_string.h"
-#include "my_sys.h"
-#include "sql/field.h"
 #include "sql/ndb_conflict.h"
 #include "sql/ndb_dist_priv_util.h"
 #include "sql/ndb_event_data.h"
@@ -37,6 +35,7 @@
 #include "sql/ndb_name_util.h"
 #include "sql/ndb_table_map.h"
 #include "sql/sql_class.h"
+#include "sql/strfunc.h"
 #include "sql/table.h"
 #include "storage/ndb/include/ndbapi/NdbEventOperation.hpp"
 
@@ -276,8 +275,7 @@ NDB_SHARE::create_and_acquire_reference(const char *key,
   NDB_SHARE* share = NDB_SHARE::create(key);
   if (share == nullptr)
   {
-    DBUG_PRINT("error", ("failed to alloc share"));
-    my_error(ER_OUTOFMEMORY, MYF(0), static_cast<int>(sizeof(*share)));
+    DBUG_PRINT("error", ("failed to create NDB_SHARE"));
     DBUG_RETURN(nullptr);
   }
 
@@ -502,6 +500,7 @@ NDB_SHARE::debug_print(std::string& out, const char* line_separator) const
   ss << "NDB_SHARE { " << line_separator
      << "  db: '" << db << "'," << line_separator
      << "  table_name: '" << table_name << "', " << line_separator
+     << "  key: '" << key_string() << "', " << line_separator
      << "  use_count: " << use_count() << ", " << line_separator
      << "  state: " << share_state_string() << ", " << line_separator;
 
@@ -610,12 +609,14 @@ NDB_SHARE::rename_share(NDB_SHARE *share, NDB_SHARE_KEY* new_key)
         // NOTE! This causes a slight memory leak since the already existing
         // strings are not release until the mem_root is eventually
         // released.
-        lex_string_copy(&event_data->mem_root,
-                        &event_data->shadow_table->s->db,
-                        share->db);
-        lex_string_copy(&event_data->mem_root,
-                        &event_data->shadow_table->s->table_name,
-                        share->table_name);
+        lex_string_strmake(&event_data->mem_root,
+                           &event_data->shadow_table->s->db,
+                           share->db,
+                           strlen(share->db));
+        lex_string_strmake(&event_data->mem_root,
+                           &event_data->shadow_table->s->table_name,
+                           share->table_name,
+                           strlen(share->table_name));
       }
       else
       {
@@ -679,7 +680,8 @@ NDB_SHARE::deinitialize(void)
 {
   {
     mysql_mutex_lock(&ndbcluster_mutex);
-    uint save = ndbcluster_open_tables->size(); (void)save;
+    auto save = ndbcluster_open_tables->size();
+    (void)save;
     while (!ndbcluster_open_tables->empty())
     {
       NDB_SHARE *share= ndbcluster_open_tables->begin()->second;
@@ -701,7 +703,8 @@ NDB_SHARE::deinitialize(void)
 
   {
     mysql_mutex_lock(&ndbcluster_mutex);
-    uint save = ndbcluster_dropped_tables->size(); (void)save;
+    auto save = ndbcluster_dropped_tables->size();
+    (void)save;
     while (!ndbcluster_dropped_tables->empty())
     {
       NDB_SHARE *share= ndbcluster_dropped_tables->begin()->second;

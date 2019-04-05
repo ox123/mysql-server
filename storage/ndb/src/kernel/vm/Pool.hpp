@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2006, 2017, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2006, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -133,7 +133,7 @@ struct Pool_context
   /**
    * Abort
    */
-  void handleAbort(int code, const char* msg) const ATTRIBUTE_NORETURN;
+  [[noreturn]] void handleAbort(int code, const char* msg) const;
 };
 
 template <typename T>
@@ -150,8 +150,8 @@ struct Ptr
     use of uninitialized values by causing an error. To maximize performance,
     this is done in debug mode only (when asserts are enabled).
    */
-  Ptr(){assert(memset(this, 0xff, sizeof(*this)));};
-  Ptr(T* pVal, Uint32 iVal):p(pVal), i(iVal){};
+  Ptr(){assert(memset(this, 0xff, sizeof(*this)));}
+  Ptr(T* pVal, Uint32 iVal):p(pVal), i(iVal){}
 
 
   bool isNull() const 
@@ -179,8 +179,8 @@ struct ConstPtr
     use of uninitialized values by causing an error. To maximize performance,
     this is done in debug mode only (when asserts are enabled).
    */
-  ConstPtr(){assert(memset(this, 0xff, sizeof(*this)));};
-  ConstPtr(T* pVal, Uint32 iVal):p(pVal), i(iVal){};
+  ConstPtr(){assert(memset(this, 0xff, sizeof(*this)));}
+  ConstPtr(T* pVal, Uint32 iVal):p(pVal), i(iVal){}
 
   bool isNull() const 
   { 

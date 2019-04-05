@@ -32,6 +32,7 @@
 
 #include "my_compiler.h"
 #include "my_dbug.h"
+#include "sql/field.h"
 #include "sql/plugin_table.h"
 #include "sql/rpl_info.h"
 #include "sql/rpl_mi.h"
@@ -152,8 +153,9 @@ void table_replication_applier_global_filters::make_row(
   memcpy(m_row.filter_name, rpl_pfs_filter->get_filter_name(),
          m_row.filter_name_length);
 
-  if (!rpl_pfs_filter->get_filter_rule().is_empty())
+  if (!rpl_pfs_filter->get_filter_rule().is_empty()) {
     m_row.filter_rule.copy(rpl_pfs_filter->get_filter_rule());
+  }
 
   m_row.configured_by =
       rpl_pfs_filter->get_rpl_filter_statistics()->get_configured_by();
@@ -168,7 +170,9 @@ int table_replication_applier_global_filters::read_row_values(
     TABLE *table, unsigned char *buf, Field **fields, bool read_all) {
   Field *f;
 
-  if (unlikely(!m_row_exists)) return HA_ERR_RECORD_DELETED;
+  if (unlikely(!m_row_exists)) {
+    return HA_ERR_RECORD_DELETED;
+  }
 
   /* Set the null bits */
   DBUG_ASSERT(table->s->null_bytes == 0);

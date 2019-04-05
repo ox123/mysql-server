@@ -1,7 +1,7 @@
 #ifndef ITEM_SUBSELECT_INCLUDED
 #define ITEM_SUBSELECT_INCLUDED
 
-/* Copyright (c) 2002, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2002, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -169,7 +169,7 @@ class Item_subselect : public Item_result_field {
   */
   void init(SELECT_LEX *select, Query_result_subquery *result);
 
-  ~Item_subselect();
+  ~Item_subselect() override;
   void cleanup() override;
   virtual void reset() { null_value = 1; }
   virtual trans_res select_transformer(SELECT_LEX *select) = 0;
@@ -225,18 +225,20 @@ class Item_subselect : public Item_result_field {
     return "subselect";
   }
 
+  bool check_function_as_value_generator(uchar *args) override {
+    Check_function_as_value_generator_parameters *func_arg =
+        pointer_cast<Check_function_as_value_generator_parameters *>(args);
+    func_arg->err_code = func_arg->get_unnamed_function_error_code();
+    return true;
+  }
+
   friend class Query_result_interceptor;
   friend class Item_in_optimizer;
   friend bool Item_field::fix_fields(THD *, Item **);
   friend int Item_field::fix_outer_field(THD *, Field **, Item **);
   friend bool Item_ref::fix_fields(THD *, Item **);
   friend void Item_ident::fix_after_pullout(SELECT_LEX *parent_select,
-                                            SELECT_LEX *removed_selec);
-  friend void mark_select_range_as_dependent(THD *thd, SELECT_LEX *last_select,
-                                             SELECT_LEX *current_sel,
-                                             Field *found_field,
-                                             Item *found_item,
-                                             Item_ident *resolved_item);
+                                            SELECT_LEX *removed_select);
 
  private:
   bool subq_opt_away_processor(uchar *arg) override;
@@ -315,8 +317,8 @@ class Item_maxmin_subselect final : public Item_singlerow_subselect {
   bool max;
   bool was_values;  // Set if we have found at least one row
  public:
-  Item_maxmin_subselect(THD *thd, Item_subselect *parent,
-                        SELECT_LEX *select_lex, bool max, bool ignore_nulls);
+  Item_maxmin_subselect(Item_subselect *parent, SELECT_LEX *select_lex,
+                        bool max, bool ignore_nulls);
   void print(String *str, enum_query_type query_type) override;
   void cleanup() override;
   bool any_value() { return was_values; }
@@ -640,14 +642,12 @@ class subselect_engine {
         res_type(STRING_RESULT),
         res_field_type(MYSQL_TYPE_VAR_STRING),
         maybe_null(false) {}
-  virtual ~subselect_engine(){};  // to satisfy compiler
+  virtual ~subselect_engine() {}  // to satisfy compiler
   /**
     Cleanup engine after complete query execution, free all resources.
   */
   virtual void cleanup() = 0;
 
-  /// Sets "thd" for 'result'. Should be called before prepare()
-  void set_thd_for_result();
   virtual bool prepare() = 0;
   virtual void fix_length_and_dec(Item_cache **row) = 0;
   /*
@@ -777,7 +777,7 @@ class subselect_indexsubquery_engine : public subselect_engine {
       : subselect_engine(subs, 0),
         tab(tab_arg),
         cond(where),
-        having(having_arg){};
+        having(having_arg) {}
   bool exec() override;
   void print(String *str, enum_query_type query_type) override;
   enum_engine_type engine_type() const override { return INDEXSUBQUERY_ENGINE; }
@@ -848,7 +848,7 @@ class subselect_hash_sj_engine final : public subselect_indexsubquery_engine {
         is_materialized(false),
         materialize_engine(old_engine),
         tmp_param(NULL) {}
-  ~subselect_hash_sj_engine();
+  ~subselect_hash_sj_engine() override;
 
   bool setup(List<Item> *tmp_columns);
   void cleanup() override;

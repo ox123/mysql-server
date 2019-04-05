@@ -1,4 +1,4 @@
-/* Copyright (c) 2010, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2010, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -35,10 +35,12 @@
 #include <limits.h>
 #include <algorithm>
 #include <atomic>
+#include <memory>
 
 #include "binary_log_types.h"
 #include "my_base.h"
 #include "my_bitmap.h"
+#include "my_byteorder.h"
 #include "my_compiler.h"
 #include "my_dbug.h"
 #include "my_macros.h"
@@ -1718,7 +1720,7 @@ enum_nested_loop_state JOIN_CACHE::join_records(bool skip_last) {
     records of our table; none of these can be a group-by/window tmp table, so
     we should still be on the join's first slice.
   */
-  DBUG_ASSERT(qep_tab->join()->get_ref_item_slice() == REF_SLICE_SAVE);
+  DBUG_ASSERT(qep_tab->join()->get_ref_item_slice() == REF_SLICE_SAVED_BASE);
 
   if (qep_tab->first_unmatched == NO_PLAN_IDX) {
     const bool pfs_batch_update = qep_tab->pfs_batch_update(join);
@@ -1859,7 +1861,8 @@ enum_nested_loop_state JOIN_CACHE_BNL::join_matching_records(bool skip_last) {
   DBUG_ASSERT(!(qep_tab->dynamic_range() && qep_tab->quick()));
 
   /* Start retrieving all records of the joined table */
-  if ((error = (*qep_tab->read_first_record)(qep_tab)))
+  if (qep_tab->read_record.iterator->Init()) return NESTED_LOOP_ERROR;
+  if ((error = qep_tab->read_record->Read()))
     return error < 0 ? NESTED_LOOP_OK : NESTED_LOOP_ERROR;
 
   READ_RECORD *info = &qep_tab->read_record;
@@ -1878,7 +1881,6 @@ enum_nested_loop_state JOIN_CACHE_BNL::join_matching_records(bool skip_last) {
       does not meet the conditions that have been pushed to this table
     */
     if (rc == NESTED_LOOP_OK) {
-      join->examined_rows++;
       if (const_cond) {
         const bool consider_record = const_cond->val_int() != false;
         if (join->thd->is_error())  // error in condition evaluation
@@ -1886,6 +1888,8 @@ enum_nested_loop_state JOIN_CACHE_BNL::join_matching_records(bool skip_last) {
         if (!consider_record) continue;
       }
       {
+        if (unlikely(qep_tab->lateral_derived_tables_depend_on_me))
+          qep_tab->refresh_lateral();
         /* Prepare to read records from the join buffer */
         reset_cache(false);
 
@@ -1904,7 +1908,7 @@ enum_nested_loop_state JOIN_CACHE_BNL::join_matching_records(bool skip_last) {
         }
       }
     }
-  } while (!(error = info->read_record(info)));
+  } while (!(error = info->iterator->Read()));
 
   if (error > 0)  // Fatal error
     rc = NESTED_LOOP_ERROR;
@@ -2138,6 +2142,8 @@ enum_nested_loop_state JOIN_CACHE::join_null_complements(bool skip_last) {
       !qep_tab->copy_current_rowid->buffer_is_bound())
     qep_tab->copy_current_rowid->bind_buffer(qep_tab->table()->file->ref);
 
+  if (unlikely(qep_tab->lateral_derived_tables_depend_on_me))
+    qep_tab->refresh_lateral();
   for (; cnt; cnt--) {
     if (join->thd->killed) {
       /* The user has aborted the execution of the query */
@@ -2345,6 +2351,15 @@ enum_nested_loop_state JOIN_CACHE_BKA::join_matching_records(
     if (rc == NESTED_LOOP_OK &&
         (!check_only_first_match || !get_match_flag_by_pos(rec_ptr))) {
       get_record_by_pos(rec_ptr);
+      if (unlikely(qep_tab->lateral_derived_tables_depend_on_me)) {
+        /*
+          ha_multi_range_read_next() may have switched to a new row of
+          qep_tab, or not (depending on the uniqueness of key values and on if
+          more than one buffered record is associated with a key value); so we
+          have to assume it has switched:
+        */
+        qep_tab->refresh_lateral();
+      }
       rc = generate_full_extensions(rec_ptr);
       if (rc != NESTED_LOOP_OK) return rc;
     }
@@ -3136,6 +3151,14 @@ enum_nested_loop_state JOIN_CACHE_BKA_UNIQUE::join_matching_records(
     }
 
     if (qep_tab->keep_current_rowid) table->file->position(table->record[0]);
+
+    if (unlikely(qep_tab->lateral_derived_tables_depend_on_me)) {
+      /*
+        All buffered records below are paired with the same record of
+        qep_tab.
+      */
+      qep_tab->refresh_lateral();
+    }
 
     uchar *last_rec_ref_ptr = get_next_rec_ref(key_chain_ptr);
     uchar *next_rec_ref_ptr = last_rec_ref_ptr;

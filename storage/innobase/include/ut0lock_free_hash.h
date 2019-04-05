@@ -96,7 +96,11 @@ class ut_lock_free_cnt_t {
  public:
   /** Constructor. */
   ut_lock_free_cnt_t() {
-    m_numa_available = os_numa_available() != -1;
+    /* It is possible that the machine has NUMA available for use.  But the
+    process/thread might not have sufficient permissions to use the same.
+    Hence, we need to check whether the current thread has permissions to
+    use them. Currently, disabling the use of numa here.  */
+    m_numa_available = false;
 
     if (m_numa_available) {
       m_cnt_size = os_numa_num_configured_cpus();
@@ -655,12 +659,12 @@ class ut_lock_free_hash_t : public ut_hash_interface_t {
     const ulint n_search = m_n_search;
     const ulint n_search_iterations = m_n_search_iterations;
 
-    ib::info() << "Lock free hash usage stats:";
-    ib::info() << "number of searches: " << n_search;
-    ib::info() << "number of search iterations: " << n_search_iterations;
+    ib::info info(ER_IB_MSG_LOCK_FREE_HASH_USAGE_STATS);
+    info << "Lock free hash usage stats: number of searches=" << n_search
+         << ", number of search iterations=" << n_search_iterations;
     if (n_search != 0) {
-      ib::info() << "average iterations per search: "
-                 << (double)n_search_iterations / n_search;
+      info << "average iterations per search: "
+           << (double)n_search_iterations / n_search;
     }
   }
 #endif /* UT_HASH_IMPLEMENT_PRINT_STATS */

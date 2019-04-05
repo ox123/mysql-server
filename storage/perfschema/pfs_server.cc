@@ -37,6 +37,7 @@
 #include "storage/perfschema/pfs_builtin_memory.h"
 #include "storage/perfschema/pfs_defaults.h"
 #include "storage/perfschema/pfs_digest.h"
+#include "storage/perfschema/pfs_engine_table.h"
 #include "storage/perfschema/pfs_error.h"
 #include "storage/perfschema/pfs_events_stages.h"
 #include "storage/perfschema/pfs_events_statements.h"
@@ -98,7 +99,8 @@ int initialize_performance_schema(
     PSI_transaction_bootstrap **transaction_bootstrap,
     PSI_memory_bootstrap **memory_bootstrap,
     PSI_error_bootstrap **error_bootstrap,
-    PSI_data_lock_bootstrap **data_lock_bootstrap) {
+    PSI_data_lock_bootstrap **data_lock_bootstrap,
+    PSI_system_bootstrap **system_bootstrap) {
   *thread_bootstrap = NULL;
   *mutex_bootstrap = NULL;
   *rwlock_bootstrap = NULL;
@@ -114,6 +116,7 @@ int initialize_performance_schema(
   *memory_bootstrap = NULL;
   *error_bootstrap = NULL;
   *data_lock_bootstrap = NULL;
+  *system_bootstrap = NULL;
 
   pfs_enabled = param->m_enabled;
 
@@ -225,6 +228,7 @@ int initialize_performance_schema(
     *memory_bootstrap = &pfs_memory_bootstrap;
     *error_bootstrap = &pfs_error_bootstrap;
     *data_lock_bootstrap = &pfs_data_lock_bootstrap;
+    *system_bootstrap = &pfs_system_bootstrap;
   }
 
   /* Initialize plugin table services */

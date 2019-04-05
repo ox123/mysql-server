@@ -110,7 +110,9 @@ class ha_archive : public handler {
   ulonglong table_flags() const {
     return (HA_NO_TRANSACTIONS | HA_CAN_BIT_FIELD | HA_BINLOG_ROW_CAPABLE |
             HA_BINLOG_STMT_CAPABLE | HA_STATS_RECORDS_IS_EXACT |
-            HA_HAS_RECORDS | HA_CAN_REPAIR | HA_FILE_BASED | HA_CAN_GEOMETRY);
+            HA_COUNT_ROWS_INSTANT | HA_CAN_REPAIR | HA_FILE_BASED |
+            HA_CAN_GEOMETRY | HA_UPDATE_NOT_SUPPORTED |
+            HA_DELETE_NOT_SUPPORTED);
   }
   ulong index_flags(uint, uint, bool) const { return HA_ONLY_WHOLE_INDEX; }
   virtual void get_auto_increment(ulonglong offset, ulonglong increment,
@@ -119,7 +121,10 @@ class ha_archive : public handler {
                                   ulonglong *nb_reserved_values);
   uint max_supported_keys() const { return 1; }
   uint max_supported_key_length() const { return sizeof(ulonglong); }
-  uint max_supported_key_part_length() const { return sizeof(ulonglong); }
+  uint max_supported_key_part_length(
+      HA_CREATE_INFO *create_info MY_ATTRIBUTE((unused))) const {
+    return sizeof(ulonglong);
+  }
   virtual int records(ha_rows *num_rows) {
     *num_rows = share->rows_recorded;
     return 0;

@@ -43,5 +43,38 @@ Pattern "Error in processing generated columns for table test.t_gcol_dep" found
 Pattern "No database selected" not found
 Pattern "Incorrect column name 'a123456789012345678901234567890123456789012345678901234567890123456789'" found
 # Remove copied files
+# ------------------------------------------------------------------
+# Check upgrade from 5.7 when events/triggers/views/routines contain GROUP BY DESC.
+# ------------------------------------------------------------------
+# Set different path for --datadir
+# DB server which was started above is not running, no need for shutdown
+# Copy the remote tablespace & DB zip files from suite location to working location.
+# Check that the file exists in the working folder.
+# Unzip the zip file.
+#
+# Upgrade tests for WL#8693
+#
+# Starting the DB server will fail since the data dir contains
+# events/triggers/views/routines contain GROUP BY DESC
+Pattern "Trigger 'trigger_groupby_desc' has an error in its body" found
+Pattern "Error in parsing Triggers from t1.TRG file" found
+Pattern "Error in parsing Event 'test'.'event_groupby_desc' during upgrade" found
+Pattern "Error in parsing Routine 'test'.'function_groupby_desc' during upgrade" found
+Pattern "Error in parsing Routine 'test'.'procedure_groupby_desc' during upgrade" found
+Pattern "Error in parsing View 'test'.'view_groupby_desc' during upgrade" found
+Pattern "Failed to Populate DD tables." found
+# Remove copied files
+# ------------------------------------------------------------------
+# Bug#28760011: UPGRADE TO 8.0.12 FAILS
+# Check upgrade from 5.7 when triggers are listed in wrong order in the TRG file.
+# ------------------------------------------------------------------
+# Set different path for log file and datadir, and unzip the zip file.
+# DB server which was started above is not running, no need for shutdown, just start
+# the server. This will not fail after the bugfix since the trigger order is now corrected.
+# Stop the server.
+# Remove the datadir, but keep the error log in case.
+# ------------------------------------------------------------------
+# End-of-test cleanup.
+# ------------------------------------------------------------------
 # Restart the server with default options.
 # restart

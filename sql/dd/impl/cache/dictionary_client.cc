@@ -220,15 +220,14 @@ class MDL_checker {
     // If the schema acquisition fails, we cannot assure that we have a lock,
     // and therefore return false.
     if (thd->dd_client()->acquire(event->schema_id(), &schema)) return false;
-
     DBUG_ASSERT(schema);
 
-    char lc_event_name[NAME_LEN + 1];
-    my_stpcpy(lc_event_name, event->name().c_str());
-    my_casedn_str(&my_charset_utf8_tolower_ci, lc_event_name);
-
-    return is_locked(thd, schema->name().c_str(), lc_event_name, MDL_key::EVENT,
-                     lock_type);
+    MDL_key mdl_key;
+    char schema_name_buf[NAME_LEN + 1];
+    dd::Event::create_mdl_key(dd::Object_table_definition_impl::fs_name_case(
+                                  schema->name(), schema_name_buf),
+                              event->name(), &mdl_key);
+    return thd->mdl_context.owns_equal_or_stronger_lock(&mdl_key, lock_type);
   }
 
   /**
@@ -257,18 +256,13 @@ class MDL_checker {
 
     DBUG_ASSERT(schema);
 
-    MDL_key::enum_mdl_namespace mdl_namespace = MDL_key::FUNCTION;
-    if (routine->type() == dd::Routine::RT_PROCEDURE)
-      mdl_namespace = MDL_key::PROCEDURE;
-
-    // Routine names are case in-sensitive to MDL's are taken
-    // on lower case names.
-    char lc_routine_name[NAME_LEN + 1];
-    my_stpcpy(lc_routine_name, routine->name().c_str());
-    my_casedn_str(system_charset_info, lc_routine_name);
-
-    return is_locked(thd, schema->name().c_str(), lc_routine_name,
-                     mdl_namespace, lock_type);
+    MDL_key mdl_key;
+    char schema_name_buf[NAME_LEN + 1];
+    dd::Routine::create_mdl_key(routine->type(),
+                                dd::Object_table_definition_impl::fs_name_case(
+                                    schema->name(), schema_name_buf),
+                                routine->name(), &mdl_key);
+    return thd->mdl_context.owns_equal_or_stronger_lock(&mdl_key, lock_type);
   }
 
   /**
@@ -555,13 +549,10 @@ class MDL_checker {
                         enum_mdl_type lock_type) {
     if (resource_group == nullptr) return true;
 
-    char lc_name[NAME_CHAR_LEN + 1];
-    my_stpcpy(lc_name, resource_group->name().c_str());
-    lc_name[NAME_CHAR_LEN] = '\0';
-    my_casedn_str(system_charset_info, lc_name);
+    MDL_key mdl_key;
+    dd::Resource_group::create_mdl_key(resource_group->name(), &mdl_key);
 
-    return thd->mdl_context.owns_equal_or_stronger_lock(
-        MDL_key::RESOURCE_GROUPS, "", lc_name, lock_type);
+    return thd->mdl_context.owns_equal_or_stronger_lock(&mdl_key, lock_type);
   }
 
   /**
@@ -2317,43 +2308,39 @@ void Dictionary_client::invalidate(const T *object) {
 #ifndef DBUG_OFF
 
 /**
-  Check whether Backup Lock was acquired for a server run in normal mode.
+  Check whether protection against the backup- and global read
+  lock has been acquired.
 
-  @param[in]  thd      Thread context.
+  @param[in] thd      Thread context.
 
-  @return  true in case Backup Lock was acquired by a statement being executed
-           and server operates in normal mode, else false.
+  @return    true     protection against the backup lock and
+                      global read lock has been acquired, or
+                      the thread is a DD system thread, or the
+                      server is not done starting.
+             false    otherwise.
 */
 
 template <typename T>
-bool is_backup_lock_acquired(THD *thd) {
+static bool is_backup_lock_and_grl_acquired(THD *thd) {
   return !mysqld_server_started || thd->is_dd_system_thread() ||
-         thd->mdl_context.owns_equal_or_stronger_lock(
-             MDL_key::BACKUP_LOCK, "", "", MDL_INTENTION_EXCLUSIVE);
+         (thd->mdl_context.owns_equal_or_stronger_lock(
+              MDL_key::BACKUP_LOCK, "", "", MDL_INTENTION_EXCLUSIVE) &&
+          thd->mdl_context.owns_equal_or_stronger_lock(
+              MDL_key::GLOBAL, "", "", MDL_INTENTION_EXCLUSIVE));
 }
 
 template <>
-bool is_backup_lock_acquired<Table_stat>(THD *) {
+bool is_backup_lock_and_grl_acquired<Charset>(THD *) {
   return true;
 }
 
 template <>
-bool is_backup_lock_acquired<Index_stat>(THD *) {
+bool is_backup_lock_and_grl_acquired<Collation>(THD *) {
   return true;
 }
 
 template <>
-bool is_backup_lock_acquired<Charset>(THD *) {
-  return true;
-}
-
-template <>
-bool is_backup_lock_acquired<Collation>(THD *) {
-  return true;
-}
-
-template <>
-bool is_backup_lock_acquired<Column_statistics>(THD *) {
+bool is_backup_lock_and_grl_acquired<Column_statistics>(THD *) {
   return true;
 }
 #endif
@@ -2364,7 +2351,7 @@ bool Dictionary_client::drop(const T *object) {
   // Check proper MDL lock.
   DBUG_ASSERT(MDL_checker::is_write_locked(m_thd, object));
 
-  DBUG_ASSERT(is_backup_lock_acquired<T>(m_thd));
+  DBUG_ASSERT(is_backup_lock_and_grl_acquired<T>(m_thd));
 
   if (Storage_adapter::drop(m_thd, object)) {
     DBUG_ASSERT(m_thd->is_system_thread() || m_thd->killed ||
@@ -2402,7 +2389,7 @@ bool Dictionary_client::store(T *object) {
   DBUG_ASSERT(!element);
 #endif
 
-  DBUG_ASSERT(is_backup_lock_acquired<T>(m_thd));
+  DBUG_ASSERT(is_backup_lock_and_grl_acquired<T>(m_thd));
 
   // Store dictionary objects with UTC time
   Timestamp_timezone_guard ts(m_thd);
@@ -2449,6 +2436,10 @@ bool Dictionary_client::update(T *new_object) {
   // Make sure the object has a valid object id.
   DBUG_ASSERT(new_object->id() != INVALID_OBJECT_ID);
 
+  // Avoid updating DD object that modifies m_registry_uncommitted cache
+  // during attachable read-write transaction.
+  DBUG_ASSERT(!m_thd->is_attachable_rw_transaction_active());
+
   // The new_object instance should not be present in the committed registry.
   Cache_element<typename T::Cache_partition> *element = NULL;
 
@@ -2458,7 +2449,7 @@ bool Dictionary_client::update(T *new_object) {
   DBUG_ASSERT(!element);
 #endif
 
-  DBUG_ASSERT(is_backup_lock_acquired<T>(m_thd));
+  DBUG_ASSERT(is_backup_lock_and_grl_acquired<T>(m_thd));
 
   // Store dictionary objects with UTC time
   Timestamp_timezone_guard ts(m_thd);
@@ -2529,6 +2520,11 @@ bool Dictionary_client::update(T *new_object) {
 template <typename T>
 void Dictionary_client::register_uncommitted_object(T *object) {
   Cache_element<typename T::Cache_partition> *element = nullptr;
+
+  // Avoid registering uncommitted object during attachable read-write
+  // transaction processing.
+  DBUG_ASSERT(!m_thd->is_attachable_rw_transaction_active());
+
 #ifndef DBUG_OFF
   // Make sure we do not sign up a shared object for auto delete.
   m_registry_committed.get(
@@ -2864,6 +2860,7 @@ template bool Dictionary_client::acquire_for_modification(Object_id,
                                                           dd::Charset **);
 template void Dictionary_client::remove_uncommitted_objects<Charset>(bool);
 template bool Dictionary_client::acquire(String_type const &, Charset const **);
+template bool Dictionary_client::acquire(String_type const &, Schema const **);
 template bool Dictionary_client::acquire_for_modification(String_type const &,
                                                           dd::Charset **);
 

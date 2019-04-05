@@ -115,11 +115,6 @@ class ORDER_with_src {
   Explain_sort_clause src;  ///< origin of order list
 
  private:
-  /**
-    True means that sort direction (ASC/DESC) could be ignored. Used for
-    picking index for ordering dataset for DISTINCT or GROUP BY.
-  */
-  bool ignore_order;
   int flags;  ///< bitmap of Explain_sort_property
 
  public:
@@ -128,7 +123,6 @@ class ORDER_with_src {
   ORDER_with_src(ORDER *order_arg, Explain_sort_clause src_arg)
       : order(order_arg),
         src(src_arg),
-        ignore_order(src_arg == ESC_ORDER_BY ? false : true),
         flags(order_arg ? ESP_EXISTS : ESP_none) {}
 
   /**
@@ -175,12 +169,6 @@ class ORDER_with_src {
     DBUG_ASSERT(order);
     return flags;
   }
-  /**
-    Inform optimizer that ASC/DESC direction of this list should be
-    honored.
-  */
-  void force_order() { ignore_order = false; }
-  bool can_ignore_order() { return ignore_order; }
 };
 
 class JOIN {
@@ -196,14 +184,15 @@ class JOIN {
         qep_tab(NULL),
         best_ref(NULL),
         map2table(NULL),
+        map2qep_tab(NULL),
         sort_by_table(NULL),
         tables(0),
         primary_tables(0),
         const_tables(0),
         tmp_tables(0),
         send_group_parts(0),
-        sort_and_group(false),
-        first_record(false),
+        streaming_aggregation(false),
+        seen_first_record(false),
         // @todo Can this be substituted with select->is_explicitly_grouped()?
         grouped(select->is_explicitly_grouped()),
         do_send_rows(true),
@@ -211,6 +200,7 @@ class JOIN {
         // Inner tables may always be considered to be constant:
         const_table_map(INNER_TABLE_BIT),
         found_const_table_map(INNER_TABLE_BIT),
+        deps_of_remaining_lateral_derived_tables(0),
         send_records(0),
         found_records(0),
         examined_rows(0),
@@ -231,7 +221,7 @@ class JOIN {
         group_fields_cache(),
         sum_funcs(NULL),
         sum_funcs_end(),
-        tmp_table_param(),
+        tmp_table_param(thd_arg->mem_root),
         lock(thd->lock),
         rollup(),
         // @todo Can this be substituted with select->is_implicitly_grouped()?
@@ -241,9 +231,9 @@ class JOIN {
         simple_order(false),
         simple_group(false),
         m_ordered_index_usage(ORDERED_INDEX_VOID),
-        no_order(false),
         skip_sort_order(false),
         need_tmp_before_win(false),
+        has_lateral(false),
         keyuse_array(thd->mem_root),
         all_fields(select->all_fields),
         fields_list(select->fields_list),
@@ -267,8 +257,8 @@ class JOIN {
         cond_equal(NULL),
         return_tab(0),
         ref_items(nullptr),
-        before_ref_item_slice_tmp3(nullptr),
-        current_ref_item_slice(REF_SLICE_SAVE),
+        ref_slice_immediately_before_group_by(nullptr),
+        current_ref_item_slice(REF_SLICE_SAVED_BASE),
         recursive_iteration_count(0),
         zero_result_cause(NULL),
         child_subquery_can_materialize(false),
@@ -280,7 +270,8 @@ class JOIN {
         with_json_agg(select->json_agg_func_used()),
         optimized(false),
         executed(false),
-        plan_state(NO_PLAN) {
+        plan_state(NO_PLAN),
+        select_count(false) {
     rollup.state = ROLLUP::STATE_NONE;
     tmp_table_param.end_write_records = HA_POS_ERROR;
     if (select->order_list.first) explain_flags.set(ESC_ORDER_BY, ESP_EXISTS);
@@ -315,7 +306,8 @@ class JOIN {
     The optimizer reorders best_ref.
   */
   JOIN_TAB **best_ref;
-  JOIN_TAB **map2table;  ///< mapping between table indexes and JOIN_TABs
+  JOIN_TAB **map2table;   ///< mapping between table indexes and JOIN_TABs
+  QEP_TAB **map2qep_tab;  ///< mapping between table indexes and QEB_TABs
   /*
     The table which has an index that allows to produce the requried ordering.
     A special value of 0x1 means that the ordering will be produced by
@@ -352,13 +344,22 @@ class JOIN {
   uint tmp_tables;      ///< Number of temporary tables used by query
   uint send_group_parts;
   /**
-    Indicates that grouping will be performed on the result set during
-    query execution. This field belongs to query execution.
+    Indicates that the data will be aggregated (typically GROUP BY),
+    _and_ that it is already processed in an order that is compatible with
+    the grouping in use (e.g. because we are scanning along an index,
+    or because an earlier step sorted the data in a group-compatible order).
+
+    Note that this flag changes value at multiple points during optimization;
+    if it's set when a temporary table is created, this means we aggregate
+    into said temporary table (end_write_group is chosen instead of end_write),
+    but if it's set later, it means that we can aggregate as we go,
+    just before sending the data to the client (end_send_group is chosen
+    instead of end_send).
 
     @see make_group_fields, alloc_group_fields, JOIN::exec
   */
-  bool sort_and_group;
-  bool first_record;
+  bool streaming_aggregation;
+  bool seen_first_record;   ///< Whether we've seen at least one row already
   bool grouped;             ///< If query contains GROUP BY clause
   bool do_send_rows;        ///< If true, send produced rows using query_result
   table_map all_table_map;  ///< Set of tables contained in query
@@ -370,6 +371,13 @@ class JOIN {
      rest of execution (a NULL-complemented row will be used).
   */
   table_map found_const_table_map;
+  /**
+     Used in some loops which scan the JOIN's tables: it is the bitmap of all
+     tables which are dependencies of lateral derived tables which the loop
+     has not yet processed.
+  */
+  table_map deps_of_remaining_lateral_derived_tables;
+
   /* Number of records produced after join + group operation */
   ha_rows send_records;
   ha_rows found_records;
@@ -429,14 +437,20 @@ class JOIN {
      - is transiently used as a model by create_intermediate_table(), to build
      the tmp table's own tmp_table_param.
      - is also used as description of the pseudo-tmp-table of grouping
-     (REF_SLICE_TMP3) (e.g. in end_send_group()).
+     (REF_SLICE_ORDERED_GROUP_BY) (e.g. in end_send_group()).
   */
   Temp_table_param tmp_table_param;
   MYSQL_LOCK *lock;
 
   ROLLUP rollup;           ///< Used with rollup
   bool implicit_grouping;  ///< True if aggregated but no GROUP BY
-  bool select_distinct;    ///< Set if SELECT DISTINCT
+
+  /**
+    At construction time, set if SELECT DISTINCT. May be reset to false
+    later, when we set up a temporary table operation that deduplicates for us.
+   */
+  bool select_distinct;
+
   /**
     If we have the GROUP BY statement in the query,
     but the group_list was emptied by optimizer, this
@@ -467,11 +481,6 @@ class JOIN {
   } m_ordered_index_usage;
 
   /**
-    Is set only in case if we have a GROUP BY clause
-    and no ORDER BY after constant elimination of 'order'.
-  */
-  bool no_order;
-  /**
     Is set if we have a GROUP BY and we have ORDER BY on a constant or when
     sorting isn't required.
   */
@@ -483,6 +492,9 @@ class JOIN {
     See details in JOIN::optimize
   */
   bool need_tmp_before_win;
+
+  /// If JOIN has lateral derived tables (is set at start of planning)
+  bool has_lateral;
 
   /// Used and updated by JOIN::make_join_plan() and optimize_keyuse()
   Key_use_array keyuse_array;
@@ -627,13 +639,14 @@ class JOIN {
     are associated with a single optimization. The size of slice 0 determines
     the slice size used when allocating the other slices.
    */
-  Ref_item_array *ref_items;  // cardinality: REF_SLICE_SAVE + 1 + #windows*2
+  Ref_item_array
+      *ref_items;  // cardinality: REF_SLICE_SAVED_BASE + 1 + #windows*2
 
   /**
-     If slice REF_SLICE_TMP3 has been created, this is the QEP_TAB which is
-     right before calculation of items in this slice.
+     If slice REF_SLICE_ORDERED_GROUP_BY has been created, this is the QEP_TAB
+     which is right before calculation of items in this slice.
   */
-  QEP_TAB *before_ref_item_slice_tmp3;
+  QEP_TAB *ref_slice_immediately_before_group_by;
 
   /**
     The slice currently stored in ref_items[0].
@@ -752,7 +765,7 @@ class JOIN {
   void set_ref_item_slice(uint sliceno) {
     DBUG_ASSERT((int)sliceno >= 1);
     if (current_ref_item_slice != sliceno) {
-      copy_ref_item_slice(REF_SLICE_BASE, sliceno);
+      copy_ref_item_slice(REF_SLICE_ACTIVE, sliceno);
       DBUG_PRINT("info",
                  ("ref slice %u -> %u", current_ref_item_slice, sliceno));
       current_ref_item_slice = sliceno;
@@ -773,9 +786,11 @@ class JOIN {
   bool rollup_process_const_fields();
   bool rollup_make_fields(List<Item> &all_fields, List<Item> &fields,
                           Item_sum ***func);
+  bool switch_slice_for_rollup_fields(List<Item> &all_fields,
+                                      List<Item> &fields);
   bool rollup_send_data(uint idx);
-  bool rollup_write_data(uint idx, TABLE *table);
-  void remove_subq_pushed_predicates();
+  bool rollup_write_data(uint idx, QEP_TAB *qep_tab);
+  bool finalize_table_conditions();
   /**
     Release memory and, if possible, the open tables held by this execution
     plan (and nested plans). It's used to release some tables before
@@ -805,7 +820,6 @@ class JOIN {
             select_lex->having_value != Item::COND_FALSE);
   }
 
-  bool cache_const_exprs();
   bool generate_derived_keys();
   void finalize_derived_keys();
   bool get_best_combination();
@@ -815,6 +829,10 @@ class JOIN {
                             bool force_stable_sort = false);
   bool decide_subquery_strategy();
   void refine_best_rowcount();
+  /// Updates deps_of_remaining_lateral_derived_tables
+  void recalculate_deps_of_remaining_lateral_derived_tables(uint idx);
+  bool clear_corr_derived_tmp_tables();
+
   void mark_const_table(JOIN_TAB *table, Key_use *key);
   /// State of execution plan. Currently used only for EXPLAIN
   enum enum_plan_state {
@@ -854,6 +872,23 @@ class JOIN {
   */
   bool propagate_dependencies();
 
+  /**
+    Returns whether one should send the current row on to the output,
+    or ignore it. (In particular, this implements OFFSET handling
+    in the non-iterator executor.)
+   */
+  bool should_send_current_row() {
+    if (!do_send_rows) {
+      return false;
+    }
+    if (unit->offset_limit_cnt > 0) {
+      --unit->offset_limit_cnt;
+      return false;
+    } else {
+      return true;
+    }
+  }
+
  private:
   bool optimized;  ///< flag to avoid double optimization in EXPLAIN
   bool executed;   ///< Set by exec(), reset by reset()
@@ -861,6 +896,16 @@ class JOIN {
   /// Final execution plan state. Currently used only for EXPLAIN
   enum_plan_state plan_state;
 
+ public:
+  /*
+    When join->select_count is set, tables will not be optimized away. The call
+    to records() will be delayed until the execution phase and the counting
+    will be done on an index of Optimizer's choice. This flag will be set in
+    opt_sum_query. The index will be decided in find_shortest_key().
+  */
+  bool select_count;
+
+ private:
   /**
     Create a temporary table to be used for processing DISTINCT/ORDER
     BY/GROUP BY.
@@ -1070,7 +1115,7 @@ bool remove_eq_conds(THD *thd, Item *cond, Item **retcond,
 bool optimize_cond(THD *thd, Item **conds, COND_EQUAL **cond_equal,
                    List<TABLE_LIST> *join_list, Item::cond_result *cond_value);
 Item *substitute_for_best_equal_field(Item *cond, COND_EQUAL *cond_equal,
-                                      void *table_join_idx);
+                                      JOIN_TAB **table_join_idx);
 bool build_equal_items(THD *thd, Item *cond, Item **retcond,
                        COND_EQUAL *inherited, bool do_inherit,
                        List<TABLE_LIST> *join_list,
@@ -1098,5 +1143,48 @@ inline bool field_time_cmp_date(const Field *f, const Item *v) {
 
 bool substitute_gc(THD *thd, SELECT_LEX *select_lex, Item *where_cond,
                    ORDER *group_list, ORDER *order);
+
+/// RAII class to manage JOIN::deps_of_remaining_lateral_derived_tables
+class Deps_of_remaining_lateral_derived_tables {
+  JOIN *join;
+  table_map saved;
+
+ public:
+  Deps_of_remaining_lateral_derived_tables(JOIN *j)
+      : join(j), saved(join->deps_of_remaining_lateral_derived_tables) {}
+  ~Deps_of_remaining_lateral_derived_tables() { restore(); }
+  void restore() { join->deps_of_remaining_lateral_derived_tables = saved; }
+  void assert_unchanged() {
+    DBUG_ASSERT(join->deps_of_remaining_lateral_derived_tables == saved);
+  }
+  void recalculate(uint next_idx) {
+    if (join->has_lateral)
+      /*
+        No cur_tab given, so assume we start from a place in the plan which
+        may be backward or forward compared to where we were before:
+        recalculate.
+      */
+      join->recalculate_deps_of_remaining_lateral_derived_tables(next_idx);
+  }
+
+  void recalculate(JOIN_TAB *cur_tab, uint next_idx) {
+    /*
+      We have just added cur_tab to the plan; if it's not lateral, the map
+      doesn't change, no need to recalculate it.
+    */
+    if (join->has_lateral && cur_tab->table_ref->is_derived() &&
+        cur_tab->table_ref->derived_unit()->m_lateral_deps)
+      recalculate(next_idx);
+  }
+  void init() {
+    // Normally done once in a run of JOIN::optimize().
+    if (join->has_lateral) {
+      recalculate(join->const_tables);
+      // Forget stale value:
+      saved = join->deps_of_remaining_lateral_derived_tables;
+      DBUG_ASSERT(saved != 0);
+    }
+  }
+};
 
 #endif /* SQL_OPTIMIZER_INCLUDED */

@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2000, 2017, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2000, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -43,8 +43,6 @@
 #include "storage/ndb/include/kernel/ndb_limits.h"
 #include "storage/ndb/include/ndbapi/NdbApi.hpp"
 #include "storage/ndb/include/ndbapi/ndbapi_limits.h"
-
-#define NDB_IGNORE_VALUE(x) (void)x
 
 #define NDB_HIDDEN_PRIMARY_KEY_LENGTH 8
 
@@ -248,8 +246,8 @@ public:
   uint max_supported_keys() const override;
   uint max_supported_key_parts() const override;
   uint max_supported_key_length() const override;
-  uint max_supported_key_part_length() const override;
-
+  uint max_supported_key_part_length(HA_CREATE_INFO
+                                     *create_info) const override;
 private:
   int get_child_or_parent_fk_list(List<FOREIGN_KEY_INFO>*f_key_list,
                                   bool is_child, bool is_parent);
@@ -260,10 +258,6 @@ public:
                                  List<FOREIGN_KEY_INFO> *f_key_list) override;
  uint referenced_by_foreign_key() override;
 
-private:
-  uint is_child_or_parent_of_fk();
-public:
-  bool can_switch_engines() override;
   char* get_foreign_key_create_info() override;
   void free_foreign_key_create_info(char* str) override;
 
@@ -271,6 +265,11 @@ public:
                    const dd::Table *from_table_def,
                    dd::Table *to_table_def) override;
   int delete_table(const char *name, const dd::Table *table_def) override;
+  bool upgrade_table(THD* thd,
+                     const char*,
+                     const char* table_name,
+                     dd::Table* dd_table) override;
+
   row_type get_real_row_type(const HA_CREATE_INFO *create_info) const override
   {
     DBUG_ENTER("ha_ndbcluster::get_real_row_type");
@@ -413,9 +412,9 @@ public:
                                   const dd::Table *old_table_def,
                                   dd::Table *new_table_def) override;
 
-  void notify_table_changed(Alter_inplace_info *ha_alter_info) override;
+  void notify_table_changed(Alter_inplace_info *alter_info) override;
 
-private:
+ private:
   void prepare_inplace__drop_index(uint key_num);
   int inplace__final_drop_index(TABLE *table_arg);
 
@@ -448,14 +447,15 @@ private:
 
   int prepare_inplace__add_index(THD *thd, KEY *key_info,
                                  uint num_of_keys) const;
-  int create_ndb_index(THD *thd, const char *name, KEY *key_info,
-                       bool unique) const;
-  int create_ordered_index(THD *thd, const char *name, KEY *key_info) const;
-  int create_unique_index(THD *thd, const char *name, KEY *key_info) const;
+  int create_index_in_NDB(THD *thd, const char *name, KEY *key_info,
+                          const NdbDictionary::Table *ndbtab,
+                          bool unique) const;
   int create_index(THD *thd, const char *name, KEY *key_info,
-                   NDB_INDEX_TYPE idx_type) const;
+                   NDB_INDEX_TYPE idx_type,
+                   const NdbDictionary::Table *ndbtab) const;
   // Index list management
-  int create_indexes(THD *thd, TABLE *tab) const;
+  int create_indexes(THD *thd, TABLE *tab,
+                     const NdbDictionary::Table *ndbtab) const;
   int open_indexes(Ndb *ndb, TABLE *tab);
   void release_indexes(NdbDictionary::Dictionary* dict, int invalidate);
   void inplace__renumber_indexes(uint dropped_index_num);
@@ -469,7 +469,7 @@ private:
   int get_fk_data(THD *thd, Ndb *ndb);
   void release_fk_data();
   int create_fks(THD *thd, Ndb *ndb);
-  int copy_fk_for_offline_alter(THD * thd, Ndb*, NdbDictionary::Table* _dsttab);
+  int copy_fk_for_offline_alter(THD *thd, Ndb *, const char* tabname);
   int inplace__drop_fks(THD*, Ndb*, NdbDictionary::Dictionary*,
                        const NdbDictionary::Table*);
   static int get_fk_data_for_truncate(NdbDictionary::Dictionary*,
@@ -761,6 +761,7 @@ private:
                    uint part_id= ~(uint)0);
   int add_handler_to_open_tables(THD*, Thd_ndb*, ha_ndbcluster* handler);
   int rename_table_impl(THD* thd, Ndb* ndb,
+                        class Ndb_schema_dist_client& schema_dist_client,
                         const NdbDictionary::Table* orig_tab,
                         dd::Table* to_table_def,
                         const char* from, const char* to,

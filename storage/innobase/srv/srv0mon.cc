@@ -33,12 +33,12 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
 #include <time.h>
 
+#include "arch0arch.h"
 #include "buf0buf.h"
 #include "dict0mem.h"
 #include "ibuf0ibuf.h"
 #include "lock0lock.h"
 #include "mach0data.h"
-#include "my_inttypes.h"
 #include "os0file.h"
 #include "srv0mon.h"
 #include "srv0srv.h"
@@ -806,15 +806,29 @@ static monitor_info_t innodb_counter_info[] = {
      static_cast<monitor_type_t>(MONITOR_EXISTING | MONITOR_DISPLAY_CURRENT),
      MONITOR_DEFAULT_START, MONITOR_OVLD_LSN_CURRENT},
 
+    {"log_lsn_archived", "log", "Archived LSN value",
+     static_cast<monitor_type_t>(MONITOR_EXISTING | MONITOR_DISPLAY_CURRENT),
+     MONITOR_DEFAULT_START, MONITOR_OVLD_LSN_ARCHIVED},
+
     {"log_lsn_checkpoint_age", "log",
      "Current LSN value minus LSN at last checkpoint",
      static_cast<monitor_type_t>(MONITOR_EXISTING | MONITOR_DISPLAY_CURRENT),
      MONITOR_DEFAULT_START, MONITOR_OVLD_LSN_CHECKPOINT_AGE},
 
-    {"log_lsn_buf_pool_oldest", "log",
-     "The oldest modified block LSN in the buffer pool",
+    {"log_lsn_buf_dirty_pages_added", "log",
+     "The LSN value up to which all dirty pages have been added",
+     static_cast<monitor_type_t>(MONITOR_EXISTING | MONITOR_DISPLAY_CURRENT),
+     MONITOR_DEFAULT_START, MONITOR_OVLD_LSN_BUF_DIRTY_PAGES_ADDED},
+
+    {"log_lsn_buf_pool_oldest_approx", "log",
+     "Approximation for the oldest modified block LSN in the buffer pool",
      static_cast<monitor_type_t>(MONITOR_EXISTING | MONITOR_DISPLAY_CURRENT),
      MONITOR_DEFAULT_START, MONITOR_OVLD_BUF_OLDEST_LSN_APPROX},
+
+    {"log_lsn_buf_pool_oldest_lwm", "log",
+     "Low watermark for the oldest modified block LSN in the buffer pool",
+     static_cast<monitor_type_t>(MONITOR_EXISTING | MONITOR_DISPLAY_CURRENT),
+     MONITOR_DEFAULT_START, MONITOR_OVLD_BUF_OLDEST_LSN_LWM},
 
     {"log_max_modified_age_async", "log",
      "Maximum LSN difference; when exceeded, start asynchronous preflush",
@@ -873,9 +887,24 @@ static monitor_info_t innodb_counter_info[] = {
     {"log_checkpoints", "log", "Number of checkpoints", MONITOR_NONE,
      MONITOR_DEFAULT_START, MONITOR_LOG_CHECKPOINTS},
 
+    {"log_free_space", "log", "Free space in redo (emergency when negative).",
+     MONITOR_NONE, MONITOR_DEFAULT_START, MONITOR_LOG_FREE_SPACE},
+
+    {"log_concurrency_margin", "log",
+     "Current concurrency margin used (may increase).", MONITOR_NONE,
+     MONITOR_DEFAULT_START, MONITOR_LOG_CONCURRENCY_MARGIN},
+
     MONITOR_WAIT_STATS("log_writer_", "log",
                        "Waits on task in log_writer thread",
                        MONITOR_LOG_WRITER_),
+
+    {"log_writer_on_file_space_waits", "log",
+     "Waits on free space in log writer", MONITOR_NONE, MONITOR_DEFAULT_START,
+     MONITOR_LOG_WRITER_ON_FREE_SPACE_WAITS},
+
+    {"log_writer_on_archiver_waits", "log",
+     "Waits on redo archiver in log writer", MONITOR_NONE,
+     MONITOR_DEFAULT_START, MONITOR_LOG_WRITER_ON_ARCHIVER_WAITS},
 
     MONITOR_WAIT_STATS("log_flusher_", "log",
                        "Waits on task in log_flusher thread",
@@ -888,6 +917,12 @@ static monitor_info_t innodb_counter_info[] = {
     MONITOR_WAIT_STATS("log_flush_notifier_", "log",
                        "Waits on task in log_flush_notifier_thread",
                        MONITOR_LOG_FLUSH_NOTIFIER_),
+
+    {"log_write_to_file_requests_interval", "log",
+     "Average time between consecutive requests to write/flush redo."
+     " Measured only for requests signaled during commit of transactions.",
+     MONITOR_NONE, MONITOR_DEFAULT_START,
+     MONITOR_LOG_WRITE_TO_FILE_REQUESTS_INTERVAL},
 
     MONITOR_WAIT_STATS(
         "log_on_write_", "log",
@@ -1409,7 +1444,6 @@ void srv_mon_set_module_control(
 @return size in pages */
 static ulint srv_mon_get_rseg_size(void) {
   ulint value = 0;
-  ulong cur_spaces = srv_undo_tablespaces;
   ulong cur_rsegs = srv_rollback_segments;
 
   /* Rollback segments used in the temporary tablespace */
@@ -1421,10 +1455,6 @@ static ulint srv_mon_get_rseg_size(void) {
 
   undo::spaces->s_lock();
   for (auto undo_space : undo::spaces->m_spaces) {
-    if (undo_space->num() > cur_spaces) {
-      break;
-    }
-
     for (auto rseg : *undo_space->rsegs()) {
       if (rseg->id >= cur_rsegs) {
         break;
@@ -1786,8 +1816,25 @@ void srv_mon_process_existing_counter(
       value = (mon_type_t)log_get_lsn(*log_sys);
       break;
 
+    case MONITOR_OVLD_LSN_ARCHIVED: {
+      auto arch_lsn = arch_log_sys->get_archived_lsn();
+      if (arch_lsn == LSN_MAX) {
+        value = 0;
+      } else {
+        value = static_cast<mon_type_t>(arch_lsn);
+      }
+    } break;
+
+    case MONITOR_OVLD_LSN_BUF_DIRTY_PAGES_ADDED:
+      value = (mon_type_t)log_buffer_dirty_pages_added_up_to_lsn(*log_sys);
+      break;
+
     case MONITOR_OVLD_BUF_OLDEST_LSN_APPROX:
       value = (mon_type_t)buf_pool_get_oldest_modification_approx();
+      break;
+
+    case MONITOR_OVLD_BUF_OLDEST_LSN_LWM:
+      value = (mon_type_t)buf_pool_get_oldest_modification_lwm();
       break;
 
     case MONITOR_OVLD_LSN_CHECKPOINT:

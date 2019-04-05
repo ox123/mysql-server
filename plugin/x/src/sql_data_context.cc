@@ -108,7 +108,7 @@ bool Sql_data_context::kill() {
         const char *user = MYSQL_SESSION_USER;
         const char *host = MYSQLXSYS_HOST;
         if (security_context_lookup(scontext, user, host, NULL, NULL))
-          log_warning(ER_XPLUGIN_FAILED_TO_SWITCH_SECURITY_CTX_TO_ROOT);
+          log_warning(ER_XPLUGIN_FAILED_TO_SWITCH_SECURITY_CTX, user);
         else {
           COM_DATA data;
           Callback_command_delegate deleg;
@@ -125,8 +125,8 @@ bool Sql_data_context::kill() {
             if (!deleg.get_error())
               ok = true;
             else
-              log_info(ER_XPLUGIN_CLIENT_KILL_MSG, deleg.get_error().error,
-                       deleg.get_error().message.c_str());
+              log_debug("Kill client: %i %s", deleg.get_error().error,
+                        deleg.get_error().message.c_str());
           }
         }
       }
@@ -184,7 +184,7 @@ ngs::Error_code Sql_data_context::authenticate(
     bool allow_expired_passwords) {
   ngs::Error_code error = switch_to_user(user, host, ip, db);
 
-  if (error) return ngs::Error(ER_NO_SUCH_USER, "Invalid user or password");
+  if (error) return ngs::SQLError_access_denied();
 
   std::string authenticated_user_name = get_authenticated_user_name();
   std::string authenticated_user_host = get_authenticated_user_host();
@@ -263,7 +263,7 @@ bool get_security_context_value(MYSQL_THD thd, const char *option,
 }
 
 bool Sql_data_context::is_acl_disabled() {
-  MYSQL_LEX_CSTRING value;
+  MYSQL_LEX_CSTRING value{"", 0};
 
   if (get_security_context_value(get_thd(), "priv_user", value)) {
     return 0 != value.length && NULL != strstr(value.str, "skip-grants ");
@@ -281,7 +281,7 @@ bool Sql_data_context::has_authenticated_user_a_super_priv() const {
 }
 
 std::string Sql_data_context::get_user_name() const {
-  MYSQL_LEX_CSTRING result;
+  MYSQL_LEX_CSTRING result{"", 0};
 
   if (get_security_context_value(get_thd(), "user", result)) return result.str;
 
@@ -289,7 +289,7 @@ std::string Sql_data_context::get_user_name() const {
 }
 
 std::string Sql_data_context::get_host_or_ip() const {
-  MYSQL_LEX_CSTRING result;
+  MYSQL_LEX_CSTRING result{"", 0};
 
   if (get_security_context_value(get_thd(), "host_or_ip", result))
     return result.str;
@@ -298,7 +298,7 @@ std::string Sql_data_context::get_host_or_ip() const {
 }
 
 std::string Sql_data_context::get_authenticated_user_name() const {
-  MYSQL_LEX_CSTRING result;
+  MYSQL_LEX_CSTRING result{"", 0};
 
   if (get_security_context_value(get_thd(), "priv_user", result))
     return result.str;
@@ -307,7 +307,7 @@ std::string Sql_data_context::get_authenticated_user_name() const {
 }
 
 std::string Sql_data_context::get_authenticated_user_host() const {
-  MYSQL_LEX_CSTRING result;
+  MYSQL_LEX_CSTRING result{"", 0};
 
   if (get_security_context_value(get_thd(), "priv_host", result))
     return result.str;
@@ -370,6 +370,8 @@ ngs::Error_code Sql_data_context::execute_sql(const char *sql, size_t length,
   data.com_query.length = static_cast<unsigned int>(length);
 
   deleg->reset();
+
+  log_debug("Sql_data_context::execute_sql %s", sql);
 
   if (command_service_run_command(m_mysql_session, COM_QUERY, &data,
                                   mysqld::get_charset_utf8mb4_general_ci(),
@@ -434,6 +436,15 @@ ngs::Error_code Sql_data_context::execute(const char *sql, std::size_t sql_len,
   return execute_sql(sql, sql_len, &rset->get_callbacks());
 }
 
+ngs::Error_code Sql_data_context::fetch_cursor(const std::uint32_t statement_id,
+                                               const std::uint32_t row_count,
+                                               ngs::Resultset_interface *rset) {
+  COM_DATA data;
+  data.com_stmt_fetch.stmt_id = statement_id;
+  data.com_stmt_fetch.num_rows = row_count;
+  return execute_server_command(COM_STMT_FETCH, data, rset);
+}
+
 ngs::Error_code Sql_data_context::attach() {
   THD *previous_thd = nullptr;
 
@@ -453,6 +464,51 @@ ngs::Error_code Sql_data_context::detach() {
   }
 
   return {};
+}
+
+ngs::Error_code Sql_data_context::prepare_prep_stmt(
+    const char *sql, std::size_t sql_len, ngs::Resultset_interface *rset) {
+  COM_DATA data;
+  data.com_stmt_prepare = {sql, static_cast<unsigned>(sql_len)};
+  return execute_server_command(COM_STMT_PREPARE, data, rset);
+}
+
+ngs::Error_code Sql_data_context::deallocate_prep_stmt(
+    const uint32_t stmt_id, ngs::Resultset_interface *rset) {
+  COM_DATA data;
+  data.com_stmt_close = {static_cast<unsigned>(stmt_id)};
+  return execute_server_command(COM_STMT_CLOSE, data, rset);
+}
+
+ngs::Error_code Sql_data_context::execute_prep_stmt(
+    const uint32_t stmt_id, const bool has_cursor, PS_PARAM *parameters,
+    const std::size_t parameters_count, ngs::Resultset_interface *rset) {
+  COM_DATA cmd;
+  cmd.com_stmt_execute = {static_cast<unsigned long>(stmt_id),
+                          static_cast<unsigned long>(has_cursor), parameters,
+                          static_cast<unsigned long>(parameters_count),
+                          static_cast<unsigned char>(true)};
+
+  return execute_server_command(COM_STMT_EXECUTE, cmd, rset);
+}
+
+ngs::Error_code Sql_data_context::execute_server_command(
+    const enum_server_command cmd, const COM_DATA &cmd_data,
+    ngs::Resultset_interface *rset) {
+  ngs::Command_delegate &deleg = rset->get_callbacks();
+  deleg.reset();
+  if (command_service_run_command(m_mysql_session, cmd, &cmd_data,
+                                  mysqld::get_charset_utf8mb4_general_ci(),
+                                  deleg.callbacks(), deleg.representation(),
+                                  &deleg)) {
+    return ngs::Error_code(ER_X_SERVICE_ERROR,
+                           "Internal error executing command");
+  }
+  const ngs::Error_code error = deleg.get_error();
+  if (error)
+    log_debug("Error running server command: (%i %s)", error.error,
+              error.message.c_str());
+  return error;
 }
 
 }  // namespace xpl

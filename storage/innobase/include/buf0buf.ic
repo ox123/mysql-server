@@ -61,6 +61,16 @@ struct buf_chunk_t {
 
   /** Get the size of 'mem' in bytes. */
   size_t mem_size() const { return (mem_pfx.m_size); }
+
+  /** Advices the OS that this chunk should not be dumped to a core file.
+  Emits a warning to the log if could not succeed.
+  @return true iff succeeded, false if no OS support or failed */
+  bool madvise_dump();
+
+  /** Advices the OS that this chunk should be dumped to a core file.
+  Emits a warning to the log if could not succeed.
+  @return true iff succeeded, false if no OS support or failed */
+  bool madvise_dont_dump();
 };
 
 /** Gets the current size of buffer buf_pool in bytes.
@@ -364,7 +374,6 @@ BPageMutex *buf_page_get_mutex(
   switch (buf_page_get_state(bpage)) {
     case BUF_BLOCK_POOL_WATCH:
       ut_error;
-      return (NULL);
     case BUF_BLOCK_ZIP_PAGE:
     case BUF_BLOCK_ZIP_DIRTY:
       return (&buf_pool->zip_mutex);
@@ -391,8 +400,9 @@ buf_flush_t buf_page_get_flush_type(
       ut_error;
   }
   ut_error;
-#endif /* UNIV_DEBUG */
+#else  /* UNIV_DEBUG */
   return (flush_type);
+#endif /* UNIV_DEBUG */
 }
 /** Set the flush type of a page. */
 UNIV_INLINE
@@ -442,8 +452,9 @@ enum buf_io_fix buf_page_get_io_fix_unlocked(const buf_page_t *bpage) {
       return (io_fix);
   }
   ut_error;
-#endif /* UNIV_DEBUG */
+#else  /* UNIV_DEBUG */
   return (io_fix);
+#endif /* UNIV_DEBUG */
 }
 
 /** Gets the io_fix state of a block.

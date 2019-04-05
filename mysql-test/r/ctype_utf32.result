@@ -242,7 +242,7 @@ select 'AMZ'like 'A%M%Z';
 1
 SET NAMES utf8;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 SET character_set_connection=utf32;
 CREATE TABLE t1 (a VARCHAR(10) CHARACTER SET utf32);
 INSERT INTO t1 VALUES ('фыва'),('Фыва'),('фЫва'),('фыВа'),('фывА'),('ФЫВА');
@@ -520,7 +520,7 @@ execute stmt1 using @ivar;
 1234
 set names utf8;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 create table t1 (a enum('x','y','z') character set utf32);
 show create table t1;
 Table	Create Table
@@ -1013,7 +1013,7 @@ t1	CREATE TABLE `t1` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 drop table t1;
 create table t1 (a varchar(334) character set utf32 primary key) ROW_FORMAT=COMPACT;
-ERROR HY000: Index column size too large. The maximum column size is 767 bytes.
+ERROR 42000: Specified key was too long; max key length is 767 bytes
 SET sql_mode = '';
 create table t1 (a varchar(333) character set utf32, key(a))
 row_format=dynamic;
@@ -1241,7 +1241,7 @@ DROP TABLE t1;
 #
 SET NAMES utf8, @@character_set_connection=utf32;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 SELECT id, CHAR_LENGTH(GROUP_CONCAT(body)) AS l
 FROM (SELECT 'a' AS id, REPEAT('foo bar', 100) AS body
 UNION ALL
@@ -1565,4 +1565,29 @@ hex(weight_string(cast(_latin1 0x808080 as char),25, 4, 0xC0))
 0020AC0020AC0020AC00002000002000002000002000002000
 #
 # End of 5.6 tests
+#
+#
+# Start of 8.0 tests
+#
+#
+# Bug#28275881: ASSERT `RC == TYPE_OK' IN CREATE TABLE WITH CHARSET UTF32
+#
+CREATE TABLE  table425 (b1
+SET('wgrpqu','Oklahoma','grpquarwkazzjeiwvdmdivjqsxmhjwagewclcfykywlcnemiuaabr
+rifnhuufzasunkrcpvasdqkxbwptigbpnesqigwegcnfeuvrgnecpthmhffqbythjwpukqubzpomnt
+rddrwhzjtqvbjiklcekxqyoxsolbxthdcprswpjxixmvfwmsyseblwcvumvyvbitxqjxdzdytunqvv
+rmpyxrencqhuyrfluezqekmqpwutxnzddrbjycyoyqbzsoxvillooqxuvoxcgohdbytybwcqxdwtqr
+ebgjzbycekyjgbpmqadutrqluyxhrdodxqqjwasfkvetfobocgpftrhvxugmmszwpoglvarsfiljrz
+imqeplevleqdhepkhcfrahcpjj') NULL ) DEFAULT CHARACTER SET = utf32;
+ERROR HY000: Too long enumeration/set value for column b1.
+CREATE FUNCTION hello (s SET('wgrpqu','Oklahoma','grpquarwkazzjeiwvdmdivjqsxmh
+jwagewclcfykywlcnemiuaabrrifnhuufzasunkrcpvasdqkxbwptigbpnesqigwegcnfeuvrgnecp
+thmhffqbythjwpukqubzpomntrddrwhzjtqvbjiklcekxqyoxsolbxthdcprswpjxixmvfwmsysebl
+wcvumvyvbitxqjxdzdytunqvvrmpyxrencqhuyrfluezqekmqpwutxnzddrbjycyoyqbzsoxvilloo
+qxuvoxcgohdbytybwcqxdwtqrebgjzbycekyjgbpmqadutrqluyxhrdodxqqjwasfkvetfobocgpft
+rhvxugmmszwpoglvarsfiljrzimqeplevleqdhepkhcfrahcpjj') CHARACTER SET utf32)
+RETURNS CHAR(50) DETERMINISTIC RETURN CONCAT('Hello, ',s,'!');
+ERROR HY000: Too long enumeration/set value for column s.
+#
+# End of 8.0 tests
 #

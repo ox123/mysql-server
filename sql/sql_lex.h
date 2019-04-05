@@ -105,12 +105,12 @@ class Item_sum;
 class Parse_tree_root;
 class PT_alter_table_standalone_action;
 class PT_assign_to_keycache;
-class PT_base_index_option;
 class PT_column_attr_base;
 class PT_create_table_option;
 class PT_ddl_table_option;
 class PT_item_list;
 class PT_json_table_column;
+class PT_key_part_specification;
 class PT_part_definition;
 class PT_part_value_item;
 class PT_part_value_item_list_paren;
@@ -707,7 +707,7 @@ class SELECT_LEX_UNIT {
     else if (saved_fake_select_lex != NULL)
       return saved_fake_select_lex;
     return first_select();
-  };
+  }
   /* LIMIT clause runtime counters */
   ha_rows select_limit_cnt, offset_limit_cnt;
   /// Points to subquery if this query expression is used in one, otherwise NULL
@@ -747,6 +747,15 @@ class SELECT_LEX_UNIT {
   */
   SELECT_LEX *first_recursive;
 
+  /**
+    If 'this' is body of lateral derived table:
+    map of tables in the same FROM clause as this derived table, and to which
+    the derived table's body makes references.
+    In pre-resolution stages, this is OUTER_REF_TABLE_BIT, just to indicate
+    that this has LATERAL; after resolution, which has found references in the
+    body, this is the proper map (with no PSEUDO_TABLE_BITS anymore).
+  */
+  table_map m_lateral_deps;
   /**
     True if the with-recursive algorithm has produced the complete result.
     In a recursive CTE, a JOIN is executed several times in a loop, and
@@ -853,6 +862,33 @@ class SELECT_LEX_UNIT {
 
   bool check_materialized_derived_query_blocks(THD *thd);
 
+  bool clear_corr_ctes();
+
+  void fix_after_pullout(SELECT_LEX *parent_select, SELECT_LEX *removed_select);
+
+  /**
+    If unit is a subquery, which forms an object of the upper level (an
+    Item_subselect, a derived TABLE_LIST), adds to this object a map
+    of tables of the upper level which the unit references.
+  */
+  void accumulate_used_tables(table_map map) {
+    DBUG_ASSERT(outer_select());
+    if (item)
+      item->accumulate_used_tables(map);
+    else if (m_lateral_deps)
+      m_lateral_deps |= map;
+  }
+
+  /**
+    If unit is a subquery, which forms an object of the upper level (an
+    Item_subselect, a derived TABLE_LIST), returns the place of this object
+    in the upper level query block.
+  */
+  enum_parsing_context place() const {
+    DBUG_ASSERT(outer_select());
+    return item ? item->place() : CTX_DERIVED;
+  }
+
   /*
     An exception: this is the only function that needs to adjust
     explain_marker.
@@ -892,7 +928,7 @@ class SELECT_LEX {
   void set_having_cond(Item *cond) { m_having_cond = cond; }
   void set_query_result(Query_result *result) { m_query_result = result; }
   Query_result *query_result() const { return m_query_result; }
-  bool change_query_result(Query_result_interceptor *new_result,
+  bool change_query_result(THD *thd, Query_result_interceptor *new_result,
                            Query_result_interceptor *old_result);
 
   /// Set base options for a query block (and active options too)
@@ -1430,11 +1466,199 @@ class SELECT_LEX {
   /// Setup the array containing references to base items
   bool setup_base_ref_items(THD *thd);
   void print(THD *thd, String *str, enum_query_type query_type);
+
+  /**
+    Print detail of the SELECT_LEX object.
+
+    @param      thd          Thread handler
+    @param      query_type   Options to print out string output
+    @param[out] str          String of output.
+  */
+  void print_select(THD *thd, String *str, enum_query_type query_type);
+
+  /**
+    Print detail of the UPDATE statement.
+
+    @param      thd          Thread handler
+    @param[out] str          String of output
+    @param      query_type   Options to print out string output
+  */
+  void print_update(THD *thd, String *str, enum_query_type query_type);
+
+  /**
+    Print detail of the DELETE statement.
+
+    @param      thd          Thread handler
+    @param[out] str          String of output
+    @param      query_type   Options to print out string output
+  */
+  void print_delete(THD *thd, String *str, enum_query_type query_type);
+
+  /**
+    Print detail of the INSERT statement.
+
+    @param      thd          Thread handler
+    @param[out] str          String of output
+    @param      query_type   Options to print out string output
+  */
+  void print_insert(THD *thd, String *str, enum_query_type query_type);
+
+  /**
+    Print detail of Hints.
+
+    @param      thd          Thread handler
+    @param[out] str          String of output
+    @param      query_type   Options to print out string output
+  */
+  void print_hints(THD *thd, String *str, enum_query_type query_type);
+
+  /**
+    Print error.
+
+    @param      thd          Thread handler
+    @param[out] str          String of output
+
+    @return
+    @retval false   If there is no error
+    @retval true    else
+  */
+  bool print_error(THD *thd, String *str);
+
+  /**
+    Print select options.
+
+    @param[out] str          String of output
+  */
+  void print_select_options(String *str);
+
+  /**
+    Print UPDATE options.
+
+    @param[out] str          String of output
+  */
+  void print_update_options(String *str);
+
+  /**
+    Print DELETE options.
+
+    @param[out] str          String of output
+  */
+  void print_delete_options(String *str);
+
+  /**
+    Print INSERT options.
+
+    @param[out] str          String of output
+  */
+  void print_insert_options(String *str);
+
+  /**
+    Print list of tables.
+
+    @param      thd          Thread handler
+    @param[out] str          String of output
+    @param      table_list   TABLE_LIST object
+    @param      query_type   Options to print out string output
+  */
+  void print_table_references(THD *thd, String *str, TABLE_LIST *table_list,
+                              enum_query_type query_type);
+
+  /**
+    Print list of items in SELECT_LEX object.
+
+    @param[out] str          String of output
+    @param      query_type   Options to print out string output
+  */
+  void print_item_list(String *str, enum_query_type query_type);
+
+  /**
+    Print assignments list. Used in UPDATE and
+    INSERT ... ON DUPLICATE KEY UPDATE ...
+
+    @param[out] str          String of output
+    @param      query_type   Options to print out string output
+    @param      fields       List columns to be assigned.
+    @param      values       List of values.
+  */
+  void print_update_list(String *str, enum_query_type query_type,
+                         List<Item> fields, List<Item> values);
+
+  /**
+    Print column list to be inserted into. Used in INSERT.
+
+    @param[out] str          String of output
+    @param      query_type   Options to print out string output
+  */
+  void print_insert_fields(String *str, enum_query_type query_type);
+
+  /**
+    Print list of values to be inserted. Used in INSERT.
+
+    @param[out] str          String of output
+    @param      query_type   Options to print out string output
+  */
+  void print_insert_values(String *str, enum_query_type query_type);
+
+  /**
+    Print list of tables in FROM clause.
+
+    @param      thd          Thread handler
+    @param[out] str          String of output
+    @param      query_type   Options to print out string output
+  */
+  void print_from_clause(THD *thd, String *str, enum_query_type query_type);
+
+  /**
+    Print list of conditions in WHERE clause.
+
+    @param[out] str          String of output
+    @param      query_type   Options to print out string output
+  */
+  void print_where_cond(String *str, enum_query_type query_type);
+
+  /**
+    Print list of items in GROUP BY clause.
+
+    @param[out] str          String of output
+    @param      query_type   Options to print out string output
+  */
+  void print_group_by(String *str, enum_query_type query_type);
+
+  /**
+    Print list of items in HAVING clause.
+
+    @param[out] str          String of output
+    @param      query_type   Options to print out string output
+  */
+  void print_having(String *str, enum_query_type query_type);
+
+  /**
+    Print details of Windowing functions.
+
+    @param      thd          Thread handler
+    @param[out] str          String of output
+    @param      query_type   Options to print out string output
+  */
+  void print_windows(THD *thd, String *str, enum_query_type query_type);
+
+  /**
+    Print list of items in ORDER BY clause.
+
+    @param[out] str          String of output
+    @param      query_type   Options to print out string output
+  */
+  void print_order_by(String *str, enum_query_type query_type);
+
   static void print_order(String *str, ORDER *order,
                           enum_query_type query_type);
   void print_limit(String *str, enum_query_type query_type);
   void fix_prepare_information(THD *thd);
 
+  /**
+    Accept function for SELECT and DELETE.
+
+    @param    visitor  Select_lex_visitor Object
+  */
   bool accept(Select_lex_visitor *visitor);
 
   /**
@@ -1553,6 +1777,10 @@ class SELECT_LEX {
   /// Merge derived table into query block
  public:
   bool merge_derived(THD *thd, TABLE_LIST *derived_table);
+  /// Remove semijoin condition for this query block
+  void clear_sj_expressions(NESTED_JOIN *nested_join);
+  ///  Build semijoin condition for th query block
+  bool build_sj_cond(THD *thd, NESTED_JOIN *nested_join, Item **sj_cond);
 
  private:
   bool convert_subquery_to_semijoin(Item_exists_subselect *subq_pred);
@@ -1570,6 +1798,7 @@ class SELECT_LEX {
   bool has_sj_candidates() const {
     return sj_candidates != NULL && !sj_candidates->empty();
   }
+  bool is_in_select_list(Item *i);
 
  private:
   bool setup_wild(THD *thd);
@@ -1641,6 +1870,7 @@ class SELECT_LEX {
                 Used to access optimizer_switch
   */
   void update_semijoin_strategies(THD *thd);
+  void remove_semijoin_candidate(Item_exists_subselect *sub_query);
 
   /**
     Add item to the hidden part of select list
@@ -1848,7 +2078,6 @@ union YYSTYPE {
   List<Item> *item_list;
   List<String> *string_list;
   String *string;
-  Key_part_spec *key_part;
   Mem_root_array<Table_ident *> *table_list;
   udf_func *udf;
   LEX_USER *lex_user;
@@ -1955,6 +2184,7 @@ union YYSTYPE {
   class PT_query_expression_body *query_expression_body;
   class PT_query_primary *query_primary;
   class PT_subquery *subquery;
+  class PT_key_part_specification *key_part;
 
   XID *xid;
   enum xa_option_words xa_option_type;
@@ -1987,14 +2217,13 @@ union YYSTYPE {
   enum alter_instance_action_enum alter_instance_action;
   class PT_create_index_stmt *create_index_stmt;
   class PT_table_constraint_def *table_constraint_def;
-  List<Key_part_spec> *index_column_list;
+  List<PT_key_part_specification> *index_column_list;
   struct {
     LEX_STRING name;
     class PT_base_index_option *type;
   } index_name_and_type;
-  class PT_base_index_option *index_option;
+  PT_base_index_option *index_option;
   Mem_root_array_YY<PT_base_index_option *> index_options;
-  PT_base_index_option *index_type;
   Mem_root_array_YY<LEX_STRING> lex_str_list;
   bool visibility;
   class PT_with_clause *with_clause;
@@ -2173,6 +2402,7 @@ union YYSTYPE {
     PT_item_list *set_expr_list;
     List<String> *set_expr_str_list;
   } load_set_list;
+  ts_alter_tablespace_type alter_tablespace_type;
   Sql_cmd_srs_attributes *sql_cmd_srs_attributes;
 };
 
@@ -3182,6 +3412,38 @@ class Lex_input_stream {
 
   void reduce_digest_token(uint token_left, uint token_right);
 
+  /**
+    True if this scanner tokenizes a partial query (partition expression,
+    generated column expression etc.)
+
+    @return true if parsing a partial query, otherwise false.
+  */
+  bool is_partial_parser() const { return grammar_selector_token >= 0; }
+
+  /**
+    Outputs warnings on deprecated charsets in complete SQL statements
+
+    @param [in] cs    The character set/collation to check for a deprecation.
+    @param [in] alias The name/alias of @p cs.
+  */
+  void warn_on_deprecated_charset(const CHARSET_INFO *cs,
+                                  const char *alias) const {
+    if (!is_partial_parser()) {
+      ::warn_on_deprecated_charset(m_thd, cs, alias);
+    }
+  }
+
+  /**
+    Outputs warnings on deprecated collations in complete SQL statements
+
+    @param [in] collation     The collation to check for a deprecation.
+  */
+  void warn_on_deprecated_collation(const CHARSET_INFO *collation) const {
+    if (!is_partial_parser()) {
+      ::warn_on_deprecated_collation(m_thd, collation);
+    }
+  }
+
   const CHARSET_INFO *query_charset;
 
  private:
@@ -3304,8 +3566,15 @@ class Lex_input_stream {
     2. GRAMMAR_SELECTOR_GCOL for generated column stuff from DD,
     3. GRAMMAR_SELECTOR_EXPR for generic single expressions from DD/.frm.
     4. GRAMMAR_SELECTOR_CTE for generic subquery expressions from CTEs.
+    5. -1 when parsing with the main grammar (no grammar selector available).
+
+    @note yylex() is expected to return the value of type int:
+          0 is for EOF and everything else for real token numbers.
+          Bison, in its turn, generates positive token numbers.
+          So, the negative grammar_selector_token means "not a token".
+          In other words, -1 is "empty value".
   */
-  const uint grammar_selector_token;
+  const int grammar_selector_token;
 
   bool text_string_is_7bit() const { return !(tok_bitmap & 0x80); }
 };
@@ -3358,7 +3627,7 @@ struct LEX : public Query_tables_list {
   LEX_USER *grant_user;
   LEX_ALTER alter_password;
   THD *thd;
-  Generated_column *gcol_info;
+  Value_generator *gcol_info;
 
   /* Optimizer hints */
   Opt_hints_global *opt_hints_global;
@@ -3580,7 +3849,24 @@ struct LEX : public Query_tables_list {
   /// @see also sp_head::m_root_parsing_ctx.
   sp_pcontext *sp_current_parsing_ctx;
 
+  /**
+    Statement context for SELECT_LEX::make_active_options.
+  */
+  ulonglong m_statement_options{0};
+
  public:
+  /// @return a bit set of options set for this statement
+  ulonglong statement_options() { return m_statement_options; }
+  /**
+    Add options to values of m_statement_options. options is an ORed
+    bit set of options defined in query_options.h
+
+    @param options Add this set of options to the set already in
+                   m_statement_options
+  */
+  void add_statement_options(ulonglong options) {
+    m_statement_options |= options;
+  }
   bool is_broken() const { return m_broken; }
   /**
      Certain permanent transformations (like in2exists), if they fail, may
@@ -3712,6 +3998,10 @@ struct LEX : public Query_tables_list {
   inline bool is_ps_or_view_context_analysis() {
     return (context_analysis_only &
             (CONTEXT_ANALYSIS_ONLY_PREPARE | CONTEXT_ANALYSIS_ONLY_VIEW));
+  }
+
+  inline bool is_view_context_analysis() {
+    return (context_analysis_only & CONTEXT_ANALYSIS_ONLY_VIEW);
   }
 
   /**
@@ -3932,7 +4222,7 @@ class Parser_state {
 
     @param grammar_selector_token   See Lex_input_stream::grammar_selector_token
   */
-  explicit Parser_state(uint grammar_selector_token)
+  explicit Parser_state(int grammar_selector_token)
       : m_input(), m_lip(grammar_selector_token), m_yacc(), m_comment(false) {}
 
  public:
@@ -3988,7 +4278,7 @@ class Gcol_expr_parser_state : public Parser_state {
  public:
   Gcol_expr_parser_state();
 
-  Generated_column *result;
+  Value_generator *result;
 };
 
 /**
@@ -4018,10 +4308,10 @@ extern sql_digest_state *digest_reduce_token(sql_digest_state *state,
                                              uint token_left, uint token_right);
 
 struct st_lex_local : public LEX {
-  static void *operator new(size_t size) throw() { return sql_alloc(size); }
-  static void *operator new(
-      size_t size, MEM_ROOT *mem_root,
-      const std::nothrow_t &arg MY_ATTRIBUTE((unused)) = std::nothrow) throw() {
+  static void *operator new(size_t size) noexcept { return sql_alloc(size); }
+  static void *operator new(size_t size, MEM_ROOT *mem_root,
+                            const std::nothrow_t &arg MY_ATTRIBUTE((unused)) =
+                                std::nothrow) noexcept {
     return alloc_root(mem_root, size);
   }
   static void operator delete(void *ptr MY_ATTRIBUTE((unused)),
@@ -4029,7 +4319,7 @@ struct st_lex_local : public LEX {
     TRASH(ptr, size);
   }
   static void operator delete(
-      void *, MEM_ROOT *, const std::nothrow_t &)throw() { /* Never called */
+      void *, MEM_ROOT *, const std::nothrow_t &)noexcept { /* Never called */
   }
 };
 
@@ -4071,9 +4361,8 @@ inline bool is_invalid_string(const LEX_CSTRING &string_val,
   size_t valid_len;
   bool len_error;
 
-  if (validate_string(charset_info, string_val.str,
-                      static_cast<uint32>(string_val.length), &valid_len,
-                      &len_error)) {
+  if (validate_string(charset_info, string_val.str, string_val.length,
+                      &valid_len, &len_error)) {
     char hexbuf[7];
     octet2hex(
         hexbuf, string_val.str + valid_len,
@@ -4084,4 +4373,8 @@ inline bool is_invalid_string(const LEX_CSTRING &string_val,
   return false;
 }
 
+bool walk_item(Item *item, Select_lex_visitor *visitor);
+bool accept_for_order(SQL_I_List<ORDER> orders, Select_lex_visitor *visitor);
+bool accept_table(TABLE_LIST *t, Select_lex_visitor *visitor);
+bool accept_for_join(List<TABLE_LIST> *tables, Select_lex_visitor *visitor);
 #endif /* SQL_LEX_INCLUDED */

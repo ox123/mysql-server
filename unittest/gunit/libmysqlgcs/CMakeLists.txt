@@ -34,6 +34,11 @@ IF(RPC_INCLUDE_DIR STREQUAL "/usr/include/tirpc")
   ADD_DEFINITIONS(-DHAVE_TIRPC)
 ENDIF()
 
+# Add the definition to build XCom with SSL support.
+# The testing code needs to have the same #defines as the code under test.
+# (Specifically struct connection_descriptor)
+ADD_DEFINITIONS(-DXCOM_HAVE_OPENSSL)
+
 INCLUDE_DIRECTORIES(
   SYSTEM
   ${GMOCK_INCLUDE_DIRS}
@@ -74,6 +79,10 @@ SET(GCS_XCOM_TESTS
     xcom/gcs_xcom_interface_unit
     xcom/gcs_xcom_statistics_interface
     xcom/gcs_xcom_group_member_information
+    xcom/gcs_mpsc_queue
+    xcom/gcs_xcom_input_queue
+    xcom/gcs_xcom_networking
+    xcom/gcs_xcom_xcom_base
    )
 
 ###
@@ -86,6 +95,10 @@ FOREACH(tpath ${GCS_INTERFACE_TESTS} ${GCS_XCOM_TESTS})
   TARGET_LINK_LIBRARIES(${test}-t gunit_small ${GCS_LIBRARY} ${LZ4_LIBRARY})
   SET(GCS_UNIT_TESTS "${GCS_UNIT_TESTS}" "${test}-t")
 ENDFOREACH()
+
+IF(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated")
+ENDIF()
 
 ADD_CUSTOM_TARGET(libmysqlgcs-tests
                   DEPENDS

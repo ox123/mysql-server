@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2000, 2017, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2000, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -27,18 +27,25 @@
   @file storage/myisam/myisamdef.h
 */
 
+#ifndef STORAGE_MYISAM_MYISAMDEF_INCLUDED
+#define STORAGE_MYISAM_MYISAMDEF_INCLUDED 1
+
+#include "my_alloc.h"
 #include "my_icp.h"
 #include "my_pointer_arithmetic.h"
-#include "my_thread.h"
-#include "my_thread_local.h"
-#include "my_tree.h"
 #include "myisam.h"     /* Structs & some defines */
 #include "myisampack.h" /* packing of keys */
-#include "mysql/plugin_ftparser.h"
 #include "mysql/psi/mysql_file.h"
 #include "mysql/psi/mysql_rwlock.h"
 #include "mysql/psi/mysql_thread.h"
 #include "thr_lock.h"
+
+struct HA_KEYSEG;
+struct KEY_CACHE;
+struct MI_INFO;
+struct MYSQL_FTPARSER_PARAM;
+struct TREE;
+struct st_keycache_thread_var;
 
 /* undef map from my_nosys; We need test-if-disk full */
 #if defined(my_write)
@@ -357,7 +364,7 @@ struct MI_SORT_PARAM {
   MEM_ROOT wordroot;
   uchar *record;
   MY_TMPDIR *tmpdir;
-  int (*key_cmp)(const void *, const void *, const void *);
+  int (*key_cmp)(void *, uchar *, uchar *);
   int (*key_read)(MI_SORT_PARAM *, void *);
   int (*key_write)(MI_SORT_PARAM *, const void *);
   int (*write_keys)(MI_SORT_PARAM *, uchar **, uint, BUFFPEK *, IO_CACHE *);
@@ -664,8 +671,6 @@ extern int _mi_ft_update(MI_INFO *info, uint keynr, uchar *keybuf,
 }
 #endif
 
-struct SORT_INFO;
-
 struct MI_BLOCK_INFO { /* Parameter to _mi_get_block_info */
   uchar header[MI_BLOCK_INFO_HEADER_LENGTH];
   ulong rec_len;
@@ -882,3 +887,5 @@ extern PSI_memory_key mi_key_memory_keycache_thread_var;
 extern PSI_memory_key key_memory_QUEUE;
 
 C_MODE_END
+
+#endif  // STORAGE_MYISAM_MYISAMDEF_INCLUDED

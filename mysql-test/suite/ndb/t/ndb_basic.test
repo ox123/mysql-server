@@ -479,7 +479,7 @@ while ($i)
 let $sql=$sql, primary key using hash(c1)) engine=ndb;
 let $sql=$sql charset=latin1;
 
---error 1296
+--error ER_CANT_CREATE_TABLE
 eval $sql; # eval the sql and create the table
 show warnings;
 
@@ -705,13 +705,6 @@ select * from t1 order by f1;
 select * from t1 order by f2;
 select * from t1 order by f3;
 drop table t1;
-# Bug#16561 Unknown ERROR msg "ERROR 1186 (HY000): Binlog closed" by perror
-#
-
-# As long there is no error code XXX defined by NDB
-# we should get a message "Illegal ndb error code: XXX"
---error 1
---exec $MY_PERROR --ndb 123456 2>&1
 
 #
 # Bug #25746 - VARCHAR UTF8 PK issue
@@ -884,7 +877,7 @@ DROP TABLE child, parent;
 #
 # bug#59756
 #
---error 1031
+--error ER_CANT_CREATE_TABLE
 CREATE TABLE t1 (a INT PRIMARY KEY, b TEXT)
 ENGINE=ndb PARTITION BY KEY(a) PARTITIONS 144;
 show warnings;

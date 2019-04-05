@@ -81,6 +81,17 @@ class Gcs_xcom_node_address {
 
   std::string *get_member_representation() const;
 
+  /**
+   A Gcs_xcom_node_address holds the representation IP:PORT of an XCom node.
+   It is initialized with default values for IP = null and PORT = 0.
+
+   This method checks if this address contains valid values after a sucessfull
+   initialization or if it still contains the default ones.
+
+   @return true if this contains values other than the default values
+   */
+  bool is_valid() const;
+
  private:
   /*
     Member's address.
@@ -183,19 +194,22 @@ class Gcs_xcom_node_information {
                                      const unsigned int node_no,
                                      const bool alive);
 
-  virtual ~Gcs_xcom_node_information() {}
+  virtual ~Gcs_xcom_node_information() = default;
+  Gcs_xcom_node_information(const Gcs_xcom_node_information &) = default;
+  Gcs_xcom_node_information &operator=(const Gcs_xcom_node_information &) =
+      default;
 
   /**
     Sets the timestamp to indicate the creation of the suspicion.
   */
 
-  void set_timestamp(uint64_t ts);
+  void set_suspicion_creation_timestamp(uint64_t ts);
 
   /**
     Gets the timestamp that indicates the creation of the suspicion.
   */
 
-  uint64_t get_timestamp() const;
+  uint64_t get_suspicion_creation_timestamp() const;
 
   /**
     Compares the object's timestamp with the received one, in order
@@ -203,7 +217,8 @@ class Gcs_xcom_node_information {
     must be removed.
 
     @param[in] ts Provided timestamp
-    @param[in] timeout Time interval for the suspicion to timeout
+    @param[in] timeout Provided timeout
+    @return Indicates if the suspicion has timed out
   */
 
   bool has_timed_out(uint64_t ts, uint64_t timeout);
@@ -244,6 +259,18 @@ class Gcs_xcom_node_information {
 
   bool is_alive() const;
 
+  /**
+    Get whether the node is already a member of the group or not.
+  */
+
+  bool is_member() const;
+
+  /**
+    Set whether the node is already a member of the group or not.
+  */
+
+  void set_member(bool m);
+
  private:
   Gcs_member_identifier m_member_id;
 
@@ -263,9 +290,14 @@ class Gcs_xcom_node_information {
   bool m_alive;
 
   /**
+    Whether the node is a member of the group or not.
+  */
+  bool m_member;
+
+  /**
     Stores the timestamp of the creation of the suspicion.
   */
-  uint64_t m_timestamp;
+  uint64_t m_suspicion_creation_timestamp;
 };
 
 /**

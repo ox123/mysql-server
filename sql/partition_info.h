@@ -1,7 +1,7 @@
 #ifndef PARTITION_INFO_INCLUDED
 #define PARTITION_INFO_INCLUDED
 
-/* Copyright (c) 2006, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2006, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -275,7 +275,7 @@ class partition_info {
   Item *part_expr;
   Item *subpart_expr;
 
-  Item *item_free_list;
+  Item *item_list;
 
   /*
     Bitmaps of partitions used by the current query.
@@ -297,7 +297,7 @@ class partition_info {
       locked, so that it can unlock them later). In case of LOCK TABLES it will
       lock all partitions, and keep them locked while lock_partitions can
       change for each statement under LOCK TABLES.
-    * Freed at the same time item_free_list is freed.
+    * Freed at the same time item_list is freed.
   */
   MY_BITMAP read_partitions;
   MY_BITMAP lock_partitions;
@@ -411,7 +411,7 @@ class partition_info {
         restore_subpart_field_ptrs(NULL),
         part_expr(NULL),
         subpart_expr(NULL),
-        item_free_list(NULL),
+        item_list(NULL),
         bitmaps_are_initialized(false),
         list_array(NULL),
         err_value(0),
@@ -452,7 +452,6 @@ class partition_info {
     part_field_list.empty();
     subpart_field_list.empty();
   }
-  ~partition_info() {}
 
   partition_info *get_clone(THD *thd, bool reset = false);
   partition_info *get_full_clone(THD *thd);
@@ -531,6 +530,17 @@ class partition_info {
     return bitmap_get_next_set(&read_partitions, part_id);
   }
   bool same_key_column_order(List<Create_field> *create_list);
+
+  /**
+    Allocate memory for one partitions bitmap and initialize it.
+
+    @param  bitmap    Bitmap instance to initialize.
+    @param  mem_root  Memory root to use for bitmap buffer allocation.
+
+    @retval true    Memory allocation failure
+    @retval false   Success
+  */
+  bool init_partition_bitmap(MY_BITMAP *bitmap, MEM_ROOT *mem_root);
 
  private:
   bool set_up_default_partitions(Partition_handler *part_handler,

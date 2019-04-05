@@ -1,4 +1,4 @@
-/* Copyright (c) 2014, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2014, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -43,7 +43,7 @@
 #include "sql/gis/geometries.h"
 #include "sql/gis/relops.h"
 #include "sql/gis/srid.h"
-#include "sql/gis/wkb_parser.h"
+#include "sql/gis/wkb.h"
 #include "sql/item.h"
 #include "sql/item_cmpfunc.h"
 #include "sql/item_func.h"
@@ -459,11 +459,11 @@ int Item_func_spatial_rel::multipoint_within_geometry_collection(
 
   Rtree_index &rtree = *((Rtree_index *)prtree);
 
-  TYPENAME BG_models<Coordsys>::Multipoint mpts(
+  typename BG_models<Coordsys>::Multipoint mpts(
       pmpts->get_data_ptr(), pmpts->get_data_size(), pmpts->get_flags(),
       pmpts->get_srid());
 
-  for (TYPENAME BG_models<Coordsys>::Multipoint::iterator k = mpts.begin();
+  for (typename BG_models<Coordsys>::Multipoint::iterator k = mpts.begin();
        k != mpts.end(); ++k) {
     bool already_in = false;
     BG_box box;
@@ -1253,8 +1253,9 @@ longlong Item_func_spatial_relation::val_int() {
   const dd::Spatial_reference_system *srs2 = nullptr;
   std::unique_ptr<gis::Geometry> g1;
   std::unique_ptr<gis::Geometry> g2;
-  dd::cache::Dictionary_client::Auto_releaser m_releaser(
-      current_thd->dd_client());
+  std::unique_ptr<dd::cache::Dictionary_client::Auto_releaser> releaser(
+      new dd::cache::Dictionary_client::Auto_releaser(
+          current_thd->dd_client()));
   if (gis::parse_geometry(current_thd, func_name(), res1, &srs1, &g1) ||
       gis::parse_geometry(current_thd, func_name(), res2, &srs2, &g2)) {
     DBUG_RETURN(error_int());

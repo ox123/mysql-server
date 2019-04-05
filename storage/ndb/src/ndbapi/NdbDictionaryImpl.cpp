@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2017, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -32,8 +32,8 @@
 #include <NdbEnv.h>
 #include <util/version.h>
 #include <NdbSleep.h>
+#include "m_ctype.h"
 #include <signaldata/IndexStatSignal.hpp>
-
 #include <signaldata/GetTabInfo.hpp>
 #include <signaldata/DictTabInfo.hpp>
 #include <signaldata/CreateTable.hpp>
@@ -668,7 +668,7 @@ NdbTableImpl::init(){
   m_logging= true;
   m_temporary = false;
   m_row_gci = true;
-  m_row_checksum = true;
+  m_row_checksum = 1;
   m_force_var_part = false;
   m_has_default_values = false;
   m_kvalue= 6;
@@ -1582,8 +1582,10 @@ static Uint32 Hash( const char* str ){
   switch(len){
   case 3:
     h = (h << 5) + h + *str++;
+    // Fall through
   case 2:
     h = (h << 5) + h + *str++;
+    // Fall through
   case 1:
     h = (h << 5) + h + *str++;
   }
@@ -3396,6 +3398,30 @@ indexTypeMapping[] = {
   { -1, -1 }
 };
 
+void NdbTableImpl::IndirectReader(SimpleProperties::Reader & it,
+                                  void * dest) {
+  NdbTableImpl * impl = static_cast<NdbTableImpl *>(dest);
+  Uint16 key = it.getKey();
+
+  if(key == DictTabInfo::FrmData) {
+    /* Expand the UtilBuffer to the required length, then copy data in */
+    impl->m_frm.grow(it.getPaddedLength());
+    it.getString(static_cast<char *>(impl->m_frm.append(it.getValueLen())));
+  }
+}
+
+bool NdbTableImpl::IndirectWriter(SimpleProperties::Writer & it,
+                                  Uint16 key,
+                                  const void * src) {
+  const NdbTableImpl * impl = static_cast<const NdbTableImpl *>(src);
+
+  if(key == DictTabInfo::FrmData)
+    return it.add(key, impl->m_frm.get_data(), impl->m_frm.length());
+
+  return true;
+}
+
+
 int
 NdbDictInterface::parseTableInfo(NdbTableImpl ** ret,
 				 const Uint32 * data, Uint32 len,
@@ -3413,26 +3439,27 @@ NdbDictInterface::parseTableInfo(NdbTableImpl ** ret,
     DBUG_RETURN(4000);
   }
   tableDesc->init();
-  s = SimpleProperties::unpack(it, tableDesc, 
+  NdbTableImpl * impl = new NdbTableImpl();
+  s = SimpleProperties::unpack(it, tableDesc,
 			       DictTabInfo::TableMapping, 
-			       DictTabInfo::TableMappingSize, 
-			       true, true);
+			       DictTabInfo::TableMappingSize,
+                               NdbTableImpl::IndirectReader,
+                               impl);
   
   if(s != SimpleProperties::Break){
     free(tableDesc);
+    delete impl;
     DBUG_RETURN(703);
   }
   const char * internalName = tableDesc->TableName;
   const char * externalName = Ndb::externalizeTableName(internalName, fullyQualifiedNames);
 
-  NdbTableImpl * impl = new NdbTableImpl();
   impl->m_id = tableDesc->TableId;
   impl->m_version = tableDesc->TableVersion;
   impl->m_status = NdbDictionary::Object::Retrieved;
   if (!impl->m_internalName.assign(internalName) ||
       impl->updateMysqlName() ||
       !impl->m_externalName.assign(externalName) ||
-      impl->m_frm.assign(tableDesc->FrmData, tableDesc->FrmLen) ||
       impl->m_range.assign((Int32*)tableDesc->RangeListData,
                            /* yuck */tableDesc->RangeListDataLen / 4))
   {
@@ -3556,8 +3583,7 @@ NdbDictInterface::parseTableInfo(NdbTableImpl ** ret,
     s = SimpleProperties::unpack(it, 
 				 &attrDesc, 
 				 DictTabInfo::AttributeMapping, 
-				 DictTabInfo::AttributeMappingSize, 
-				 true, true);
+				 DictTabInfo::AttributeMappingSize);
     if(s != SimpleProperties::Break){
       delete impl;
       free(tableDesc);
@@ -4448,20 +4474,10 @@ NdbDictInterface::serializeTableDesc(Ndb & ndb,
     distKeys= 0;
   impl.m_noOfDistributionKeys= distKeys;
 
-
-  // Check max length of frm data
-  if (impl.m_frm.length() > MAX_FRM_DATA_SIZE){
-    m_error.code= 1229;
-    free(tmpTab);
-    DBUG_RETURN(-1);
-  }
   /*
     TODO RONM: This needs to change to dynamic arrays instead
     Frm Data, FragmentData, TablespaceData, RangeListData, TsNameData
   */
-  tmpTab->FrmLen = impl.m_frm.length();
-  memcpy(tmpTab->FrmData, impl.m_frm.get_data(), impl.m_frm.length());
-
   {
     /**
      * NOTE: fragment data is currently an array of Uint16
@@ -4560,7 +4576,9 @@ loop:
   s = SimpleProperties::pack(w, 
 			     tmpTab,
 			     DictTabInfo::TableMapping, 
-			     DictTabInfo::TableMappingSize, true);
+			     DictTabInfo::TableMappingSize,
+                             NdbTableImpl::IndirectWriter,
+                             & impl);
   
   if(s != SimpleProperties::Eof){
     abort();
@@ -4633,10 +4651,10 @@ loop:
     tmpAttr.AttributeAutoIncrement = col->m_autoIncrement;
     {
       Uint32 ah;
-      Uint32 byteSize = col->m_defaultValue.length();
+      const Uint32 byteSize = col->m_defaultValue.length();
       assert(byteSize <= NDB_MAX_TUPLE_SIZE);
 
-      if (byteSize)
+      if (byteSize > 0)
       {
         if (unlikely(! ndb_native_default_support(ndb.getMinDbNodeVersion())))
         {
@@ -4658,8 +4676,11 @@ loop:
        */
       Uint32 a = htonl(ah);
       memcpy(tmpAttr.AttributeDefaultValue, &a, sizeof(Uint32));
-      memcpy(tmpAttr.AttributeDefaultValue + sizeof(Uint32), 
-             col->m_defaultValue.get_data(), byteSize);
+      if (byteSize > 0)
+      {
+        memcpy(tmpAttr.AttributeDefaultValue + sizeof(Uint32), 
+               col->m_defaultValue.get_data(), byteSize);
+      }
       Uint32 defValByteLen = ((col->m_defaultValue.length() + 3) / 4) * 4;
       tmpAttr.AttributeDefaultValueLen = defValByteLen + sizeof(Uint32);
 
@@ -4678,7 +4699,7 @@ loop:
     s = SimpleProperties::pack(w, 
 			       &tmpAttr,
 			       DictTabInfo::AttributeMapping, 
-			       DictTabInfo::AttributeMappingSize, true);
+			       DictTabInfo::AttributeMappingSize);
     w.add(DictTabInfo::AttributeEnd, 1);
   }
 
@@ -8942,7 +8963,7 @@ NdbDictInterface::create_file(const NdbFileImpl & file,
   s = SimpleProperties::pack(w, 
 			     &f,
 			     DictFilegroupInfo::FileMapping, 
-			     DictFilegroupInfo::FileMappingSize, true);
+			     DictFilegroupInfo::FileMappingSize);
   
   if(s != SimpleProperties::Eof){
     abort();
@@ -9154,7 +9175,7 @@ NdbDictInterface::create_filegroup(const NdbFilegroupImpl & group,
   s = SimpleProperties::pack(w, 
 			     &fg,
 			     DictFilegroupInfo::Mapping, 
-			     DictFilegroupInfo::MappingSize, true);
+			     DictFilegroupInfo::MappingSize);
   
   if(s != SimpleProperties::Eof){
     abort();
@@ -9407,8 +9428,7 @@ NdbDictInterface::parseFilegroupInfo(NdbFilegroupImpl &dst,
   DictFilegroupInfo::Filegroup fg; fg.init();
   status = SimpleProperties::unpack(it, &fg, 
 				    DictFilegroupInfo::Mapping, 
-				    DictFilegroupInfo::MappingSize, 
-				    true, true);
+				    DictFilegroupInfo::MappingSize);
   
   if(status != SimpleProperties::Eof){
     return CreateFilegroupRef::InvalidFormat;
@@ -9589,8 +9609,7 @@ NdbDictInterface::parseFileInfo(NdbFileImpl &dst,
   DictFilegroupInfo::File f; f.init();
   status = SimpleProperties::unpack(it, &f,
 				    DictFilegroupInfo::FileMapping,
-				    DictFilegroupInfo::FileMappingSize,
-				    true, true);
+				    DictFilegroupInfo::FileMappingSize);
 
   if(status != SimpleProperties::Eof){
     return CreateFilegroupRef::InvalidFormat;
@@ -9761,8 +9780,7 @@ NdbDictInterface::parseHashMapInfo(NdbHashMapImpl &dst,
   hm->init();
   status = SimpleProperties::unpack(it, hm,
                                     DictHashMapInfo::Mapping,
-                                    DictHashMapInfo::MappingSize,
-                                    true, true);
+                                    DictHashMapInfo::MappingSize);
 
   if(status != SimpleProperties::Eof){
     delete hm;
@@ -9818,7 +9836,7 @@ NdbDictInterface::create_hashmap(const NdbHashMapImpl& src,
     s = SimpleProperties::pack(w,
                                hm,
                                DictHashMapInfo::Mapping,
-                               DictHashMapInfo::MappingSize, true);
+                               DictHashMapInfo::MappingSize);
     
     if(s != SimpleProperties::Eof)
     {
@@ -10065,7 +10083,7 @@ NdbDictInterface::create_fk(const NdbForeignKeyImpl& src,
   s = SimpleProperties::pack(w,
                              &fk,
                              DictForeignKeyInfo::Mapping,
-                             DictForeignKeyInfo::MappingSize, true);
+                             DictForeignKeyInfo::MappingSize);
 
   if (s != SimpleProperties::Eof)
   {
@@ -10225,8 +10243,7 @@ NdbDictInterface::parseForeignKeyInfo(NdbForeignKeyImpl &dst,
   DictForeignKeyInfo::ForeignKey fk; fk.init();
   status = SimpleProperties::unpack(it, &fk,
 				    DictForeignKeyInfo::Mapping,
-				    DictForeignKeyInfo::MappingSize,
-				    true, true);
+				    DictForeignKeyInfo::MappingSize);
 
   if(status != SimpleProperties::Eof)
   {

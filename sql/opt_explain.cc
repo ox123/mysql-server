@@ -842,7 +842,8 @@ bool Explain_table_base::explain_possible_keys() {
 bool Explain_table_base::explain_key_parts(int key, uint key_parts) {
   KEY_PART_INFO *kp = table->key_info[key].key_part;
   for (uint i = 0; i < key_parts; i++, kp++)
-    if (fmt->entry()->col_key_parts.push_back(kp->field->field_name))
+    if (fmt->entry()->col_key_parts.push_back(
+            get_field_name_or_expression(thd, kp->field)))
       return true;
   return false;
 }
@@ -1275,6 +1276,7 @@ bool Explain_join::explain_qep_tab(size_t tabnum) {
   if (!tab->position()) return false;
   table = tab->table();
   usable_keys = tab->keys();
+  usable_keys.merge(table->possible_quick_keys);
   quick_type = -1;
 
   if (tab->type() == JT_RANGE || tab->type() == JT_INDEX_MERGE) {
@@ -1338,17 +1340,35 @@ bool Explain_join::explain_qep_tab(size_t tabnum) {
   return false;
 }
 
-bool Explain_join::explain_table_name() {
-  if (table->pos_in_table_list->is_view_or_derived() &&
+/**
+  Generates either usual table name or <derived#N>, and passes it to
+  any given function for showing to the user.
+  @param tr   Table reference
+  @param fmt  EXPLAIN's format
+  @param func Function receiving the name
+  @returns true if error.
+*/
+static bool store_table_name(
+    TABLE_LIST *tr, Explain_format *fmt,
+    std::function<bool(const char *name, size_t len)> func) {
+  char namebuf[NAME_LEN];
+  size_t len = sizeof(namebuf);
+  if (tr->query_block_id() && tr->is_view_or_derived() &&
       !fmt->is_hierarchical()) {
     /* Derived table name generation */
-    char table_name_buffer[NAME_LEN];
-    const size_t len = snprintf(
-        table_name_buffer, sizeof(table_name_buffer) - 1, "<derived%u>",
-        table->pos_in_table_list->query_block_id_for_explain());
-    return fmt->entry()->col_table_name.set(table_name_buffer, len);
-  } else
-    return fmt->entry()->col_table_name.set(table->pos_in_table_list->alias);
+    len = snprintf(namebuf, len - 1, "<derived%u>",
+                   tr->query_block_id_for_explain());
+    return func(namebuf, len);
+  } else {
+    return func(tr->alias, strlen(tr->alias));
+  }
+}
+
+bool Explain_join::explain_table_name() {
+  return store_table_name(table->pos_in_table_list, fmt,
+                          [&](const char *name, size_t len) {
+                            return fmt->entry()->col_table_name.set(name, len);
+                          });
 }
 
 bool Explain_join::explain_select_type() {
@@ -1426,15 +1446,6 @@ bool Explain_join::explain_ref() {
   return explain_ref_key(fmt, tab->ref().key_parts, tab->ref().key_copy);
 }
 
-static void human_readable_size(char *buf, int buf_len, double data_size) {
-  char size[] = " KMGTP";
-  int i;
-  for (i = 0; data_size > 1024 && i < 5; i++) data_size /= 1024;
-  const char mult = i == 0 ? 0 : size[i];
-  snprintf(buf, buf_len, "%llu%c", (ulonglong)data_size, mult);
-  buf[buf_len - 1] = 0;
-}
-
 bool Explain_join::explain_rows_and_filtered() {
   if (!tab || tab->table_ref->schema_table) return false;
 
@@ -1446,7 +1457,7 @@ bool Explain_join::explain_rows_and_filtered() {
     fmt->entry()->col_cond_cost.set(0);
     fmt->entry()->col_read_cost.set(0.0);
     fmt->entry()->col_prefix_cost.set(0);
-    fmt->entry()->col_data_size_query.set('0');
+    fmt->entry()->col_data_size_query.set("0");
   } else {
     fmt->entry()->col_rows.set(static_cast<ulonglong>(pos->rows_fetched));
     fmt->entry()->col_filtered.set(
@@ -1456,7 +1467,11 @@ bool Explain_join::explain_rows_and_filtered() {
 
     // Print cost-related info
     double prefix_rows = pos->prefix_rowcount;
-    fmt->entry()->col_prefix_rows.set(static_cast<ulonglong>(prefix_rows));
+    ulonglong prefix_rows_ull =
+        prefix_rows >= std::numeric_limits<ulonglong>::max()
+            ? std::numeric_limits<ulonglong>::max()
+            : static_cast<ulonglong>(prefix_rows);
+    fmt->entry()->col_prefix_rows.set(prefix_rows_ull);
     double const cond_cost = join->cost_model()->row_evaluate_cost(prefix_rows);
     fmt->entry()->col_cond_cost.set(cond_cost < 0 ? 0 : cond_cost);
     fmt->entry()->col_read_cost.set(pos->read_cost < 0.0 ? 0.0
@@ -1465,7 +1480,7 @@ bool Explain_join::explain_rows_and_filtered() {
     // Calculate amount of data from this table per query
     char data_size_str[32];
     double data_size = prefix_rows * tab->table()->s->rec_buff_length;
-    human_readable_size(data_size_str, sizeof(data_size_str), data_size);
+    human_readable_num_bytes(data_size_str, sizeof(data_size_str), data_size);
     fmt->entry()->col_data_size_query.set(data_size_str);
   }
 
@@ -1533,6 +1548,8 @@ bool Explain_join::explain_extra() {
         StringBuffer<64> buff(cs);
         qgs->append_loose_scan_type(&buff);
         if (push_extra(ET_USING_INDEX_FOR_GROUP_BY, buff)) return true;
+      } else if (quick_type == QUICK_SELECT_I::QS_TYPE_SKIP_SCAN) {
+        if (push_extra(ET_USING_INDEX_FOR_SKIP_SCAN)) return true;
       } else {
         if (push_extra(ET_USING_INDEX)) return true;
       }
@@ -1560,20 +1577,32 @@ bool Explain_join::explain_extra() {
         if (push_extra(ET_FIRST_MATCH)) return true;
       } else {
         StringBuffer<64> buff(cs);
-        TABLE *prev_table = join->qep_tab[tab->firstmatch_return].table();
-        if (prev_table->pos_in_table_list->query_block_id() &&
-            !fmt->is_hierarchical() &&
-            prev_table->pos_in_table_list->is_derived()) {
-          char namebuf[NAME_LEN];
-          /* Derived table name generation */
-          size_t len = snprintf(
-              namebuf, sizeof(namebuf) - 1, "<derived%u>",
-              prev_table->pos_in_table_list->query_block_id_for_explain());
-          buff.append(namebuf, len);
-        } else
-          buff.append(prev_table->pos_in_table_list->alias);
-        if (push_extra(ET_FIRST_MATCH, buff)) return true;
+        if (store_table_name(join->qep_tab[tab->firstmatch_return].table_ref,
+                             fmt,
+                             [&](const char *name, size_t len) {
+                               return buff.append(name, len);
+                             }) ||
+            push_extra(ET_FIRST_MATCH, buff))
+          return true;
       }
+    }
+
+    if (tab->lateral_derived_tables_depend_on_me) {
+      auto deps = tab->lateral_derived_tables_depend_on_me;
+      StringBuffer<64> buff(cs);
+      bool first = true;
+      for (QEP_TAB **tab2 = join->map2qep_tab; deps; tab2++, deps >>= 1) {
+        if (deps & 1) {
+          if (!first) buff.append(",");
+          first = false;
+          if (store_table_name((*tab2)->table_ref, fmt,
+                               [&](const char *name, size_t len) {
+                                 return buff.append(name, len);
+                               }))
+            return true;
+        }
+      }
+      if (push_extra(ET_REMATERIALIZE, buff)) return true;
     }
 
     if (tab->has_guarded_conds() && push_extra(ET_FULL_SCAN_ON_NULL_KEY))
@@ -1601,11 +1630,18 @@ bool Explain_join::explain_extra() {
       if (!bitmap_is_set(table->read_set, (*fld)->field_index) &&
           !bitmap_is_set(table->write_set, (*fld)->field_index))
         continue;
-      fmt->entry()->col_used_columns.push_back((*fld)->field_name);
+
+      const char *field_description = get_field_name_or_expression(thd, *fld);
+      fmt->entry()->col_used_columns.push_back(field_description);
       if (table->is_binary_diff_enabled(*fld))
-        fmt->entry()->col_partial_update_columns.push_back((*fld)->field_name);
+        fmt->entry()->col_partial_update_columns.push_back(field_description);
     }
   }
+
+  if (table->s->is_secondary() &&
+      push_extra(ET_USING_SECONDARY_ENGINE, table->file->table_type()))
+    return true;
+
   return false;
 }
 
@@ -1812,7 +1848,7 @@ static bool check_acl_for_explain(const TABLE_LIST *table_list) {
 bool explain_single_table_modification(THD *ethd, const Modification_plan *plan,
                                        SELECT_LEX *select) {
   DBUG_ENTER("explain_single_table_modification");
-  Query_result_send result(ethd);
+  Query_result_send result;
   const THD *const query_thd = select->master_unit()->thd;
   const bool other = (query_thd != ethd);
   bool ret;
@@ -1829,7 +1865,7 @@ bool explain_single_table_modification(THD *ethd, const Modification_plan *plan,
     prepare/initialize Query_result_send object manually.
   */
   List<Item> dummy;
-  if (result.prepare(dummy, ethd->lex->unit))
+  if (result.prepare(ethd, dummy, ethd->lex->unit))
     DBUG_RETURN(true); /* purecov: inspected */
 
   ethd->lex->explain_format->send_headers(&result);
@@ -1868,9 +1904,19 @@ bool explain_single_table_modification(THD *ethd, const Modification_plan *plan,
             ethd->is_error();
   }
   if (ret)
-    result.abort_result_set();
-  else
-    result.send_eof();
+    result.abort_result_set(ethd);
+  else {
+    if (!other) {
+      StringBuffer<1024> str;
+      query_thd->lex->unit->print(
+          &str, enum_query_type(QT_TO_SYSTEM_CHARSET | QT_SHOW_SELECT_NUMBER |
+                                QT_NO_DATA_EXPANSION));
+      str.append('\0');
+      push_warning(ethd, Sql_condition::SL_NOTE, ER_YES, str.ptr());
+    }
+
+    result.send_eof(ethd);
+  }
   DBUG_RETURN(ret);
 }
 
@@ -2005,13 +2051,13 @@ bool explain_query(THD *ethd, SELECT_LEX_UNIT *unit) {
                          ? unit->query_result()
                          : unit->first_select()->query_result();
 
-  Query_result_explain explain_wrapper(ethd, unit, explain_result);
+  Query_result_explain explain_wrapper(unit, explain_result);
 
   if (other) {
-    if (!((explain_result = new (*THR_MALLOC) Query_result_send(ethd))))
+    if (!((explain_result = new (*THR_MALLOC) Query_result_send())))
       DBUG_RETURN(true); /* purecov: inspected */
     List<Item> dummy;
-    if (explain_result->prepare(dummy, ethd->lex->unit))
+    if (explain_result->prepare(ethd, dummy, ethd->lex->unit))
       DBUG_RETURN(true); /* purecov: inspected */
   } else {
     DBUG_ASSERT(unit->is_optimized());
@@ -2031,26 +2077,43 @@ bool explain_query(THD *ethd, SELECT_LEX_UNIT *unit) {
        against malformed queries, so skip it if we have an error.
     2) The code also isn't thread-safe, skip if explaining other thread
     (see Explain::can_print_clauses())
-    3) Currently only SELECT queries can be printed (TODO: fix this)
+    3) Allow only SELECT, INSERT/REPLACE ... SELECT, Multi-DELETE and
+       Multi-UPDATE. Also Update of VIEW (so techincally it is a single table
+       UPDATE), but if the VIEW refers to multiple tables it will be handled in
+       this function.
   */
-  if (!res &&                                                // (1)
-      !other &&                                              // (2)
-      query_thd->query_plan.get_command() == SQLCOM_SELECT)  // (3)
+  if (!res &&    // (1)
+      !other &&  // (2)
+      (query_thd->query_plan.get_command() == SQLCOM_SELECT ||
+       query_thd->query_plan.get_command() == SQLCOM_INSERT_SELECT ||
+       query_thd->query_plan.get_command() == SQLCOM_REPLACE_SELECT ||
+       query_thd->query_plan.get_command() == SQLCOM_DELETE_MULTI ||
+       query_thd->query_plan.get_command() == SQLCOM_UPDATE ||
+       query_thd->query_plan.get_command() == SQLCOM_UPDATE_MULTI))  // (3)
   {
     StringBuffer<1024> str;
     /*
       The warnings system requires input in utf8, see mysqld_show_warnings().
     */
-    unit->print(&str,
-                enum_query_type(QT_TO_SYSTEM_CHARSET | QT_SHOW_SELECT_NUMBER));
+
+    enum_query_type eqt =
+        enum_query_type(QT_TO_SYSTEM_CHARSET | QT_SHOW_SELECT_NUMBER);
+
+    /**
+      For DML statements use QT_NO_DATA_EXPANSION to avoid over-simplification.
+    */
+    if (query_thd->query_plan.get_command() != SQLCOM_SELECT)
+      eqt = enum_query_type(eqt | QT_NO_DATA_EXPANSION);
+
+    unit->print(&str, eqt);
     str.append('\0');
     push_warning(ethd, Sql_condition::SL_NOTE, ER_YES, str.ptr());
   }
 
   if (res)
-    explain_result->abort_result_set();
+    explain_result->abort_result_set(ethd);
   else
-    explain_result->send_eof();
+    explain_result->send_eof(ethd);
 
   if (other) destroy(explain_result);
 

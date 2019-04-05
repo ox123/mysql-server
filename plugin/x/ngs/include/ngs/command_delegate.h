@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0,
@@ -22,8 +22,8 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
-#ifndef _NGS_COMMAND_DELEGATE_H_
-#define _NGS_COMMAND_DELEGATE_H_
+#ifndef PLUGIN_X_NGS_INCLUDE_NGS_COMMAND_DELEGATE_H_
+#define PLUGIN_X_NGS_INCLUDE_NGS_COMMAND_DELEGATE_H_
 
 #include "decimal.h"
 #include "m_ctype.h"
@@ -48,8 +48,13 @@ class Command_delegate {
   };
   typedef std::vector<Field_type> Field_types;
 
-  Command_delegate() { reset(); }
+  Command_delegate() {}
   virtual ~Command_delegate() {}
+
+  Command_delegate(const Command_delegate &) = default;
+  Command_delegate(Command_delegate &&) = default;
+  Command_delegate &operator=(const Command_delegate &) = default;
+  Command_delegate &operator=(Command_delegate &&) = default;
 
   ngs::Error_code get_error() const {
     if (m_sql_errno == 0)
@@ -105,15 +110,15 @@ class Command_delegate {
  protected:
   Info m_info;
   Field_types m_field_types;
-  uint m_sql_errno;
+  uint m_sql_errno = 0;
   std::string m_err_msg;
   std::string m_sqlstate;
 
   st_command_service_cbs m_callbacks;
 
-  bool m_killed;
-  bool m_streaming_metadata;
-  bool m_got_eof;
+  bool m_killed = false;
+  bool m_streaming_metadata = false;
+  bool m_got_eof = false;
 
  public:
   /*** Getting metadata ***/
@@ -463,11 +468,15 @@ class Command_delegate {
                              uint statement_warn_count, ulonglong affected_rows,
                              ulonglong last_insert_id,
                              const char *const message) {
-    static_cast<Command_delegate *>(ctx)->m_got_eof = (message == NULL);
+    auto context = static_cast<Command_delegate *>(ctx);
 
-    static_cast<Command_delegate *>(ctx)->handle_ok(
-        server_status, statement_warn_count, affected_rows, last_insert_id,
-        message);
+    if (!context->m_got_eof) {
+      context->m_got_eof = !(
+          server_status & (SERVER_MORE_RESULTS_EXISTS | SERVER_PS_OUT_PARAMS));
+    }
+
+    context->handle_ok(server_status, statement_warn_count, affected_rows,
+                       last_insert_id, message);
   }
 
   static void call_handle_error(void *ctx, uint sql_errno,
@@ -483,4 +492,4 @@ class Command_delegate {
 };
 }  // namespace ngs
 
-#endif  // _NGS_COMMAND_DELEGATE_H_
+#endif  // PLUGIN_X_NGS_INCLUDE_NGS_COMMAND_DELEGATE_H_

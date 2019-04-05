@@ -1,4 +1,4 @@
-/* Copyright (c) 2014, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2014, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -42,8 +42,8 @@
   vector<int, Memroot_allocator<int> > v((Memroot_allocator<int>(&mem_root)));
 
   @note allocate() throws std::bad_alloc() similarly to the default
-  STL memory allocator. This is necessary - STL functions which allocates
-  memory expects it. Otherwise these functions will try to use the memory,
+  STL memory allocator. This is necessary - STL functions which allocate
+  memory expect it. Otherwise these functions will try to use the memory,
   leading to seg faults if memory allocation was not successful.
 
   @note This allocator cannot be used for std::basic_string
@@ -93,8 +93,6 @@ class Memroot_allocator {
       const Memroot_allocator<U> &other MY_ATTRIBUTE((unused))) {
     DBUG_ASSERT(m_memroot == other.memroot());  // Don't swap memroot.
   }
-
-  ~Memroot_allocator() {}
 
   pointer allocate(size_type n, const_pointer hint MY_ATTRIBUTE((unused)) = 0) {
     if (n == 0) return NULL;

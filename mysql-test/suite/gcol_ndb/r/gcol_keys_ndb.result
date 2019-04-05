@@ -255,6 +255,15 @@ EXPLAIN SELECT * FROM t1 WHERE f1 + 1 > 7	{
             } /* attaching_conditions_to_tables */
           },
           {
+            "finalizing_table_conditions": [
+              {
+                "table": "`t1`",
+                "original_table_condition": "((`t1`.`f1` + 1) > 7)",
+                "final_table_condition   ": "((`t1`.`f1` + 1) > 7)"
+              }
+            ] /* finalizing_table_conditions */
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t1`"
@@ -431,6 +440,10 @@ EXPLAIN SELECT * FROM t1 ORDER BY f1 + 1	{
             } /* optimizing_distinct_group_by_order_by */
           },
           {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
+          },
+          {
             "refine_plan": [
               {
                 "table": "`t1`"
@@ -579,6 +592,10 @@ EXPLAIN SELECT f1 + 1, MAX(GC) FROM t1 GROUP BY f1 + 1	{
                 "resulting_clause": "(`t1`.`f1` + 1)"
               } /* simplifying_group_by */
             } /* optimizing_distinct_group_by_order_by */
+          },
+          {
+            "finalizing_table_conditions": [
+            ] /* finalizing_table_conditions */
           },
           {
             "refine_plan": [
@@ -873,6 +890,8 @@ test.t	analyze	status	OK
 EXPLAIN UPDATE t SET b = 10 WHERE (a+1) = 3;
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
 1	UPDATE	t	p0,p1,p2,p3,p4,p5,p6,p7	ALL	NULL	NULL	NULL	NULL	10	100.00	Using where
+Warnings:
+Note	1003	update `test`.`t` set `test`.`t`.`b` = 10 where ((`test`.`t`.`a` + 1) = 3)
 UPDATE t SET b = 10 WHERE (a+1) = 3;
 SELECT * FROM t ORDER BY a, b;
 a	b	gc
@@ -892,6 +911,8 @@ test.t	analyze	status	OK
 EXPLAIN UPDATE t SET b = 9 ORDER BY (a+1) LIMIT 1;
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
 1	UPDATE	t	p0,p1,p2,p3,p4,p5,p6,p7	ALL	NULL	NULL	NULL	NULL	10	100.00	Using filesort
+Warnings:
+Note	1003	update `test`.`t` set `test`.`t`.`b` = 9 order by (`test`.`t`.`a` + 1) limit 1
 UPDATE t SET b = 9 ORDER BY (a+1) LIMIT 1;
 SELECT * FROM t ORDER BY a, b;
 a	b	gc
@@ -911,6 +932,8 @@ test.t	analyze	status	OK
 EXPLAIN DELETE FROM t WHERE (a+1) = 2;
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
 1	DELETE	t	p0,p1,p2,p3,p4,p5,p6,p7	ALL	NULL	NULL	NULL	NULL	10	100.00	Using where
+Warnings:
+Note	1003	delete from `test`.`t` where ((`test`.`t`.`a` + 1) = 2)
 DELETE FROM t WHERE (a+1) = 2;
 SELECT * FROM t ORDER BY a, b;
 a	b	gc
@@ -928,6 +951,8 @@ test.t	analyze	status	OK
 EXPLAIN DELETE FROM t ORDER BY (a+1) LIMIT 1;
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
 1	DELETE	t	p0,p1,p2,p3,p4,p5,p6,p7	ALL	NULL	NULL	NULL	NULL	8	100.00	Using filesort
+Warnings:
+Note	1003	delete from `test`.`t` order by (`test`.`t`.`a` + 1) limit 1
 DELETE FROM t ORDER BY (a+1) LIMIT 1;
 SELECT * FROM t ORDER BY a, b;
 a	b	gc
@@ -1005,8 +1030,8 @@ Warnings:
 Note	1003	/* select#1 */ select `test`.`t`.`vc` AS `vc`,`test`.`t`.`gc` AS `gc` from `test`.`t` where (reverse(`test`.`t`.`vc`) between 'c' and 'e')
 SELECT * FROM t WHERE REVERSE(vc) BETWEEN 'c' AND 'e';
 vc	gc
-abcabc	cbacba
 abc	cba
+abcabc	cbacba
 DROP TABLE t;
 #
 DROP VIEW  IF EXISTS v1,v2;

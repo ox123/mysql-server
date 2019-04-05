@@ -21,10 +21,10 @@ key (col_varchar_255_utf8_key ),
 key (col_int_key ),
 primary key (pk)) ENGINE=innodb;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 INSERT IGNORE INTO H VALUES
 ('about', 'z', 'they', 'm', 'x', 'could',
 3, 155189248,
@@ -51,10 +51,10 @@ key (col_int_key ),
 primary key (pk),
 key (col_varchar_10_utf8_key )) ENGINE=innodb;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 INSERT IGNORE INTO DD VALUES  ('q',
 'brmucbzjaeueffwxeyonrgouqbsvekyzrfizdybnlisnzpgplythqeyugzvhzjmxhmzqnbmldcuskteeyxqeesumyuohkhmoxtlpsumxsuahxrnybqsdvkiiiiatzeihtiwqjgxrspppoytvmuufhhkcgbnpemioxkjebunithymftmsroaqsxdrxhcozhqdagsxfxndeimavrxfdocfgafdxzxqoehcikppndcieybkyxmumqsbcwcmmrweiprthlrnphvebnfgjfhrkrxxorzzbedateyoomxdzgkevuyyvmusoduugukillurhwggkspxpaoxldymllvikfrwhblzugcnlgmozwbhvpytvyogbythupkkfgjqpqjgprksqcndkbsrzgiuvqgkqtqvucjdnyfqhigpgfeclnxyrkcxviqrwelsktxpoecytteiloxyzksesbdqhrcrfdzuxboyppuzjvssddkrsgvagetbssudtdsxcmpqpemiqbztutrkxougxqcpwlacgbyktskefotymojkkjnbkvkmqjgzrvmfpzwkixtxioqbzfvomgkicobwpsjeyfcaxwqxegkkiunassfsitgtnbbqukaeoubigzikncxyodlihgflmcbkqxdcvjpiqmnoorrutfxankapsmbdiicuytbwekanfyklnbjliaaebckybutdqwptyalaxaeuihzhclgqsmahtzogdxwslioxailzxafyztqpcakqukruoggiuemclpylcufjtmzxbutyghfkezxvfwojgolicczdqpqtwnugrwwcxumxofffljfhpkpddctnalygeuaugnnwxylfjdpzwvybdgtfyagjeqniouizgdzbhwahrylqwmnqzcjrhoivxidqmuikodwulsugcmwtxsadjdztkpdwbdxtvckayxskunxtompmmcbgiyedwfbjafnpcbvmxnrzvubwpnxfuzndvkxkf', 'now',
 'you\'re', 1811152896, 'or', NULL, 'this', 6, 'then', 'e') ,  ('did', 'j',
@@ -297,19 +297,19 @@ EXPLAIN
   "query_block": {
     "select_id": 1,
     "cost_info": {
-      "query_cost": "0.75"
+      "query_cost": "#"
     },
     "table": {
       "table_name": "t",
       "access_type": "ALL",
-      "rows_examined_per_scan": 5,
-      "rows_produced_per_join": 5,
+      "rows_examined_per_scan": "#",
+      "rows_produced_per_join": "#",
       "filtered": "100.00",
       "cost_info": {
-        "read_cost": "0.25",
-        "eval_cost": "0.50",
-        "prefix_cost": "0.75",
-        "data_read_per_join": "40"
+        "read_cost": "#",
+        "eval_cost": "#",
+        "prefix_cost": "#",
+        "data_read_per_join": "#"
       }
     }
   }
@@ -330,19 +330,19 @@ EXPLAIN
   "query_block": {
     "select_id": 1,
     "cost_info": {
-      "query_cost": "0.75"
+      "query_cost": "#"
     },
     "table": {
       "table_name": "t",
       "access_type": "ALL",
-      "rows_examined_per_scan": 5,
-      "rows_produced_per_join": 5,
+      "rows_examined_per_scan": "#",
+      "rows_produced_per_join": "#",
       "filtered": "100.00",
       "cost_info": {
-        "read_cost": "0.25",
-        "eval_cost": "0.50",
-        "prefix_cost": "0.75",
-        "data_read_per_join": "40"
+        "read_cost": "#",
+        "eval_cost": "#",
+        "prefix_cost": "#",
+        "data_read_per_join": "#"
       }
     }
   }
@@ -363,7 +363,7 @@ EXPLAIN
   "query_block": {
     "select_id": 1,
     "cost_info": {
-      "query_cost": "5.75"
+      "query_cost": "#"
     },
     "windowing": {
       "windows": [
@@ -380,19 +380,19 @@ EXPLAIN
         }
       ],
       "cost_info": {
-        "sort_cost": "5.00"
+        "sort_cost": "#"
       },
       "table": {
         "table_name": "t",
         "access_type": "ALL",
-        "rows_examined_per_scan": 5,
-        "rows_produced_per_join": 5,
+        "rows_examined_per_scan": "#",
+        "rows_produced_per_join": "#",
         "filtered": "100.00",
         "cost_info": {
-          "read_cost": "0.25",
-          "eval_cost": "0.50",
-          "prefix_cost": "0.75",
-          "data_read_per_join": "40"
+          "read_cost": "#",
+          "eval_cost": "#",
+          "prefix_cost": "#",
+          "data_read_per_join": "#"
         },
         "used_columns": [
           "a"
@@ -419,7 +419,7 @@ EXPLAIN
   "query_block": {
     "select_id": 1,
     "cost_info": {
-      "query_cost": "5.75"
+      "query_cost": "#"
     },
     "windowing": {
       "windows": [
@@ -444,19 +444,19 @@ EXPLAIN
         }
       ],
       "cost_info": {
-        "sort_cost": "5.00"
+        "sort_cost": "#"
       },
       "table": {
         "table_name": "t",
         "access_type": "ALL",
-        "rows_examined_per_scan": 5,
-        "rows_produced_per_join": 5,
+        "rows_examined_per_scan": "#",
+        "rows_produced_per_join": "#",
         "filtered": "100.00",
         "cost_info": {
-          "read_cost": "0.25",
-          "eval_cost": "0.50",
-          "prefix_cost": "0.75",
-          "data_read_per_join": "40"
+          "read_cost": "#",
+          "eval_cost": "#",
+          "prefix_cost": "#",
+          "data_read_per_join": "#"
         },
         "used_columns": [
           "a"
@@ -481,7 +481,7 @@ EXPLAIN
   "query_block": {
     "select_id": 1,
     "cost_info": {
-      "query_cost": "5.75"
+      "query_cost": "#"
     },
     "windowing": {
       "windows": [
@@ -506,19 +506,19 @@ EXPLAIN
         }
       ],
       "cost_info": {
-        "sort_cost": "5.00"
+        "sort_cost": "#"
       },
       "table": {
         "table_name": "t",
         "access_type": "ALL",
-        "rows_examined_per_scan": 5,
-        "rows_produced_per_join": 5,
+        "rows_examined_per_scan": "#",
+        "rows_produced_per_join": "#",
         "filtered": "100.00",
         "cost_info": {
-          "read_cost": "0.25",
-          "eval_cost": "0.50",
-          "prefix_cost": "0.75",
-          "data_read_per_join": "40"
+          "read_cost": "#",
+          "eval_cost": "#",
+          "prefix_cost": "#",
+          "data_read_per_join": "#"
         },
         "used_columns": [
           "a"
@@ -543,7 +543,7 @@ EXPLAIN
   "query_block": {
     "select_id": 1,
     "cost_info": {
-      "query_cost": "0.75"
+      "query_cost": "#"
     },
     "windowing": {
       "windows": [
@@ -566,14 +566,14 @@ EXPLAIN
       "table": {
         "table_name": "t",
         "access_type": "ALL",
-        "rows_examined_per_scan": 5,
-        "rows_produced_per_join": 5,
+        "rows_examined_per_scan": "#",
+        "rows_produced_per_join": "#",
         "filtered": "100.00",
         "cost_info": {
-          "read_cost": "0.25",
-          "eval_cost": "0.50",
-          "prefix_cost": "0.75",
-          "data_read_per_join": "40"
+          "read_cost": "#",
+          "eval_cost": "#",
+          "prefix_cost": "#",
+          "data_read_per_join": "#"
         }
       }
     }
@@ -595,7 +595,7 @@ EXPLAIN
   "query_block": {
     "select_id": 1,
     "cost_info": {
-      "query_cost": "0.75"
+      "query_cost": "#"
     },
     "windowing": {
       "windows": [
@@ -609,14 +609,14 @@ EXPLAIN
       "table": {
         "table_name": "t",
         "access_type": "ALL",
-        "rows_examined_per_scan": 5,
-        "rows_produced_per_join": 5,
+        "rows_examined_per_scan": "#",
+        "rows_produced_per_join": "#",
         "filtered": "100.00",
         "cost_info": {
-          "read_cost": "0.25",
-          "eval_cost": "0.50",
-          "prefix_cost": "0.75",
-          "data_read_per_join": "40"
+          "read_cost": "#",
+          "eval_cost": "#",
+          "prefix_cost": "#",
+          "data_read_per_join": "#"
         },
         "used_columns": [
           "a"
@@ -641,7 +641,7 @@ EXPLAIN
   "query_block": {
     "select_id": 1,
     "cost_info": {
-      "query_cost": "0.75"
+      "query_cost": "#"
     },
     "windowing": {
       "windows": [
@@ -655,14 +655,14 @@ EXPLAIN
       "table": {
         "table_name": "t",
         "access_type": "ALL",
-        "rows_examined_per_scan": 5,
-        "rows_produced_per_join": 5,
+        "rows_examined_per_scan": "#",
+        "rows_produced_per_join": "#",
         "filtered": "100.00",
         "cost_info": {
-          "read_cost": "0.25",
-          "eval_cost": "0.50",
-          "prefix_cost": "0.75",
-          "data_read_per_join": "40"
+          "read_cost": "#",
+          "eval_cost": "#",
+          "prefix_cost": "#",
+          "data_read_per_join": "#"
         }
       }
     }
@@ -800,3 +800,207 @@ PARTITION BY b ORDER BY a RANGE BETWEEN CURRENT ROW AND 1 FOLLOWING
 ) FROM t;
 ERROR 22003: BIGINT value is out of range in '(<cache>(`test`.`t`.`a`) + 1)'
 DROP TABLE t;
+#
+# Bug#27452179: WINDOW: ASSERTION FAILED: SCALE >= 0 && PRECISION > 0
+#               && SCALE <= PRECISION
+#
+CREATE TABLE t(f1 INTEGER);
+INSERT INTO t VALUES(0),(1),(2),(3);
+SELECT * FROM (SELECT IF(1, WEEKDAY('1'), ROW_NUMBER() OVER (PARTITION BY f1))
+FROM t) AS a;
+IF(1, WEEKDAY('1'), ROW_NUMBER() OVER (PARTITION BY f1))
+NULL
+NULL
+NULL
+NULL
+Warnings:
+Warning	1292	Incorrect datetime value: '1'
+Warning	1292	Incorrect datetime value: '1'
+Warning	1292	Incorrect datetime value: '1'
+Warning	1292	Incorrect datetime value: '1'
+DROP TABLE t;
+#
+# Bug#27453155 W->FRAME_BUFFER()->S->DB_TYPE()->DB_TYPE ==
+#              DB_TYPE_INNODB || CNT <= 1 || (W->LA
+#
+CREATE TABLE t(a SMALLINT);
+INSERT INTO t(a) VALUES (-32768), (-1), (32767), (32767), (1);
+SELECT a, COUNT(a) OVER w, LAG(1,13) RESPECT NULLS OVER w
+FROM t
+WINDOW w AS (ORDER BY a RANGE BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING);
+a	COUNT(a) OVER w	LAG(1,13) RESPECT NULLS OVER w
+-32768	4	NULL
+-1	3	NULL
+1	2	NULL
+32767	0	NULL
+32767	0	NULL
+DROP TABLE t;
+#
+# Bug#28105241: WINDOWS FUNC + AGGREGATES: ASSERTION FAILED:
+#               HYBRID_TYPE == DECIMAL_RESULT
+#
+DO ST_CROSSES(@g,SUM(SHA(@g))OVER());
+DO UNHEX(SUM(@g)OVER());
+DO BIT_LENGTH(AVG(@f)OVER());
+DO COMPRESS(SUM(' >')OVER());
+Warnings:
+Warning	1292	Truncated incorrect DOUBLE value: ' >'
+DO LTRIM(AVG(LOG2(@c))OVER());
+DO (~(SUM(@f)OVER()));
+DO IS_UUID(SUM(@e)OVER());
+DO TO_BASE64(AVG(@d)OVER());
+#
+# Bug#28080199 UBSAN: DECIMAL_ADD, LOAD OF VALUE 53,
+#              WHICH IS NOT A VALID VALUE FOR TYPE
+#
+SELECT bit_count(sum(cos(-66365726))over());
+bit_count(sum(cos(-66365726))over())
+64
+SELECT bit_count(avg(cos(-66365726))over());
+bit_count(avg(cos(-66365726))over())
+64
+#
+# Bug#28431783 ASSERTION FALSE IN ITEM::TYPE_FOR_VARIABLE()
+# Regression after introduction of window functions
+#
+CREATE TABLE t(a DATETIME(6) NOT NULL)ENGINE=INNODB;
+INSERT INTO t(a) VALUES('2008-01-01 00:22:33');
+SELECT( SELECT a FROM  ( SELECT 1 FROM t ) e ORDER BY (@f:=a) )
+FROM t GROUP BY a;
+( SELECT a FROM  ( SELECT 1 FROM t ) e ORDER BY (@f:=a) )
+2008-01-01 00:22:33.000000
+Warnings:
+Warning	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
+DROP TABLE t;
+#
+# Bug #27452365: UBSAN: SIGNED INTEGER OVERFLOW IN
+#                PROCESS_BUFFERED_WINDOWING_RECORD
+#
+CREATE TABLE t(a INTEGER);
+INSERT INTO t VALUES (1),(2),(3),(4);
+SELECT NTILE(74) OVER(ORDER BY a ROWS BETWEEN CURRENT ROW AND
+9223372036854775807 FOLLOWING) FROM t;
+NTILE(74) OVER(ORDER BY a ROWS BETWEEN CURRENT ROW AND
+9223372036854775807 FOLLOWING)
+1
+2
+3
+4
+SELECT SUM(a) OVER(ORDER BY a ROWS BETWEEN 9223372036854775807 FOLLOWING AND
+9223372036854775807 FOLLOWING) as `sum` FROM t;
+sum
+NULL
+NULL
+NULL
+NULL
+SELECT SUM(a) OVER(ORDER BY a ROWS BETWEEN 9223372036854775806 FOLLOWING AND
+9223372036854775807 FOLLOWING) as `sum` FROM t;
+sum
+NULL
+NULL
+NULL
+NULL
+SELECT SUM(a) OVER(ORDER BY a ROWS BETWEEN 9223372036854775805 FOLLOWING AND
+9223372036854775807 FOLLOWING) as `sum` FROM t;
+sum
+NULL
+NULL
+NULL
+NULL
+SELECT SUM(a) OVER(ORDER BY a ROWS BETWEEN 9223372036854775807 FOLLOWING AND
+9223372036854775805 FOLLOWING) as `sum` FROM t;
+sum
+NULL
+NULL
+NULL
+NULL
+SELECT SUM(a) OVER(ORDER BY a ROWS BETWEEN 9223372036854775807 PRECEDING AND
+9223372036854775805 PRECEDING) as `sum` FROM t;
+sum
+NULL
+NULL
+NULL
+NULL
+DROP TABLE t;
+#
+# Bug#27808099: "UNKNOWN FIELD IN WINDOW ORDER BY " ERROR EVEN
+#                WHEN FIELD IS FOUND IN TABLE
+#
+CREATE TABLE t1 (i INTEGER);
+WITH der AS (SELECT CASE WHEN i IN ('0') THEN i END AS a FROM t1),
+der1 AS (SELECT ROW_NUMBER() OVER (ORDER BY a), a FROM der)
+SELECT * FROM der1;
+ROW_NUMBER() OVER (ORDER BY a)	a
+WITH der AS (SELECT CASE WHEN i IN ('0') THEN i END AS a FROM t1),
+der1 AS (SELECT ROW_NUMBER() OVER (ORDER BY a) FROM der)
+SELECT * FROM der1;
+ROW_NUMBER() OVER (ORDER BY a)
+WITH der AS (SELECT i AS a FROM t1),
+der1 AS (SELECT ROW_NUMBER() OVER (ORDER BY a) FROM der)
+SELECT * FROM der1;
+ROW_NUMBER() OVER (ORDER BY a)
+SELECT i AS b, ROW_NUMBER() OVER (ORDER BY b) FROM t1;
+ERROR 42S22: Unknown column 'b' in 'window order by'
+SELECT i+1 AS b, ROW_NUMBER() OVER (ORDER BY b) FROM t1;
+ERROR 42S22: Unknown column 'b' in 'window order by'
+SELECT 3 AS i, ROW_NUMBER() OVER (ORDER BY i) FROM t1;
+i	ROW_NUMBER() OVER (ORDER BY i)
+DROP TABLE t1;
+#
+# Bug#27973860: ASSERTION FAILED: M_COUNT > 0 && M_COUNT >
+#               M_FRAME_NULL_COUNT
+#
+CREATE TABLE t ( a INT, b DATETIME(3));
+INSERT t VALUES(1986,'9344-11-05 13:39:24.686');
+INSERT t VALUES(1995,'7213-04-25 08:35:10.618');
+INSERT t VALUES(1971,'9352-01-31 07:55:58.233');
+SELECT SUM(a) OVER w FROM t
+WINDOW w AS(ORDER BY a,b RANGE BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING);
+SUM(a) OVER w
+5952
+3981
+1995
+DROP TABLE t;
+# Bug#27816506 WINDOW FUNC; ASSERTION FAILED:
+#              CURRENT_ROW > PREV_LAST_ROWNO_IN_FRAME && LOWER_L
+#
+SET @savmode=@@SESSION.SQL_MODE;
+SET SESSION SQL_MODE='';
+CREATE TABLE t(
+a TEXT CHARACTER SET CP1251
+GENERATED ALWAYS AS (LPAD(1,10621933,10)) VIRTUAL,
+b BLOB
+GENERATED ALWAYS AS (LPAD(1,10621933,10)) VIRTUAL
+) ENGINE=INNODB;
+INSERT INTO t VALUES (), ();
+Warnings:
+Warning	1265	Data truncated for column 'a' at row 1
+Warning	1265	Data truncated for column 'b' at row 1
+Warning	1265	Data truncated for column 'a' at row 2
+Warning	1265	Data truncated for column 'b' at row 2
+SET @f =
+(
+SELECT NTILE(39) OVER w1 FROM t
+WINDOW w1 AS(ORDER BY a)
+);
+ERROR 21000: Subquery returns more than 1 row
+PREPARE stmt FROM 'SELECT NTILE(39) OVER w1 FROM t
+WINDOW w1 AS(ORDER BY a)';
+EXECUTE stmt;
+NTILE(39) OVER w1
+1
+2
+SET @f =
+(
+SELECT NTILE(39) OVER w1 FROM t
+WINDOW w1 AS(ORDER BY b)
+);
+ERROR 21000: Subquery returns more than 1 row
+PREPARE stmt FROM 'SELECT NTILE(39) OVER w1 FROM t
+WINDOW w1 AS(ORDER BY b)';
+EXECUTE stmt;
+NTILE(39) OVER w1
+1
+2
+DROP TABLE t;
+SET SESSION SQL_MODE=@savmode;

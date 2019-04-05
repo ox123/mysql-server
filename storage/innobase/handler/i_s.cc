@@ -59,15 +59,17 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "fut0fut.h"
 #include "ha_prototypes.h"
 #include "ibuf0ibuf.h"
-#include "my_dbug.h"
-#include "my_inttypes.h"
+#include "mysql/plugin.h"
 #include "page0zip.h"
 #include "pars0pars.h"
 #include "srv0mon.h"
 #include "srv0start.h"
+#include "srv0tmp.h"
 #include "trx0i_s.h"
 #include "trx0trx.h"
 #include "ut0new.h"
+
+#include "my_dbug.h"
 
 /** structure associates a name string with a file page type and/or buffer
 page state. */
@@ -96,6 +98,15 @@ constexpr auto I_S_PAGE_TYPE_SDI = (FIL_PAGE_TYPE_LAST + 3);
 constexpr auto I_S_PAGE_TYPE_LAST = I_S_PAGE_TYPE_SDI;
 
 constexpr auto I_S_PAGE_TYPE_BITS = 6;
+
+/** I_S.innodb_* views version postfix. Everytime the define of any InnoDB I_S
+table is changed, this value has to be increased accordingly */
+constexpr uint8_t i_s_innodb_plugin_version_postfix = 1;
+
+/** I_S.innodb_* views version. It would be X.Y and X should be the server major
+ * version while Y is the InnoDB I_S views version, starting from 1 */
+constexpr uint64_t i_s_innodb_plugin_version =
+    (INNODB_VERSION_MAJOR << 8 | i_s_innodb_plugin_version_postfix);
 
 /* Check if we can hold all page types */
 static_assert(I_S_PAGE_TYPE_LAST < (1 << I_S_PAGE_TYPE_BITS),
@@ -320,7 +331,10 @@ static int field_store_index_name(
   return (ret);
 }
 
-/* Fields of the dynamic table INFORMATION_SCHEMA.innodb_trx */
+/* Fields of the dynamic table INFORMATION_SCHEMA.innodb_trx
+Every time any column gets changed, added or removed, please remember
+to change i_s_innodb_plugin_version_postfix accordingly, so that
+the change can be propagated to server */
 static ST_FIELD_INFO innodb_trx_fields_info[] = {
 #define IDX_TRX_ID 0
     {STRUCT_FLD(field_name, "trx_id"),
@@ -672,7 +686,7 @@ struct st_mysql_plugin i_s_innodb_trx = {
 
     /* plugin version (for SHOW PLUGINS) */
     /* unsigned int */
-    STRUCT_FLD(version, INNODB_VERSION_SHORT),
+    STRUCT_FLD(version, i_s_innodb_plugin_version),
 
     /* SHOW_VAR* */
     STRUCT_FLD(status_vars, NULL),
@@ -763,7 +777,10 @@ static int trx_i_s_common_fill_table(
 #endif
 }
 
-/* Fields of the dynamic table information_schema.innodb_cmp. */
+/* Fields of the dynamic table information_schema.innodb_cmp.
+Every time any column gets changed, added or removed, please remember
+to change i_s_innodb_plugin_version_postfix accordingly, so that
+the change can be propagated to server */
 static ST_FIELD_INFO i_s_cmp_fields_info[] = {
     {STRUCT_FLD(field_name, "page_size"), STRUCT_FLD(field_length, 5),
      STRUCT_FLD(field_type, MYSQL_TYPE_LONG), STRUCT_FLD(value, 0),
@@ -944,7 +961,7 @@ struct st_mysql_plugin i_s_innodb_cmp = {
 
     /* plugin version (for SHOW PLUGINS) */
     /* unsigned int */
-    STRUCT_FLD(version, INNODB_VERSION_SHORT),
+    STRUCT_FLD(version, i_s_innodb_plugin_version),
 
     /* SHOW_VAR* */
     STRUCT_FLD(status_vars, NULL),
@@ -1002,7 +1019,7 @@ struct st_mysql_plugin i_s_innodb_cmp_reset = {
 
     /* plugin version (for SHOW PLUGINS) */
     /* unsigned int */
-    STRUCT_FLD(version, INNODB_VERSION_SHORT),
+    STRUCT_FLD(version, i_s_innodb_plugin_version),
 
     /* SHOW_VAR* */
     STRUCT_FLD(status_vars, NULL),
@@ -1021,7 +1038,10 @@ struct st_mysql_plugin i_s_innodb_cmp_reset = {
 
 /* Fields of the dynamic tables
 information_schema.innodb_cmp_per_index and
-information_schema.innodb_cmp_per_index_reset. */
+information_schema.innodb_cmp_per_index_reset.
+Every time any column gets changed, added or removed, please remember
+to change i_s_innodb_plugin_version_postfix accordingly, so that
+the change can be propagated to server */
 static ST_FIELD_INFO i_s_cmp_per_index_fields_info[] = {
 #define IDX_DATABASE_NAME 0
     {STRUCT_FLD(field_name, "database_name"), STRUCT_FLD(field_length, 192),
@@ -1264,7 +1284,7 @@ struct st_mysql_plugin i_s_innodb_cmp_per_index = {
 
     /* plugin version (for SHOW PLUGINS) */
     /* unsigned int */
-    STRUCT_FLD(version, INNODB_VERSION_SHORT),
+    STRUCT_FLD(version, i_s_innodb_plugin_version),
 
     /* SHOW_VAR* */
     STRUCT_FLD(status_vars, NULL),
@@ -1322,7 +1342,7 @@ struct st_mysql_plugin i_s_innodb_cmp_per_index_reset = {
 
     /* plugin version (for SHOW PLUGINS) */
     /* unsigned int */
-    STRUCT_FLD(version, INNODB_VERSION_SHORT),
+    STRUCT_FLD(version, i_s_innodb_plugin_version),
 
     /* SHOW_VAR* */
     STRUCT_FLD(status_vars, NULL),
@@ -1339,7 +1359,10 @@ struct st_mysql_plugin i_s_innodb_cmp_per_index_reset = {
     STRUCT_FLD(flags, 0UL),
 };
 
-/* Fields of the dynamic table information_schema.innodb_cmpmem. */
+/* Fields of the dynamic table information_schema.innodb_cmpmem.
+Every time any column gets changed, added or removed, please remember
+to change i_s_innodb_plugin_version_postfix accordingly, so that
+the change can be propagated to server */
 static ST_FIELD_INFO i_s_cmpmem_fields_info[] = {
     {STRUCT_FLD(field_name, "page_size"), STRUCT_FLD(field_length, 5),
      STRUCT_FLD(field_type, MYSQL_TYPE_LONG), STRUCT_FLD(value, 0),
@@ -1539,7 +1562,7 @@ struct st_mysql_plugin i_s_innodb_cmpmem = {
 
     /* plugin version (for SHOW PLUGINS) */
     /* unsigned int */
-    STRUCT_FLD(version, INNODB_VERSION_SHORT),
+    STRUCT_FLD(version, i_s_innodb_plugin_version),
 
     /* SHOW_VAR* */
     STRUCT_FLD(status_vars, NULL),
@@ -1597,7 +1620,7 @@ struct st_mysql_plugin i_s_innodb_cmpmem_reset = {
 
     /* plugin version (for SHOW PLUGINS) */
     /* unsigned int */
-    STRUCT_FLD(version, INNODB_VERSION_SHORT),
+    STRUCT_FLD(version, i_s_innodb_plugin_version),
 
     /* SHOW_VAR* */
     STRUCT_FLD(status_vars, NULL),
@@ -1614,7 +1637,10 @@ struct st_mysql_plugin i_s_innodb_cmpmem_reset = {
     STRUCT_FLD(flags, 0UL),
 };
 
-/* Fields of the dynamic table INFORMATION_SCHEMA.innodb_metrics */
+/* Fields of the dynamic table INFORMATION_SCHEMA.innodb_metrics
+Every time any column gets changed, added or removed, please remember
+to change i_s_innodb_plugin_version_postfix accordingly, so that
+the change can be propagated to server */
 static ST_FIELD_INFO innodb_metrics_fields_info[] = {
 #define METRIC_NAME 0
     {STRUCT_FLD(field_name, "NAME"), STRUCT_FLD(field_length, NAME_LEN + 1),
@@ -2047,7 +2073,7 @@ struct st_mysql_plugin i_s_innodb_metrics = {
 
     /* plugin version (for SHOW PLUGINS) */
     /* unsigned int */
-    STRUCT_FLD(version, INNODB_VERSION_SHORT),
+    STRUCT_FLD(version, i_s_innodb_plugin_version),
 
     /* SHOW_VAR* */
     STRUCT_FLD(status_vars, NULL),
@@ -2063,7 +2089,10 @@ struct st_mysql_plugin i_s_innodb_metrics = {
     /* unsigned long */
     STRUCT_FLD(flags, 0UL),
 };
-/* Fields of the dynamic table INFORMATION_SCHEMA.innodb_ft_default_stopword */
+/* Fields of the dynamic table INFORMATION_SCHEMA.innodb_ft_default_stopword
+Every time any column gets changed, added or removed, please remember
+to change i_s_innodb_plugin_version_postfix accordingly, so that
+the change can be propagated to server */
 static ST_FIELD_INFO i_s_stopword_fields_info[] = {
 #define STOPWORD_VALUE 0
     {STRUCT_FLD(field_name, "value"),
@@ -2152,7 +2181,7 @@ struct st_mysql_plugin i_s_innodb_ft_default_stopword = {
 
     /* plugin version (for SHOW PLUGINS) */
     /* unsigned int */
-    STRUCT_FLD(version, INNODB_VERSION_SHORT),
+    STRUCT_FLD(version, i_s_innodb_plugin_version),
 
     /* SHOW_VAR* */
     STRUCT_FLD(status_vars, NULL),
@@ -2170,7 +2199,10 @@ struct st_mysql_plugin i_s_innodb_ft_default_stopword = {
 };
 
 /* Fields of the dynamic table INFORMATION_SCHEMA.INNODB_FT_DELETED
-INFORMATION_SCHEMA.INNODB_FT_BEING_DELETED */
+INFORMATION_SCHEMA.INNODB_FT_BEING_DELETED
+Every time any column gets changed, added or removed, please remember
+to change i_s_innodb_plugin_version_postfix accordingly, so that
+the change can be propagated to server */
 static ST_FIELD_INFO i_s_fts_doc_fields_info[] = {
 #define I_S_FTS_DOC_ID 0
     {STRUCT_FLD(field_name, "DOC_ID"),
@@ -2329,7 +2361,7 @@ struct st_mysql_plugin i_s_innodb_ft_deleted = {
 
     /* plugin version (for SHOW PLUGINS) */
     /* unsigned int */
-    STRUCT_FLD(version, INNODB_VERSION_SHORT),
+    STRUCT_FLD(version, i_s_innodb_plugin_version),
 
     /* SHOW_VAR* */
     STRUCT_FLD(status_vars, NULL),
@@ -2411,7 +2443,7 @@ struct st_mysql_plugin i_s_innodb_ft_being_deleted = {
 
     /* plugin version (for SHOW PLUGINS) */
     /* unsigned int */
-    STRUCT_FLD(version, INNODB_VERSION_SHORT),
+    STRUCT_FLD(version, i_s_innodb_plugin_version),
 
     /* SHOW_VAR* */
     STRUCT_FLD(status_vars, NULL),
@@ -2429,7 +2461,10 @@ struct st_mysql_plugin i_s_innodb_ft_being_deleted = {
 };
 
 /* Fields of the dynamic table INFORMATION_SCHEMA.INNODB_FT_INDEX_CACHED and
-INFORMATION_SCHEMA.INNODB_FT_INDEX_TABLE */
+INFORMATION_SCHEMA.INNODB_FT_INDEX_TABLE
+Every time any column gets changed, added or removed, please remember
+to change i_s_innodb_plugin_version_postfix accordingly, so that
+the change can be propagated to server */
 static ST_FIELD_INFO i_s_fts_index_fields_info[] = {
 #define I_S_FTS_WORD 0
     {STRUCT_FLD(field_name, "WORD"),
@@ -2675,7 +2710,7 @@ struct st_mysql_plugin i_s_innodb_ft_index_cache = {
 
     /* plugin version (for SHOW PLUGINS) */
     /* unsigned int */
-    STRUCT_FLD(version, INNODB_VERSION_SHORT),
+    STRUCT_FLD(version, i_s_innodb_plugin_version),
 
     /* SHOW_VAR* */
     STRUCT_FLD(status_vars, NULL),
@@ -3083,7 +3118,7 @@ struct st_mysql_plugin i_s_innodb_ft_index_table = {
 
     /* plugin version (for SHOW PLUGINS) */
     /* unsigned int */
-    STRUCT_FLD(version, INNODB_VERSION_SHORT),
+    STRUCT_FLD(version, i_s_innodb_plugin_version),
 
     /* SHOW_VAR* */
     STRUCT_FLD(status_vars, NULL),
@@ -3100,7 +3135,10 @@ struct st_mysql_plugin i_s_innodb_ft_index_table = {
     STRUCT_FLD(flags, 0UL),
 };
 
-/* Fields of the dynamic table INFORMATION_SCHEMA.INNODB_FT_CONFIG */
+/* Fields of the dynamic table INFORMATION_SCHEMA.INNODB_FT_CONFIG
+Every time any column gets changed, added or removed, please remember
+to change i_s_innodb_plugin_version_postfix accordingly, so that
+the change can be propagated to server */
 static ST_FIELD_INFO i_s_fts_config_fields_info[] = {
 #define FTS_CONFIG_KEY 0
     {STRUCT_FLD(field_name, "KEY"), STRUCT_FLD(field_length, NAME_LEN + 1),
@@ -3282,7 +3320,7 @@ struct st_mysql_plugin i_s_innodb_ft_config = {
 
     /* plugin version (for SHOW PLUGINS) */
     /* unsigned int */
-    STRUCT_FLD(version, INNODB_VERSION_SHORT),
+    STRUCT_FLD(version, i_s_innodb_plugin_version),
 
     /* SHOW_VAR* */
     STRUCT_FLD(status_vars, NULL),
@@ -3299,7 +3337,10 @@ struct st_mysql_plugin i_s_innodb_ft_config = {
     STRUCT_FLD(flags, 0UL),
 };
 
-/* Fields of the dynamic table INNODB_TEMP_TABLE_INFO. */
+/* Fields of the dynamic table INNODB_TEMP_TABLE_INFO.
+Every time any column gets changed, added or removed, please remember
+to change i_s_innodb_plugin_version_postfix accordingly, so that
+the change can be propagated to server */
 static ST_FIELD_INFO i_s_innodb_temp_table_info_fields_info[] = {
 #define IDX_TEMP_TABLE_ID 0
     {STRUCT_FLD(field_name, "TABLE_ID"),
@@ -3498,7 +3539,7 @@ struct st_mysql_plugin i_s_innodb_temp_table_info = {
 
     /* plugin version (for SHOW PLUGINS) */
     /* unsigned int */
-    STRUCT_FLD(version, INNODB_VERSION_SHORT),
+    STRUCT_FLD(version, i_s_innodb_plugin_version),
 
     /* SHOW_VAR* */
     STRUCT_FLD(status_vars, NULL),
@@ -3515,7 +3556,10 @@ struct st_mysql_plugin i_s_innodb_temp_table_info = {
     STRUCT_FLD(flags, 0UL),
 };
 
-/* Fields of the dynamic table INNODB_BUFFER_POOL_STATS. */
+/* Fields of the dynamic table INNODB_BUFFER_POOL_STATS.
+Every time any column gets changed, added or removed, please remember
+to change i_s_innodb_plugin_version_postfix accordingly, so that
+the change can be propagated to server */
 static ST_FIELD_INFO i_s_innodb_buffer_stats_fields_info[] = {
 #define IDX_BUF_STATS_POOL_ID 0
     {STRUCT_FLD(field_name, "POOL_ID"),
@@ -3940,7 +3984,7 @@ struct st_mysql_plugin i_s_innodb_buffer_stats = {
 
     /* plugin version (for SHOW PLUGINS) */
     /* unsigned int */
-    STRUCT_FLD(version, INNODB_VERSION_SHORT),
+    STRUCT_FLD(version, i_s_innodb_plugin_version),
 
     /* SHOW_VAR* */
     STRUCT_FLD(status_vars, NULL),
@@ -3957,7 +4001,10 @@ struct st_mysql_plugin i_s_innodb_buffer_stats = {
     STRUCT_FLD(flags, 0UL),
 };
 
-/* Fields of the dynamic table INNODB_BUFFER_POOL_PAGE. */
+/* Fields of the dynamic table INNODB_BUFFER_POOL_PAGE.
+Every time any column gets changed, added or removed, please remember
+to change i_s_innodb_plugin_version_postfix accordingly, so that
+the change can be propagated to server */
 static ST_FIELD_INFO i_s_innodb_buffer_page_fields_info[] = {
 #define IDX_BUFFER_POOL_ID 0
     {STRUCT_FLD(field_name, "POOL_ID"),
@@ -4577,7 +4624,7 @@ struct st_mysql_plugin i_s_innodb_buffer_page = {
 
     /* plugin version (for SHOW PLUGINS) */
     /* unsigned int */
-    STRUCT_FLD(version, INNODB_VERSION_SHORT),
+    STRUCT_FLD(version, i_s_innodb_plugin_version),
 
     /* SHOW_VAR* */
     STRUCT_FLD(status_vars, NULL),
@@ -4594,6 +4641,9 @@ struct st_mysql_plugin i_s_innodb_buffer_page = {
     STRUCT_FLD(flags, 0UL),
 };
 
+/* Every time any column gets changed, added or removed, please remember
+to change i_s_innodb_plugin_version_postfix accordingly, so that
+the change can be propagated to server */
 static ST_FIELD_INFO i_s_innodb_buf_page_lru_fields_info[] = {
 #define IDX_BUF_LRU_POOL_ID 0
     {STRUCT_FLD(field_name, "POOL_ID"),
@@ -5042,7 +5092,7 @@ struct st_mysql_plugin i_s_innodb_buffer_page_lru = {
 
     /* plugin version (for SHOW PLUGINS) */
     /* unsigned int */
-    STRUCT_FLD(version, INNODB_VERSION_SHORT),
+    STRUCT_FLD(version, i_s_innodb_plugin_version),
 
     /* SHOW_VAR* */
     STRUCT_FLD(status_vars, NULL),
@@ -5071,7 +5121,10 @@ static int i_s_common_deinit(void *p) /*!< in/out: table schema object */
 }
 
 /**  INNODB_TABLES  ***************************************************/
-/* Fields of the dynamic table INFORMATION_SCHEMA.INNODB_TABLES */
+/* Fields of the dynamic table INFORMATION_SCHEMA.INNODB_TABLES
+Every time any column gets changed, added or removed, please remember
+to change i_s_innodb_plugin_version_postfix accordingly, so that
+the change can be propagated to server */
 static ST_FIELD_INFO innodb_tables_fields_info[] = {
 #define INNODB_TABLES_ID 0
     {STRUCT_FLD(field_name, "TABLE_ID"),
@@ -5125,6 +5178,13 @@ static ST_FIELD_INFO innodb_tables_fields_info[] = {
     {STRUCT_FLD(field_name, "SPACE_TYPE"), STRUCT_FLD(field_length, 10),
      STRUCT_FLD(field_type, MYSQL_TYPE_STRING), STRUCT_FLD(value, 0),
      STRUCT_FLD(field_flags, MY_I_S_MAYBE_NULL), STRUCT_FLD(old_name, ""),
+     STRUCT_FLD(open_method, SKIP_OPEN_TABLE)},
+
+#define INNODB_TABLES_INSTANT_COLS 8
+    {STRUCT_FLD(field_name, "INSTANT_COLS"),
+     STRUCT_FLD(field_length, MY_INT32_NUM_DECIMAL_DIGITS),
+     STRUCT_FLD(field_type, MYSQL_TYPE_LONG), STRUCT_FLD(value, 0),
+     STRUCT_FLD(field_flags, 0), STRUCT_FLD(old_name, ""),
      STRUCT_FLD(open_method, SKIP_OPEN_TABLE)},
 
     END_OF_ST_FIELD_INFO};
@@ -5182,6 +5242,9 @@ static int i_s_dict_fill_innodb_tables(THD *thd, dict_table_t *table,
       page_size.is_compressed() ? page_size.physical() : 0, true));
 
   OK(field_store_string(fields[INNODB_TABLES_SPACE_TYPE], space_type));
+
+  OK(fields[INNODB_TABLES_INSTANT_COLS]->store(
+      table->has_instant_cols() ? table->get_instant_cols() : 0));
 
   OK(schema_table_store_record(thd, table_to_fill));
 
@@ -5343,7 +5406,7 @@ struct st_mysql_plugin i_s_innodb_tables = {
 
     /* plugin version (for SHOW PLUGINS) */
     /* unsigned int */
-    STRUCT_FLD(version, INNODB_VERSION_SHORT),
+    STRUCT_FLD(version, i_s_innodb_plugin_version),
 
     /* SHOW_VAR* */
     STRUCT_FLD(status_vars, NULL),
@@ -5361,7 +5424,10 @@ struct st_mysql_plugin i_s_innodb_tables = {
 };
 
 /**  INNODB_TABLESTATS  ***********************************************/
-/* Fields of the dynamic table INFORMATION_SCHEMA.INNODB_TABLESTATS */
+/* Fields of the dynamic table INFORMATION_SCHEMA.INNODB_TABLESTATS
+Every time any column gets changed, added or removed, please remember
+to change i_s_innodb_plugin_version_postfix accordingly, so that
+the change can be propagated to server */
 static ST_FIELD_INFO innodb_tablestats_fields_info[] = {
 #define INNODB_TABLESTATS_ID 0
     {STRUCT_FLD(field_name, "TABLE_ID"),
@@ -5619,7 +5685,7 @@ struct st_mysql_plugin i_s_innodb_tablestats = {
 
     /* plugin version (for SHOW PLUGINS) */
     /* unsigned int */
-    STRUCT_FLD(version, INNODB_VERSION_SHORT),
+    STRUCT_FLD(version, i_s_innodb_plugin_version),
 
     /* SHOW_VAR* */
     STRUCT_FLD(status_vars, NULL),
@@ -5637,7 +5703,10 @@ struct st_mysql_plugin i_s_innodb_tablestats = {
 };
 
 /**  INNODB_INDEXES  **************************************************/
-/* Fields of the dynamic table INFORMATION_SCHEMA.INNODB_INDEXES */
+/* Fields of the dynamic table INFORMATION_SCHEMA.INNODB_INDEXES
+Every time any column gets changed, added or removed, please remember
+to change i_s_innodb_plugin_version_postfix accordingly, so that
+the change can be propagated to server */
 static ST_FIELD_INFO innodb_sysindex_fields_info[] = {
 #define SYS_INDEX_ID 0
     {STRUCT_FLD(field_name, "INDEX_ID"),
@@ -5720,7 +5789,7 @@ static int i_s_dict_fill_innodb_indexes(THD *thd, const dict_index_t *index,
 
   OK(fields[SYS_INDEX_NUM_FIELDS]->store(index->n_fields));
 
-  /* FIL_NULL is ULINT32_UNDEFINED */
+  /* FIL_NULL is UINT32_UNDEFINED */
   if (index->page == FIL_NULL) {
     OK(fields[SYS_INDEX_PAGE_NO]->store(-1));
   } else {
@@ -5864,7 +5933,7 @@ struct st_mysql_plugin i_s_innodb_indexes = {
 
     /* plugin version (for SHOW PLUGINS) */
     /* unsigned int */
-    STRUCT_FLD(version, INNODB_VERSION_SHORT),
+    STRUCT_FLD(version, i_s_innodb_plugin_version),
 
     /* SHOW_VAR* */
     STRUCT_FLD(status_vars, NULL),
@@ -5882,7 +5951,10 @@ struct st_mysql_plugin i_s_innodb_indexes = {
 };
 
 /**  INNODB_COLUMNS  **************************************************/
-/* Fields of the dynamic table INFORMATION_SCHEMA.INNODB_COLUMNS */
+/* Fields of the dynamic table INFORMATION_SCHEMA.INNODB_COLUMNS
+Every time any column gets changed, added or removed, please remember
+to change i_s_innodb_plugin_version_postfix accordingly, so that
+the change can be propagated to server */
 static ST_FIELD_INFO innodb_columns_fields_info[] = {
 #define SYS_COLUMN_TABLE_ID 0
     {STRUCT_FLD(field_name, "TABLE_ID"),
@@ -5925,7 +5997,43 @@ static ST_FIELD_INFO innodb_columns_fields_info[] = {
      STRUCT_FLD(field_flags, 0), STRUCT_FLD(old_name, ""),
      STRUCT_FLD(open_method, SKIP_OPEN_TABLE)},
 
+#define SYS_COLUMN_HAS_DEFAULT 6
+    {STRUCT_FLD(field_name, "HAS_DEFAULT"), STRUCT_FLD(field_length, 1),
+     STRUCT_FLD(field_type, MYSQL_TYPE_LONG), STRUCT_FLD(value, 0),
+     STRUCT_FLD(field_flags, 0), STRUCT_FLD(old_name, ""),
+     STRUCT_FLD(open_method, SKIP_OPEN_TABLE)},
+
+#define SYS_COLUMN_DEFAULT_VALUE 7
+    {STRUCT_FLD(field_name, "DEFAULT_VALUE"),
+     /* The length should cover max length of varchar in utf8mb4 */
+     STRUCT_FLD(field_length, 65536 * 4),
+     STRUCT_FLD(field_type, MYSQL_TYPE_BLOB), STRUCT_FLD(value, 0),
+     STRUCT_FLD(field_flags, MY_I_S_MAYBE_NULL), STRUCT_FLD(old_name, ""),
+     STRUCT_FLD(open_method, SKIP_OPEN_TABLE)},
+
     END_OF_ST_FIELD_INFO};
+
+/** Function to fill the BLOB value for column default value
+@param[in,out]	field		field to store default value
+@param[in]	default_val	default value to fill
+@return	0 on success */
+static int field_blob_store(Field *field, dict_col_default_t *default_val) {
+  int ret = 0;
+
+  if (default_val->len == UNIV_SQL_NULL) {
+    field->set_null();
+  } else {
+    size_t len = 0;
+    DD_instant_col_val_coder coder;
+    const char *value =
+        coder.encode(default_val->value, default_val->len, &len);
+
+    field->set_notnull();
+    ret = field->store(value, len, field->charset());
+  }
+
+  return (ret);
+}
 
 /** Function to populate the information_schema.innodb_columns with
 related column information
@@ -5962,6 +6070,14 @@ static int i_s_dict_fill_innodb_columns(THD *thd, table_id_t table_id,
   OK(fields[SYS_COLUMN__PRTYPE]->store(column->prtype));
 
   OK(fields[SYS_COLUMN_COLUMN_LEN]->store(column->len));
+
+  if (column->instant_default != nullptr) {
+    OK(fields[SYS_COLUMN_HAS_DEFAULT]->store(1));
+    OK(field_blob_store(fields[SYS_COLUMN_DEFAULT_VALUE],
+                        column->instant_default));
+  } else {
+    OK(fields[SYS_COLUMN_HAS_DEFAULT]->store(0));
+  }
 
   OK(schema_table_store_record(thd, table_to_fill));
 
@@ -6003,6 +6119,7 @@ static int i_s_innodb_columns_fill_table(THD *thd, TABLE_LIST *tables, Item *) {
     table_id_t table_id;
     ulint nth_v_col;
 
+    column_rec.instant_default = nullptr;
     /* populate a dict_col_t structure with information from
     a row */
     ret = dd_process_dd_columns_rec(heap, rec, &column_rec, &table_id,
@@ -6085,7 +6202,7 @@ struct st_mysql_plugin i_s_innodb_columns = {
 
     /* plugin version (for SHOW PLUGINS) */
     /* unsigned int */
-    STRUCT_FLD(version, INNODB_VERSION_SHORT),
+    STRUCT_FLD(version, i_s_innodb_plugin_version),
 
     /* SHOW_VAR* */
     STRUCT_FLD(status_vars, NULL),
@@ -6103,7 +6220,10 @@ struct st_mysql_plugin i_s_innodb_columns = {
 };
 
 /**  INNODB_VIRTUAL **************************************************/
-/** Fields of the dynamic table INFORMATION_SCHEMA.INNODB_VIRTUAL */
+/** Fields of the dynamic table INFORMATION_SCHEMA.INNODB_VIRTUAL
+Every time any column gets changed, added or removed, please remember
+to change i_s_innodb_plugin_version_postfix accordingly, so that
+the change can be propagated to server */
 static ST_FIELD_INFO innodb_virtual_fields_info[] = {
 #define INNODB_VIRTUAL_TABLE_ID 0
     {STRUCT_FLD(field_name, "TABLE_ID"),
@@ -6277,7 +6397,7 @@ struct st_mysql_plugin i_s_innodb_virtual = {
 
     /* plugin version (for SHOW PLUGINS) */
     /* unsigned int */
-    STRUCT_FLD(version, INNODB_VERSION_SHORT),
+    STRUCT_FLD(version, i_s_innodb_plugin_version),
 
     /* SHOW_VAR* */
     STRUCT_FLD(status_vars, NULL),
@@ -6295,7 +6415,10 @@ struct st_mysql_plugin i_s_innodb_virtual = {
 };
 
 /**  INNODB_TABLESPACES    ********************************************/
-/* Fields of the dynamic table INFORMATION_SCHEMA.INNODB_TABLESPACES */
+/* Fields of the dynamic table INFORMATION_SCHEMA.INNODB_TABLESPACES
+Every time any column gets changed, added or removed, please remember
+to change i_s_innodb_plugin_version_postfix accordingly, so that
+the change can be propagated to server */
 static ST_FIELD_INFO innodb_tablespaces_fields_info[] = {
 #define INNODB_TABLESPACES_SPACE 0
     {STRUCT_FLD(field_name, "SPACE"),
@@ -6378,25 +6501,38 @@ static ST_FIELD_INFO innodb_tablespaces_fields_info[] = {
      STRUCT_FLD(field_flags, MY_I_S_UNSIGNED), STRUCT_FLD(old_name, ""),
      STRUCT_FLD(open_method, SKIP_OPEN_TABLE)},
 
+#define INNODB_TABLESPACES_ENCRYPTION 12
+    {STRUCT_FLD(field_name, "ENCRYPTION"), STRUCT_FLD(field_length, 1),
+     STRUCT_FLD(field_type, MYSQL_TYPE_STRING), STRUCT_FLD(value, 0),
+     STRUCT_FLD(field_flags, MY_I_S_MAYBE_NULL), STRUCT_FLD(old_name, ""),
+     STRUCT_FLD(open_method, SKIP_OPEN_TABLE)},
+
+#define INNODB_TABLESPACES_STATE 13
+    {STRUCT_FLD(field_name, "STATE"), STRUCT_FLD(field_length, 10),
+     STRUCT_FLD(field_type, MYSQL_TYPE_STRING), STRUCT_FLD(value, 0),
+     STRUCT_FLD(field_flags, MY_I_S_MAYBE_NULL), STRUCT_FLD(old_name, ""),
+     STRUCT_FLD(open_method, SKIP_OPEN_TABLE)},
+
     END_OF_ST_FIELD_INFO
 
 };
 
 /** Function to fill INFORMATION_SCHEMA.INNODB_TABLESPACES with information
 collected by scanning INNODB_TABLESPACESS table.
-@param[in]	thd		thread
-@param[in]	space		space ID
-@param[in]	name		tablespace name
-@param[in]	flags		tablespace flags
-@param[in]	server_version	server version
-@param[in]	space_version	tablespace version
-@param[in,out]	table_to_fill	fill this table
+@param[in]      thd             thread
+@param[in]      space_id        space ID
+@param[in]      name            tablespace name
+@param[in]      flags           tablespace flags
+@param[in]      server_version  server version
+@param[in]      space_version   tablespace version
+@param[in]      is_encrypted    true if tablespace is encrypted
+@param[in]      state           tablespace state
+@param[in,out]  table_to_fill   fill this table
 @return 0 on success */
-static int i_s_dict_fill_innodb_tablespaces(THD *thd, space_id_t space,
-                                            const char *name, ulint flags,
-                                            uint32 server_version,
-                                            uint32 space_version,
-                                            TABLE *table_to_fill) {
+static int i_s_dict_fill_innodb_tablespaces(
+    THD *thd, space_id_t space_id, const char *name, ulint flags,
+    uint32 server_version, uint32 space_version, bool is_encrypted,
+    const char *state, TABLE *table_to_fill) {
   Field **fields;
   ulint atomic_blobs = FSP_FLAGS_HAS_ATOMIC_BLOBS(flags);
   bool is_compressed = FSP_FLAGS_GET_ZIP_SSIZE(flags);
@@ -6414,7 +6550,9 @@ static int i_s_dict_fill_innodb_tablespaces(THD *thd, space_id_t space,
   snprintf(version_str, NAME_LEN, ULINTPF "." ULINTPF "." ULINTPF,
            major_version, minor_version, patch_version);
 
-  if (fsp_is_system_or_temp_tablespace(space)) {
+  if (fsp_is_undo_tablespace(space_id)) {
+    row_format = "Undo";
+  } else if (fsp_is_system_or_temp_tablespace(space_id)) {
     row_format = "Compact or Redundant";
   } else if (fsp_is_shared_tablespace(flags) && !is_compressed) {
     row_format = "Any";
@@ -6426,7 +6564,9 @@ static int i_s_dict_fill_innodb_tablespaces(THD *thd, space_id_t space,
     row_format = "Compact or Redundant";
   }
 
-  if (fsp_is_system_or_temp_tablespace(space)) {
+  if (fsp_is_undo_tablespace(space_id)) {
+    space_type = "Undo";
+  } else if (fsp_is_system_or_temp_tablespace(space_id)) {
     space_type = "System";
   } else if (fsp_is_shared_tablespace(flags)) {
     space_type = "General";
@@ -6436,11 +6576,14 @@ static int i_s_dict_fill_innodb_tablespaces(THD *thd, space_id_t space,
 
   fields = table_to_fill->field;
 
-  OK(fields[INNODB_TABLESPACES_SPACE]->store(space, true));
+  OK(fields[INNODB_TABLESPACES_SPACE]->store(space_id, true));
 
   OK(field_store_string(fields[INNODB_TABLESPACES_NAME], name));
 
   OK(fields[INNODB_TABLESPACES_FLAGS]->store(flags, true));
+
+  OK(field_store_string(fields[INNODB_TABLESPACES_ENCRYPTION],
+                        is_encrypted ? "Y" : "N"));
 
   OK(field_store_string(fields[INNODB_TABLESPACES_ROW_FORMAT], row_format));
 
@@ -6459,14 +6602,14 @@ static int i_s_dict_fill_innodb_tablespaces(THD *thd, space_id_t space,
   char *filepath = NULL;
   if (FSP_FLAGS_HAS_DATA_DIR(flags) || FSP_FLAGS_GET_SHARED(flags)) {
     mutex_enter(&dict_sys->mutex);
-    filepath = fil_space_get_first_path(space);
+    filepath = fil_space_get_first_path(space_id);
     mutex_exit(&dict_sys->mutex);
   }
 
   if (filepath == NULL) {
     if (strstr(name, dict_sys_t::s_file_per_table_name) != 0) {
       mutex_enter(&dict_sys->mutex);
-      filepath = fil_space_get_first_path(space);
+      filepath = fil_space_get_first_path(space_id);
       mutex_exit(&dict_sys->mutex);
     } else {
       filepath = Fil_path::make_ibd_from_table_name(name);
@@ -6516,6 +6659,8 @@ static int i_s_dict_fill_innodb_tablespaces(THD *thd, space_id_t space,
 
   OK(fields[INNODB_TABLESPACES_ALLOC_SIZE]->store(file.m_alloc_size, true));
 
+  OK(field_store_string(fields[INNODB_TABLESPACES_STATE], state));
+
   OK(schema_table_store_record(thd, table_to_fill));
 
   DBUG_RETURN(0);
@@ -6556,19 +6701,22 @@ static int i_s_innodb_tablespaces_fill_table(THD *thd, TABLE_LIST *tables,
     uint flags;
     uint32 server_version;
     uint32 space_version;
+    bool is_encrypted = false;
+    dd::String_type state;
 
     /* Extract necessary information from a INNODB_TABLESPACES
     row */
     ret = dd_process_dd_tablespaces_rec(heap, rec, &space, &name, &flags,
                                         &server_version, &space_version,
-                                        dd_spaces);
+                                        &is_encrypted, &state, dd_spaces);
 
     mtr_commit(&mtr);
     mutex_exit(&dict_sys->mutex);
 
     if (ret && space != 0) {
       i_s_dict_fill_innodb_tablespaces(thd, space, name, flags, server_version,
-                                       space_version, tables->table);
+                                       space_version, is_encrypted,
+                                       state.c_str(), tables->table);
     }
 
     mem_heap_empty(heap);
@@ -6640,7 +6788,7 @@ struct st_mysql_plugin i_s_innodb_tablespaces = {
 
     /* plugin version (for SHOW PLUGINS) */
     /* unsigned int */
-    STRUCT_FLD(version, INNODB_VERSION_SHORT),
+    STRUCT_FLD(version, i_s_innodb_plugin_version),
 
     /* SHOW_VAR* */
     STRUCT_FLD(status_vars, NULL),
@@ -6659,7 +6807,10 @@ struct st_mysql_plugin i_s_innodb_tablespaces = {
 
 /** INFORMATION_SCHEMA.INNODB_CACHED_INDEXES */
 
-/* Fields of the dynamic table INFORMATION_SCHEMA.INNODB_CACHED_INDEXES */
+/* Fields of the dynamic table INFORMATION_SCHEMA.INNODB_CACHED_INDEXES
+Every time any column gets changed, added or removed, please remember
+to change i_s_innodb_plugin_version_postfix accordingly, so that
+the change can be propagated to server */
 static ST_FIELD_INFO innodb_cached_indexes_fields_info[] = {
 #define CACHED_INDEXES_SPACE_ID 0
     {STRUCT_FLD(field_name, "SPACE_ID"),
@@ -6828,6 +6979,212 @@ struct st_mysql_plugin i_s_innodb_cached_indexes = {
     /* the function to invoke when plugin is loaded */
     /* int (*)(void*); */
     STRUCT_FLD(init, innodb_cached_indexes_init),
+
+    /* the function to invoke when plugin is un installed */
+    /* int (*)(void*); */
+    NULL,
+
+    /* the function to invoke when plugin is unloaded */
+    /* int (*)(void*); */
+    STRUCT_FLD(deinit, i_s_common_deinit),
+
+    /* plugin version (for SHOW PLUGINS) */
+    /* unsigned int */
+    STRUCT_FLD(version, i_s_innodb_plugin_version),
+
+    /* SHOW_VAR* */
+    STRUCT_FLD(status_vars, NULL),
+
+    /* SYS_VAR** */
+    STRUCT_FLD(system_vars, NULL),
+
+    /* reserved for dependency checking */
+    /* void* */
+    STRUCT_FLD(__reserved1, NULL),
+
+    /* Plugin flags */
+    /* unsigned long */
+    STRUCT_FLD(flags, 0UL),
+};
+
+/**  INNODB_SESSION_TEMPORARY TABLESPACES   ***********************/
+/* Fields of the dynamic table
+INFORMATION_SCHEMA.INNODB_SESSION_TEMPORARY_TABLESPACES */
+static ST_FIELD_INFO innodb_session_temp_tablespaces_fields_info[] = {
+#define INNODB_SESSION_TEMP_TABLESPACES_ID 0
+    {STRUCT_FLD(field_name, "ID"),
+     STRUCT_FLD(field_length, MY_INT32_NUM_DECIMAL_DIGITS),
+     STRUCT_FLD(field_type, MYSQL_TYPE_LONG), STRUCT_FLD(value, 0),
+     STRUCT_FLD(field_flags, MY_I_S_UNSIGNED), STRUCT_FLD(old_name, ""),
+     STRUCT_FLD(open_method, SKIP_OPEN_TABLE)},
+
+#define INNODB_SESSION_TEMP_TABLESPACES_SPACE 1
+    {STRUCT_FLD(field_name, "SPACE"),
+     STRUCT_FLD(field_length, MY_INT32_NUM_DECIMAL_DIGITS),
+     STRUCT_FLD(field_type, MYSQL_TYPE_LONG), STRUCT_FLD(value, 0),
+     STRUCT_FLD(field_flags, MY_I_S_UNSIGNED), STRUCT_FLD(old_name, ""),
+     STRUCT_FLD(open_method, SKIP_OPEN_TABLE)},
+
+#define INNODB_SESSION_TEMP_TABLESPACES_PATH 2
+    {STRUCT_FLD(field_name, "PATH"),
+     STRUCT_FLD(field_length, OS_FILE_MAX_PATH + 1),
+     STRUCT_FLD(field_type, MYSQL_TYPE_STRING), STRUCT_FLD(value, 0),
+     STRUCT_FLD(field_flags, 0), STRUCT_FLD(old_name, ""),
+     STRUCT_FLD(open_method, SKIP_OPEN_TABLE)},
+
+#define INNODB_SESSION_TEMP_TABLESPACES_SIZE 3
+    {STRUCT_FLD(field_name, "SIZE"),
+     STRUCT_FLD(field_length, MY_INT64_NUM_DECIMAL_DIGITS),
+     STRUCT_FLD(field_type, MYSQL_TYPE_LONGLONG), STRUCT_FLD(value, 0),
+     STRUCT_FLD(field_flags, MY_I_S_UNSIGNED), STRUCT_FLD(old_name, ""),
+     STRUCT_FLD(open_method, SKIP_OPEN_TABLE)},
+
+#define INNODB_SESSION_TEMP_TABLESPACES_STATE 4
+    {STRUCT_FLD(field_name, "STATE"), STRUCT_FLD(field_length, NAME_LEN),
+     STRUCT_FLD(field_type, MYSQL_TYPE_STRING), STRUCT_FLD(value, 0),
+     STRUCT_FLD(field_flags, 0), STRUCT_FLD(old_name, ""),
+     STRUCT_FLD(open_method, SKIP_OPEN_TABLE)},
+
+#define INNODB_SESSION_TEMP_TABLESPACES_PURPOSE 5
+    {STRUCT_FLD(field_name, "PURPOSE"), STRUCT_FLD(field_length, NAME_LEN),
+     STRUCT_FLD(field_type, MYSQL_TYPE_STRING), STRUCT_FLD(value, 0),
+     STRUCT_FLD(field_flags, 0), STRUCT_FLD(old_name, ""),
+     STRUCT_FLD(open_method, SKIP_OPEN_TABLE)},
+
+    END_OF_ST_FIELD_INFO
+
+};
+
+/** Function to fill INFORMATION_SCHEMA.INNODB_SESSION_TEMPORARY_TABLESPACES
+@param[in]	thd		thread
+@param[in]	ts		temp tablespace object
+@param[in,out]	table_to_fill	fill this table
+@return 0 on success */
+static int i_s_innodb_session_temp_tablespaces_fill_one(
+    THD *thd, const ibt::Tablespace *ts, TABLE *table_to_fill) {
+  Field **fields;
+
+  DBUG_ENTER("i_s_dict_fill_innodb_tablespaces");
+
+  fields = table_to_fill->field;
+
+  my_thread_id id = ts->thread_id();
+  OK(fields[INNODB_SESSION_TEMP_TABLESPACES_ID]->store(id, true));
+
+  space_id_t space_id = ts->space_id();
+  OK(fields[INNODB_SESSION_TEMP_TABLESPACES_SPACE]->store(space_id, true));
+
+  std::string path = ts->path();
+  Fil_path::normalize(path);
+
+  OK(field_store_string(fields[INNODB_SESSION_TEMP_TABLESPACES_PATH],
+                        path.c_str()));
+
+  fil_space_t *space = fil_space_get(space_id);
+  size_t size = 0;
+  if (space != nullptr) {
+    page_size_t page_size(space->flags);
+    size = space->size * page_size.physical();
+  }
+  OK(fields[INNODB_SESSION_TEMP_TABLESPACES_SIZE]->store(size, true));
+
+  const char *state = id == 0 ? "INACTIVE" : "ACTIVE";
+
+  OK(field_store_string(fields[INNODB_SESSION_TEMP_TABLESPACES_STATE], state));
+
+  ibt::tbsp_purpose purpose = ts->purpose();
+
+  const char *p =
+      purpose == ibt::TBSP_NONE
+          ? "NONE"
+          : (purpose == ibt::TBSP_USER
+                 ? "USER"
+                 : (purpose == ibt::TBSP_INTRINSIC ? "INTRINSIC" : "SLAVE"));
+
+  OK(field_store_string(fields[INNODB_SESSION_TEMP_TABLESPACES_PURPOSE], p));
+
+  OK(schema_table_store_record(thd, table_to_fill));
+
+  DBUG_RETURN(0);
+}
+
+/** Function to populate INFORMATION_SCHEMA.INNODB_SESSION_TEMPORARY_TABLESPACES
+table. Iterate over the in-memory structure and fill the table
+@param[in]	thd		thread
+@param[in,out]	tables		tables to fill
+@return 0 on success */
+static int i_s_innodb_session_temp_tablespaces_fill(THD *thd,
+                                                    TABLE_LIST *tables,
+                                                    Item *) {
+  DBUG_ENTER("i_s_innodb_session_temp_tablespaces_fill");
+
+  /* deny access to user without PROCESS_ACL privilege */
+  if (check_global_access(thd, PROCESS_ACL)) {
+    DBUG_RETURN(0);
+  }
+
+  /* Allocate one session temp tablespace to avoid allocating a session
+  temp tabelspaces during iteration of session temp tablespaces.
+  This is because we have already acquired session pool mutex and iterating.
+  After acquiring mutex, the I_S query tries to acquire session temp pool
+  mutex again */
+  check_trx_exists(thd);
+  innodb_session_t *innodb_session = thd_to_innodb_session(thd);
+  innodb_session->get_instrinsic_temp_tblsp();
+  auto print = [&](const ibt::Tablespace *ts) {
+    i_s_innodb_session_temp_tablespaces_fill_one(thd, ts, tables->table);
+  };
+
+  ibt::tbsp_pool->iterate_tbsp(print);
+
+  DBUG_RETURN(0);
+}
+
+/** Bind the dynamic table
+INFORMATION_SCHEMA.INNODB_SESSION_TEMPORARY_TABLESPACES
+@param[in,out]	p	table schema object
+@return 0 on success */
+static int innodb_session_temp_tablespaces_init(void *p) {
+  ST_SCHEMA_TABLE *schema;
+
+  DBUG_ENTER("innodb_session_temp_tablespaces_init");
+
+  schema = (ST_SCHEMA_TABLE *)p;
+
+  schema->fields_info = innodb_session_temp_tablespaces_fields_info;
+  schema->fill_table = i_s_innodb_session_temp_tablespaces_fill;
+
+  DBUG_RETURN(0);
+}
+
+struct st_mysql_plugin i_s_innodb_session_temp_tablespaces = {
+    /* the plugin type (a MYSQL_XXX_PLUGIN value) */
+    /* int */
+    STRUCT_FLD(type, MYSQL_INFORMATION_SCHEMA_PLUGIN),
+
+    /* pointer to type-specific plugin descriptor */
+    /* void* */
+    STRUCT_FLD(info, &i_s_info),
+
+    /* plugin name */
+    /* const char* */
+    STRUCT_FLD(name, "INNODB_SESSION_TEMP_TABLESPACES"),
+
+    /* plugin author (for SHOW PLUGINS) */
+    /* const char* */
+    STRUCT_FLD(author, plugin_author),
+
+    /* general descriptive text (for SHOW PLUGINS) */
+    /* const char* */
+    STRUCT_FLD(descr, "InnoDB Session Temporary tablespaces"),
+
+    /* the plugin license (PLUGIN_LICENSE_XXX) */
+    /* int */
+    STRUCT_FLD(license, PLUGIN_LICENSE_GPL),
+
+    /* the function to invoke when plugin is loaded */
+    /* int (*)(void*); */
+    STRUCT_FLD(init, innodb_session_temp_tablespaces_init),
 
     /* the function to invoke when plugin is un installed */
     /* int (*)(void*); */

@@ -43,9 +43,6 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "ha_prototypes.h"
 #include "lock0lock.h"
 #include "log0log.h"
-#include "my_compiler.h"
-#include "my_dbug.h"
-#include "my_inttypes.h"
 #include "os0proc.h"
 #include "que0que.h"
 #include "read0read.h"
@@ -64,6 +61,9 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "ut0new.h"
 #include "ut0pool.h"
 #include "ut0vec.h"
+
+#include "my_dbug.h"
+#include "mysql/plugin.h"
 
 static const ulint MAX_DETAILED_ERROR_LEN = 256;
 
@@ -86,6 +86,29 @@ sess_t *trx_dummy_sess = NULL;
 TrxVersion::TrxVersion(trx_t *trx) : m_trx(trx), m_version(trx->version) {
   /* No op */
 }
+
+/* The following function makes the transaction committed in memory
+and makes its changes to data visible to other transactions.
+In particular it releases implicit and explicit locks held by transaction and
+transitions to the transaction to the TRX_STATE_COMMITTED_IN_MEMORY state.
+NOTE that there is a small discrepancy from the strict formal
+visibility rules here: a human user of the database can see
+modifications made by another transaction T even before the necessary
+log segment has been flushed to the disk. If the database happens to
+crash before the flush, the user has seen modifications from T which
+will never be a committed transaction. However, any transaction T2
+which sees the modifications of the committing transaction T, and
+which also itself makes modifications to the database, will get an lsn
+larger than the committing transaction T. In the case where the log
+flush fails, and T never gets committed, also T2 will never get
+committed.
+@param[in,out]  trx         The transaction for which will be committed in
+                            memory
+@param[in]      serialized  true if serialisation log was written. Affects the
+                            list of things we need to clean up during
+                            trx_erase_lists.
+*/
+static void trx_release_impl_and_expl_locks(trx_t *trx, bool serialized);
 
 /** Set flush observer for the transaction
 @param[in,out]	trx		transaction struct
@@ -567,24 +590,18 @@ void trx_free_prepared(trx_t *trx) /*!< in, own: trx object */
   ut_a(trx_state_eq(trx, TRX_STATE_PREPARED));
   ut_a(trx->magic_n == TRX_MAGIC_N);
 
-  lock_trx_release_locks(trx);
-  trx_undo_free_prepared(trx);
-
   assert_trx_in_rw_list(trx);
 
-  ut_a(!trx->read_only);
+  trx_release_impl_and_expl_locks(trx, false);
+  trx_undo_free_prepared(trx);
 
-  ut_d(trx->in_rw_trx_list = FALSE);
+  ut_ad(!trx->in_rw_trx_list);
+  ut_a(!trx->read_only);
 
   trx->state = TRX_STATE_NOT_STARTED;
 
   /* Undo trx_resurrect_table_locks(). */
   lock_trx_lock_list_init(&trx->lock.trx_locks);
-
-  /* Note: This vector is not guaranteed to be empty because the
-  transaction was never committed and therefore lock_trx_release()
-  was not called. */
-  trx->lock.table_locks.clear();
 
   trx_free(trx);
 }
@@ -678,6 +695,7 @@ static void trx_resurrect_table_ids(trx_t *trx, const trx_undo_ptr_t *undo_ptr,
     table_id_t table_id;
     ulint cmpl_info;
     bool updated_extern;
+    type_cmpl_t type_cmpl;
 
     page_t *undo_rec_page = page_align(undo_rec);
 
@@ -687,7 +705,7 @@ static void trx_resurrect_table_ids(trx_t *trx, const trx_undo_ptr_t *undo_ptr,
     }
 
     trx_undo_rec_get_pars(undo_rec, &type, &cmpl_info, &updated_extern,
-                          &undo_no, &table_id);
+                          &undo_no, &table_id, type_cmpl);
     tables.insert(table_id);
 
     undo_rec = trx_undo_get_prev_rec(undo_rec, undo->hdr_page_no,
@@ -719,7 +737,7 @@ void trx_resurrect_locks() {
           continue;
         }
 
-        if (trx->state == TRX_STATE_PREPARED) {
+        if (trx->state == TRX_STATE_PREPARED && !dict_table_is_sdi(table->id)) {
           trx->mod_tables.insert(table);
         }
         DICT_TF2_FLAG_SET(table, DICT_TF2_RESURRECT_PREPARED);
@@ -988,19 +1006,24 @@ If an rseg is not marked for undo tablespace truncation, we assign
 it to a transaction. We increment trx_ref_count to keep the purge
 thread from truncating the undo tablespace that contains this rseg
 until the transaction is done with it.
-@param[in]	target_undo_tablespaces
-                                number of undo tablespaces to use when
-                                calculating which rseg to assign.
 @return assigned rollback segment instance */
-static trx_rseg_t *get_next_redo_rseg_from_undo_spaces(
-    ulong target_undo_tablespaces) {
+static trx_rseg_t *get_next_redo_rseg_from_undo_spaces() {
   undo::Tablespace *undo_space;
-  ulong target_rollback_segments = srv_rollback_segments;
+
+  /* The number of undo tablespaces cannot be changed while
+  we have this s_lock. */
+  undo::spaces->s_lock();
+
+  /* Use all known undo tablespaces.  Some may be inactive. */
+  ulint target_undo_tablespaces = undo::spaces->size();
 
   ut_ad(target_undo_tablespaces > 0);
-  ut_d(undo::spaces->s_lock());
-  ut_ad(target_undo_tablespaces <= undo::spaces->size());
-  ut_d(undo::spaces->s_unlock());
+
+  /* The number of rollback segments may be changed at any instant.
+  So use the value at this instant.  Rollback segments are never
+  deleted from an rseg list, so srv_rollback_segments is always
+  less than rsegs->size(). */
+  ulint target_rollback_segments = srv_rollback_segments;
 
   static ulint rseg_counter = 0;
   trx_rseg_t *rseg = nullptr;
@@ -1022,36 +1045,27 @@ static trx_rseg_t *get_next_redo_rseg_from_undo_spaces(
 
     undo_space = undo::spaces->at(spaces_slot);
 
+    /* Avoid any rseg that resides in a tablespace that has been made
+    inactive either explicitly or by being marked for truncate. We do
+    not want to wait here on an x_lock for an rseg in an undo tablespace
+    that is being truncated.  So check this first without the latch.
+    It could be set immediately after this, but that is a very short gap
+    and the get_active() call below will use an rseg->s_lock. */
+    if (!undo_space->is_active_no_latch()) {
+      continue;
+    }
+
+    /* This is done here because we know the rsegs() pointer is good. */
     ut_ad(target_rollback_segments <= undo_space->rsegs()->size());
 
-    /* Avoid any rseg that resides in a tablespace that has
-    been marked for truncate. This is possible only if there
-    are at least 2 UNDO tablespaces active.
-    We do not want to wait below on an s_lock for an rseg in
-    an undo tablespace that is being truncated.  So check
-    this first.  It could be set immediately after this, but
-    that is a very short gap, compared to the time it takes
-    to truncate an undo tablespace.*/
-    if (undo_space->rsegs()->is_inactive()) {
-      rseg = nullptr;
-      continue;
-    }
-
     /* Check again with a shared lock. */
-    undo_space->rsegs()->s_lock();
-    if (undo_space->rsegs()->is_inactive()) {
-      rseg = nullptr;
-      undo_space->rsegs()->s_unlock();
+    rseg = undo_space->get_active(rseg_slot);
+    if (rseg == nullptr) {
       continue;
     }
-
-    /* Mark the chosen rseg so that it will not be selected
-    for UNDO truncation. */
-    rseg = undo_space->rsegs()->at(rseg_slot);
-    rseg->trx_ref_count++;
-
-    undo_space->rsegs()->s_unlock();
   }
+
+  undo::spaces->s_unlock();
 
   ut_ad(rseg->trx_ref_count > 0);
 
@@ -1101,14 +1115,10 @@ static trx_rseg_t *get_next_redo_rseg_from_trx_sys() {
 We assume that the assigned slots are not contiguous and have gaps.
 @return assigned rollback segment instance */
 static trx_rseg_t *get_next_redo_rseg() {
-  /* Since this global value can change at any instant, use the
-  value at this instant. */
-  ulong target = srv_undo_tablespaces;
-
-  if (target == 0) {
+  if (!trx_sys->rsegs.is_empty()) {
     return (get_next_redo_rseg_from_trx_sys());
   } else {
-    return (get_next_redo_rseg_from_undo_spaces(target));
+    return (get_next_redo_rseg_from_undo_spaces());
   }
 }
 
@@ -1620,6 +1630,8 @@ static void trx_flush_log_if_needed(
 {
   trx->op_info = "flushing log";
 
+  DEBUG_SYNC_C("trx_flush_log_if_needed");
+
   if (trx->ddl_operation || trx->ddl_must_flush) {
     log_write_up_to(*log_sys, lsn, true);
   } else {
@@ -1667,7 +1679,7 @@ also released by this call as trx is removed from rw_trx_list.
 @param[in] serialised	true if serialisation log was written */
 static void trx_erase_lists(trx_t *trx, bool serialised) {
   ut_ad(trx->id > 0);
-  trx_sys_mutex_enter();
+  ut_ad(trx_sys_mutex_own());
 
   if (serialised) {
     UT_LIST_REMOVE(trx_sys->serialisation_list, trx);
@@ -1697,8 +1709,58 @@ static void trx_erase_lists(trx_t *trx, bool serialised) {
                                                 : trx_sys->rw_trx_ids.front();
 
   trx_sys->min_active_id.store(min_id);
+}
 
-  trx_sys_mutex_exit();
+static void trx_release_impl_and_expl_locks(trx_t *trx, bool serialized) {
+  check_trx_state(trx);
+  ut_ad(trx_state_eq(trx, TRX_STATE_ACTIVE) ||
+        trx_state_eq(trx, TRX_STATE_PREPARED));
+
+  bool trx_sys_latch_is_needed =
+      (trx->id > 0) || trx_state_eq(trx, TRX_STATE_PREPARED);
+
+  if (trx_sys_latch_is_needed) {
+    trx_sys_mutex_enter();
+  }
+
+  if (trx->id > 0) {
+    /* For consistent snapshot, we need to remove current
+    transaction from running transaction id list for mvcc
+    before doing commit and releasing locks. */
+    trx_erase_lists(trx, serialized);
+  }
+
+  if (trx_state_eq(trx, TRX_STATE_PREPARED)) {
+    ut_a(trx_sys->n_prepared_trx > 0);
+    --trx_sys->n_prepared_trx;
+  }
+
+  trx_mutex_enter(trx);
+  /* Please consider this particular point in time as the moment the trx's
+  implicit locks become released.
+  This change is protected by both trx_sys->mutex and trx->mutex.
+  Therefore, there are two secure ways to check if the trx still can hold
+  implicit locks:
+  (1) if you only know id of the trx, then you can obtain trx_sys->mutex and
+      check if trx is still in rw_trx_set. This works, because the call to
+      trx_erase_list() which removes trx from this list several lines above is
+      also protected by trx_sys->mutex. We use this approach in
+      lock_rec_convert_impl_to_expl() by using trx_rw_is_active()
+  (2) if you have pointer to trx, and you know it is safe to access (say, you
+      hold reference to this trx which prevents it from being freed) then you
+      can obtain trx->mutex and check if trx->state is equal to
+      TRX_STATE_COMMITTED_IN_MEMORY. We use this approach in
+      lock_rec_convert_impl_to_expl_for_trx() when deciding for the final time
+      if we really want to create explicit lock on behalf of implicit lock
+      holder. */
+  trx->state = TRX_STATE_COMMITTED_IN_MEMORY;
+  trx_mutex_exit(trx);
+
+  if (trx_sys_latch_is_needed) {
+    trx_sys_mutex_exit();
+  }
+
+  lock_trx_release_locks(trx);
 }
 
 /** Commits a transaction in memory. */
@@ -1750,14 +1812,7 @@ written */
     trx->state = TRX_STATE_NOT_STARTED;
 
   } else {
-    if (trx->id > 0) {
-      /* For consistent snapshot, we need to remove current
-      transaction from running transaction id list for mvcc
-      before doing commit and releasing locks. */
-      trx_erase_lists(trx, serialised);
-    }
-
-    lock_trx_release_locks(trx);
+    trx_release_impl_and_expl_locks(trx, serialised);
 
     /* Remove the transaction from the list of active
     transactions now that it no longer holds any user locks. */
@@ -2159,6 +2214,7 @@ que_thr_t *trx_commit_step(que_thr_t *thr) /*!< in: query thread */
  @return DB_SUCCESS or error number */
 dberr_t trx_commit_for_mysql(trx_t *trx) /*!< in/out: transaction */
 {
+  DEBUG_SYNC_C("trx_commit_for_mysql_checks_for_aborted");
   TrxInInnoDB trx_in_innodb(trx, true);
 
   if (trx_in_innodb.is_aborted() && trx->killed_by != os_thread_get_curr_id()) {
@@ -2204,7 +2260,11 @@ dberr_t trx_commit_for_mysql(trx_t *trx) /*!< in/out: transaction */
 void trx_commit_complete_for_mysql(trx_t *trx) /*!< in/out: transaction */
 {
   if (trx->id != 0 || !trx->must_flush_log_later ||
-      thd_requested_durability(trx->mysql_thd) == HA_IGNORE_DURABILITY) {
+      (thd_requested_durability(trx->mysql_thd) == HA_IGNORE_DURABILITY &&
+       !trx->ddl_must_flush)) {
+    /* If we removed trx->ddl_must_flush from condition above, we would
+    need to take care of fixing innobase_flush_logs for a scenario in
+    which srv_flush_log_at_trx_commit == 0. */
     return;
   }
 
@@ -2439,7 +2499,6 @@ ibool trx_assert_started(const trx_t *trx) /*!< in: transaction */
   }
 
   ut_error;
-  return (FALSE);
 }
 #endif /* UNIV_DEBUG */
 
@@ -2481,8 +2540,6 @@ static lsn_t trx_prepare_low(
                               segment scheduled for prepare. */
     bool noredo_logging)      /*!< in: turn-off redo logging. */
 {
-  lsn_t lsn;
-
   if (undo_ptr->insert_undo != NULL || undo_ptr->update_undo != NULL) {
     mtr_t mtr;
     trx_rseg_t *rseg = undo_ptr->rseg;
@@ -2519,13 +2576,14 @@ static lsn_t trx_prepare_low(
     mtr_commit(&mtr);
     /*--------------*/
 
-    lsn = mtr.commit_lsn();
-    ut_ad(noredo_logging || lsn > 0);
-  } else {
-    lsn = 0;
+    if (!noredo_logging) {
+      const lsn_t lsn = mtr.commit_lsn();
+      ut_ad(lsn > 0);
+      return lsn;
+    }
   }
 
-  return (lsn);
+  return 0;
 }
 
 /** Prepares a transaction. */
@@ -2541,11 +2599,11 @@ static void trx_prepare(trx_t *trx) /*!< in/out: transaction */
   Recovered transactions cannot. */
   ut_a(!trx->is_recovered);
 
+  DBUG_EXECUTE_IF("ib_trx_crash_during_xa_prepare_step", DBUG_SUICIDE(););
+
   if (trx->rsegs.m_redo.rseg != NULL && trx_is_redo_rseg_updated(trx)) {
     lsn = trx_prepare_low(trx, &trx->rsegs.m_redo, false);
   }
-
-  DBUG_EXECUTE_IF("ib_trx_crash_during_xa_prepare_step", DBUG_SUICIDE(););
 
   if (trx->rsegs.m_noredo.rseg != NULL && trx_is_temp_rseg_updated(trx)) {
     trx_prepare_low(trx, &trx->rsegs.m_noredo, true);
@@ -2630,16 +2688,74 @@ dberr_t trx_prepare_for_mysql(trx_t *trx) {
   return (DB_SUCCESS);
 }
 
+/**
+  Get the table name and database name for the given dd_table object.
+
+  @param[in,out]  table Handler table name object pointer.
+  @param[in]      dd_table  Pointer table name DD object.
+  @param[in]      mem_root  Mem_root for space allocation.
+
+  @retval     true   Error, e.g. Memory allocation failure.
+  @retval     false  Success
+*/
+
+static bool get_table_name_info(st_handler_tablename *table,
+                                const dict_table_t *dd_table,
+                                MEM_ROOT *mem_root) {
+  const char *ptr;
+
+  size_t len = dict_get_db_name_len(dd_table->name.m_name);
+  table->db = strmake_root(mem_root, dd_table->name.m_name, len);
+  if (table->db == nullptr) return true;
+
+  ptr = dict_remove_db_name(dd_table->name.m_name);
+  len = ut_strlen(ptr);
+  table->tablename = strmake_root(mem_root, ptr, len);
+  if (table->tablename == nullptr) return true;
+
+  return false;
+}
+
+/**
+  Get prepared transaction info from InnoDB data structure.
+
+  @param[in,out]  txn_list  Handler layer tansaction list.
+  @param[in]      trx       Innodb transaction info.
+  @param[in]      mem_root  Mem_root for space allocation.
+
+  @retval     true          Error, e.g. Memory allocation failure.
+  @retval     false         Success
+*/
+
+static bool get_info_about_prepared_transaction(XA_recover_txn *txn_list,
+                                                const trx_t *trx,
+                                                MEM_ROOT *mem_root) {
+  txn_list->id = *trx->xid;
+  txn_list->mod_tables = new (mem_root) List<st_handler_tablename>();
+  if (!txn_list->mod_tables) return true;
+
+  for (auto dd_table : trx->mod_tables) {
+    st_handler_tablename *table = new (mem_root) st_handler_tablename();
+
+    if (!table || get_table_name_info(table, dd_table, mem_root) ||
+        txn_list->mod_tables->push_back(table, mem_root))
+      return true;
+  }
+  return false;
+}
+
 /** This function is used to find number of prepared transactions and
  their transaction objects for a recovery.
  @return number of prepared transactions stored in xid_list */
-int trx_recover_for_mysql(XID *xid_list, /*!< in/out: prepared transactions */
-                          ulint len)     /*!< in: number of slots in xid_list */
+int trx_recover_for_mysql(
+    XA_recover_txn *txn_list, /*!< in/out: prepared transactions */
+    ulint len,                /*!< in: number of slots in xid_list */
+    MEM_ROOT *mem_root)       /*!< in: memory for table names */
 {
   const trx_t *trx;
   ulint count = 0;
 
-  ut_ad(xid_list);
+  ut_ad(txn_list);
   ut_ad(len);
 
   /* We should set those transactions which are in the prepared state
@@ -2656,7 +2772,8 @@ int trx_recover_for_mysql(XID *xid_list, /*!< in/out: prepared transactions */
     trx_sys->mutex. It may change to PREPARED, but not if
     trx->is_recovered. It may also change to COMMITTED. */
     if (trx_state_eq(trx, TRX_STATE_PREPARED)) {
-      xid_list[count] = *trx->xid;
+      if (get_info_about_prepared_transaction(&txn_list[count], trx, mem_root))
+        break;
 
       if (count == 0) {
         ib::info(ER_IB_MSG_1207) << "Starting recovery for"
@@ -2843,6 +2960,7 @@ void trx_set_rw_mode(trx_t *trx) /*!< in/out: transaction that is RW */
   ut_ad(trx->rsegs.m_redo.rseg == 0);
   ut_ad(!trx->in_rw_trx_list);
   ut_ad(!trx_is_autocommit_non_locking(trx));
+  ut_ad(!trx->read_only);
 
   if (srv_force_recovery >= SRV_FORCE_NO_TRX_UNDO) {
     return;
@@ -2879,11 +2997,9 @@ void trx_set_rw_mode(trx_t *trx) /*!< in/out: transaction that is RW */
   }
 #endif /* UNIV_DEBUG */
 
-  if (!trx->read_only) {
-    UT_LIST_ADD_FIRST(trx_sys->rw_trx_list, trx);
+  UT_LIST_ADD_FIRST(trx_sys->rw_trx_list, trx);
 
-    ut_d(trx->in_rw_trx_list = true);
-  }
+  ut_d(trx->in_rw_trx_list = true);
 
   mutex_exit(&trx_sys->mutex);
 }
@@ -2979,7 +3095,10 @@ void trx_kill_blocking(trx_t *trx) {
     /* Return back inside InnoDB */
     if (exited_innodb) {
       exited_innodb = false;
+      /* Exit transaction mutex before entering Innodb. */
+      trx_mutex_exit(victim_trx);
       srv_conc_force_enter_innodb(trx);
+      trx_mutex_enter(victim_trx);
     }
 
     /* Compare the version to check if the transaction has

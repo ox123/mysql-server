@@ -1,4 +1,4 @@
-/* Copyright (c) 2014, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2014, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -46,6 +46,12 @@ const Table_partitions &Table_partitions::instance() {
 
 ///////////////////////////////////////////////////////////////////////////
 
+const CHARSET_INFO *Table_partitions::name_collation() {
+  return &my_charset_utf8_tolower_ci;
+}
+
+///////////////////////////////////////////////////////////////////////////
+
 Table_partitions::Table_partitions() {
   m_target_def.set_table_name("table_partitions");
 
@@ -58,9 +64,10 @@ Table_partitions::Table_partitions() {
   m_target_def.add_field(FIELD_NUMBER, "FIELD_NUMBER",
                          "number SMALLINT UNSIGNED NOT NULL");
   m_target_def.add_field(FIELD_NAME, "FIELD_NAME",
-                         "name VARCHAR(64) NOT NULL COLLATE utf8_tolower_ci");
+                         "name VARCHAR(64) NOT NULL COLLATE " +
+                             String_type(name_collation()->name));
   m_target_def.add_field(FIELD_ENGINE, "FIELD_ENGINE",
-                         "engine VARCHAR(64) NOT NULL");
+                         "engine VARCHAR(64) NOT NULL COLLATE utf8_general_ci");
   m_target_def.add_field(FIELD_DESCRIPTION_UTF8, "FIELD_DESCRIPTION_UTF8",
                          "description_utf8 TEXT");
   m_target_def.add_field(FIELD_COMMENT, "FIELD_COMMENT",
@@ -85,6 +92,9 @@ Table_partitions::Table_partitions() {
   m_target_def.add_index(INDEX_K_ENGINE, "INDEX_K_ENGINE", "KEY(engine)");
   m_target_def.add_index(INDEX_K_TABLESPACE_ID, "INDEX_K_TABLESPACE_ID",
                          "KEY(tablespace_id)");
+  m_target_def.add_index(INDEX_K_PARENT_PARTITION_ID,
+                         "INDEX_K_PARENT_PARTITION_ID",
+                         "KEY(parent_partition_id)");
 
   m_target_def.add_foreign_key(FK_TABLE_ID, "FK_TABLE_ID",
                                "FOREIGN KEY (table_id) REFERENCES "
@@ -92,6 +102,9 @@ Table_partitions::Table_partitions() {
   m_target_def.add_foreign_key(FK_TABLESPACE_ID, "FK_TABLESPACE_ID",
                                "FOREIGN KEY (tablespace_id) REFERENCES "
                                "tablespaces(id)");
+  m_target_def.add_foreign_key(FK_PARENT_PARTITION_ID, "FK_PARENT_PARTITION_ID",
+                               "FOREIGN KEY (parent_partition_id) REFERENCES "
+                               "table_partitions(id)");
 }
 
 ///////////////////////////////////////////////////////////////////////////

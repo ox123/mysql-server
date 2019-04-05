@@ -21,8 +21,8 @@ You should have received a copy of the GNU General Public License
 along with this program; if not, write to the Free Software
 Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
-#ifndef X_SHA256_SCRAMBLE_GENERATOR_H_
-#define X_SHA256_SCRAMBLE_GENERATOR_H_
+#ifndef PLUGIN_X_CLIENT_SHA256_SCRAMBLE_GENERATOR_H_
+#define PLUGIN_X_CLIENT_SHA256_SCRAMBLE_GENERATOR_H_
 
 #include <memory>
 #include <string>
@@ -60,7 +60,7 @@ class Generate_digest {
 class SHA256_digest : public Generate_digest {
  public:
   SHA256_digest();
-  ~SHA256_digest();
+  ~SHA256_digest() override;
 
   bool update_digest(const void *src, std::uint32_t length) override;
   bool retrieve_digest(unsigned char *digest, std::uint32_t length) override;
@@ -115,4 +115,4 @@ bool generate_sha256_scramble(unsigned char *out_scramble,
 
 }  // namespace xcl
 
-#endif  // X_SHA256_SCRAMBLE_GENERATOR_H_
+#endif  // PLUGIN_X_CLIENT_SHA256_SCRAMBLE_GENERATOR_H_

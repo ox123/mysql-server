@@ -1,4 +1,4 @@
-# Copyright (c) 2016, 2017, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2016, 2018, Oracle and/or its affiliates. All rights reserved.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -108,7 +108,19 @@ set(ADAPTER_SOURCE_FILES
 ###### COMPILER AND LINKER OPTIONS
 
 # Enable asserts:
-remove_definitions(-DNDEBUG)
+REMOVE_DEFINITIONS(-DNDEBUG)
+FOREACH(flag
+    CMAKE_C_FLAGS_DEBUG
+    CMAKE_C_FLAGS_RELWITHDEBINFO
+    CMAKE_C_FLAGS_RELEASE
+    CMAKE_C_FLAGS_MINSIZEREL
+    CMAKE_CXX_FLAGS_DEBUG
+    CMAKE_CXX_FLAGS_RELWITHDEBINFO
+    CMAKE_CXX_FLAGS_RELEASE
+    CMAKE_CXX_FLAGS_MINSIZEREL
+    )
+  STRING(REPLACE "-DNDEBUG"  "" "${flag}" "${${flag}}")
+ENDFOREACH()
 
 if(WIN32) 
   set(ADAPTER_REQUIRED_LIBS ndbclient_static node)
@@ -137,12 +149,20 @@ else()
 #  set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib")
 endif()
 
-# Suppress a few compiler warnings
-IF(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  ADD_COMPILE_FLAGS(${ADAPTER_SOURCE_FILES}
-                    COMPILE_FLAGS
-                    "-Wno-unused-parameter")
-ENDIF()
+
+# Disable certain compiler warnings
+FOREACH(warning
+        "unused-parameter"
+        "cast-function-type"
+        "undefined-reinterpret-cast"
+       )
+  STRING(REPLACE "-" "_" warning_ ${warning})
+  STRING(TOUPPER ${warning_} WARNING)
+  CHECK_CXX_COMPILER_FLAG("-W${warning}" HAVE_${WARNING})
+  IF(HAVE_${WARNING})
+    SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-${warning}")
+  ENDIF()
+ENDFOREACH()
 
 add_library(ndb_adapter MODULE ${ADAPTER_SOURCE_FILES})
 

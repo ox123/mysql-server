@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2016, 2017, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2016, 2018, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
@@ -148,6 +148,14 @@ struct z_index_entry_t {
   @param[in]	node	the location where index entry starts. */
   z_index_entry_t(flst_node_t *node)
       : m_node(node),
+        m_mtr(nullptr),
+        m_index(nullptr),
+        m_block(nullptr),
+        m_page_no(FIL_NULL) {}
+
+  /** Default constructor */
+  z_index_entry_t()
+      : m_node(nullptr),
         m_mtr(nullptr),
         m_index(nullptr),
         m_block(nullptr),
@@ -411,7 +419,7 @@ struct z_index_entry_t {
   }
 
   /** Get the LOB version. */
-  ulint get_lob_version() const {
+  uint32_t get_lob_version() const {
     return (mach_read_from_4(m_node + OFFSET_LOB_VERSION));
   }
 
@@ -518,6 +526,6 @@ inline std::ostream &operator<<(std::ostream &out, const z_index_entry_t &obj) {
   return (obj.print(out));
 }
 
-}; /* namespace lob */
+} /* namespace lob */
 
 #endif /* zlob0index_h */

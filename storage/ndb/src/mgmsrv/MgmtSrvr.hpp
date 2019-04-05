@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2016, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -110,7 +110,7 @@ public:
     int print_full_config;
     const char* configdir;
     int verbose;
-    MgmtOpts() : configdir(MYSQLCLUSTERDIR) {};
+    MgmtOpts() : configdir(MYSQLCLUSTERDIR) {}
     int reload;
     int initial;
     NodeBitmask nowait_nodes;
@@ -145,7 +145,7 @@ private:
 
 public:
 
-  NodeId getOwnNodeId() const {return _ownNodeId;};
+  NodeId getOwnNodeId() const {return _ownNodeId;}
 
   /**
    * Get status on a node.
@@ -322,13 +322,20 @@ private:
   void config_changed(NodeId, const Config*);
   void setClusterLog(const Config* conf);
   void configure_eventlogger(const BaseString& logdestination) const;
+  /**
+   * Make cluster logging asynchronous/synchronous
+   * when g_eventLogger is set up the next time.
+   * @param async_cluster_logging true for async logging,
+   * false for sync logging
+   */
+  void set_async_cluster_logging(bool async_cluster_logging);
 public:
 
   /**
    * Returns the port number where MgmApiService is started
    * @return port number.
    */
-  int getPort() const { return m_port; };
+  int getPort() const { return m_port; }
 
   int setDbParameter(int node, int parameter, const char * value, BaseString&);
   int setConnectionDbParameter(int node1, int node2, int param, int value,
@@ -572,6 +579,7 @@ public:
 
 private:
   BaseString m_version_string;
+  bool m_async_cluster_logging;
 public:
   const char* get_version_string(void) const {
     return m_version_string.c_str();

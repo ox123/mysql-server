@@ -1,4 +1,4 @@
-/* Copyright (c) 2011, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2011, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -136,7 +136,7 @@ class Mock_protocol : public Protocol {
   virtual bool store(MYSQL_TIME *, uint) { return false; }
   virtual bool store_date(MYSQL_TIME *) { return false; }
   virtual bool store(Proto_field *) { return false; }
-  virtual enum enum_protocol_type type() { return PROTOCOL_LOCAL; };
+  virtual enum enum_protocol_type type() { return PROTOCOL_LOCAL; }
   virtual enum enum_vio_type connection_type() { return NO_VIO_TYPE; }
   virtual int get_command(COM_DATA *, enum_server_command *) { return -1; }
   virtual bool flush() { return true; }
@@ -582,6 +582,7 @@ TEST_F(FieldTest, MakeSortKey) {
     SCOPED_TRACE("Field_null");
     CHARSET_INFO cs;
     cs.state = MY_CHARSET_UNDEFINED;  // Avoid valgrind warning.
+    cs.mbmaxlen = 1;
     Field_null fn(NULL, 0, Field::NONE, "", &cs);
     test_make_sort_key(&fn);
   }
@@ -641,6 +642,7 @@ TEST_F(FieldTest, MakeSortKey) {
     SCOPED_TRACE("Field_blob");
     CHARSET_INFO cs;
     cs.state = MY_CHARSET_UNDEFINED;  // Avoid valgrind warning.
+    cs.mbmaxlen = 1;
     Field_blob fb(0, false, "", &cs, false);
   }
   {

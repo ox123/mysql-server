@@ -23,14 +23,20 @@
 #ifndef XCOM_BASE_H
 #define XCOM_BASE_H
 
+#include <stdbool.h>
 #include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+#ifndef _WIN32
+#include <netdb.h>
+#endif
+
 #include "plugin/group_replication/libmysqlgcs/src/bindings/xcom/xcom/task_debug.h"
 #include "plugin/group_replication/libmysqlgcs/src/bindings/xcom/xcom/x_platform.h"
+#include "plugin/group_replication/libmysqlgcs/src/bindings/xcom/xcom/xcom_input_request.h"
 #include "plugin/group_replication/libmysqlgcs/src/bindings/xcom/xcom/xcom_os_layer.h"
 #include "plugin/group_replication/libmysqlgcs/src/bindings/xcom/xcom/xdr_utils.h"
 
@@ -104,6 +110,11 @@ site_def const *get_proposer_site();
 synode_no get_current_message();
 void start_run_tasks();
 
+int is_node_v4_reachable(char *node_address);
+int is_node_v4_reachable_with_info(struct addrinfo *retrieved_addr_info);
+int are_we_allowed_to_upgrade_to_v6(app_data_ptr a);
+struct addrinfo *does_node_have_v4_address(struct addrinfo *retrieved);
+
 #define RESET_CLIENT_MSG              \
   if (ep->client_msg) {               \
     msg_link_delete(&ep->client_msg); \
@@ -171,7 +182,8 @@ typedef void (*xcom_local_view_receiver)(synode_no message_id, node_set nodes);
 void set_xcom_local_view_receiver(xcom_local_view_receiver x);
 
 typedef void (*xcom_global_view_receiver)(synode_no config_id,
-                                          synode_no message_id, node_set nodes);
+                                          synode_no message_id, node_set nodes,
+                                          xcom_event_horizon);
 void set_xcom_global_view_receiver(xcom_global_view_receiver x);
 
 void set_xcom_logger(xcom_logger x);
@@ -188,12 +200,28 @@ typedef void (*xcom_state_change_cb)(int status);
 void set_xcom_run_cb(xcom_state_change_cb x);
 void set_xcom_terminate_cb(xcom_state_change_cb x);
 void set_xcom_exit_cb(xcom_state_change_cb x);
+void set_xcom_expel_cb(xcom_state_change_cb x);
 
 typedef int (*should_exit_getter)();
 void set_should_exit_getter(should_exit_getter x);
 
 app_data_ptr init_config_with_group(app_data *a, node_list *nl, cargo_type type,
                                     uint32_t group_id);
+app_data_ptr init_set_event_horizon_msg(app_data *a, uint32_t group_id,
+                                        xcom_event_horizon event_horizon);
+app_data_ptr init_get_event_horizon_msg(app_data *a, uint32_t group_id);
+app_data_ptr init_app_msg(app_data *a, char *payload, u_int payload_size);
+app_data_ptr init_terminate_command(app_data *a);
+
+/* Hook the logic to pop from the input channel. */
+typedef xcom_input_request_ptr (*xcom_input_try_pop_cb)(void);
+void set_xcom_input_try_pop_cb(xcom_input_try_pop_cb pop);
+/* Create a connection to the input channel's signalling socket. */
+bool xcom_input_new_signal_connection(void);
+/* Signal that the input channel has commands. */
+bool xcom_input_signal(void);
+/* Destroy the connection to the input channel's signalling socket. */
+void xcom_input_free_signal_connection(void);
 
 /*
  Registers a callback that is called right after
@@ -220,8 +248,15 @@ int xcom_client_force_remove_node(connection_descriptor *fd, node_list *nl,
                                   uint32_t group_id);
 int xcom_client_remove_node(connection_descriptor *fd, node_list *nl,
                             uint32_t group_id);
+int64_t xcom_client_send_die(connection_descriptor *fd);
 int64_t xcom_client_send_data(uint32_t size, char *data,
                               connection_descriptor *fd);
+xcom_event_horizon xcom_get_minimum_event_horizon();
+xcom_event_horizon xcom_get_maximum_event_horizon();
+int xcom_client_get_event_horizon(connection_descriptor *fd, uint32_t group_id,
+                                  xcom_event_horizon *event_horizon);
+int xcom_client_set_event_horizon(connection_descriptor *fd, uint32_t group_id,
+                                  xcom_event_horizon event_horizon);
 int xcom_client_terminate_and_exit(connection_descriptor *fd);
 int xcom_client_set_cache_limit(connection_descriptor *fd,
                                 uint64_t cache_limit);

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2018, Oracle and/or its affiliates. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0,
@@ -22,27 +22,37 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
-#ifndef _NGS_METADATA_BUILDER_H_
-#define _NGS_METADATA_BUILDER_H_
+#ifndef PLUGIN_X_NGS_INCLUDE_NGS_PROTOCOL_METADATA_BUILDER_H_
+#define PLUGIN_X_NGS_INCLUDE_NGS_PROTOCOL_METADATA_BUILDER_H_
 
 #include <set>
 #include <string>
 
 #include "m_ctype.h"
 #include "my_inttypes.h"
-#include "plugin/x/ngs/include/ngs/interface/protocol_encoder_interface.h"
+
 #include "plugin/x/ngs/include/ngs/protocol/message_builder.h"
 
 namespace ngs {
 
 class Output_buffer;
+struct Encode_column_info;
 
 class Metadata_builder : public Message_builder {
  public:
-  void encode_metadata(Output_buffer *out_buffer,
-                       const Encode_column_info *column_info);
+  Metadata_builder() : Message_builder(false) {}
+
+  void start_metadata_encoding();
+  void encode_metadata(const Encode_column_info *column_info);
+  const std::string &stop_metadata_encoding() const;
+
+ private:
+  void begin_metadata_message(const uint8 type_id);
+  void end_metadata_message();
+  std::string m_metadata;
+  uint32 m_metadata_start = 0;
 };
 
 }  // namespace ngs
 
-#endif  //  _NGS_METADATA_BUILDER_H_
+#endif  // PLUGIN_X_NGS_INCLUDE_NGS_PROTOCOL_METADATA_BUILDER_H_

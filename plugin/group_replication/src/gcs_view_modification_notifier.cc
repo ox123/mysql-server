@@ -26,13 +26,11 @@
 
 #include "my_dbug.h"
 #include "my_systime.h"
+#include "mysql/psi/mysql_cond.h"
 #include "plugin/group_replication/include/plugin_psi.h"
 
 Plugin_gcs_view_modification_notifier::Plugin_gcs_view_modification_notifier()
-    : view_changing(false),
-      cancelled_view_change(false),
-      injected_view_modification(false),
-      error(0) {
+    : view_changing(false), cancelled_view_change(false), error(0) {
   mysql_cond_init(key_GR_COND_view_modification_wait, &wait_for_view_cond);
   mysql_mutex_init(key_GR_LOCK_view_modification_wait, &wait_for_view_mutex,
                    MY_MUTEX_INIT_FAST);
@@ -48,23 +46,13 @@ void Plugin_gcs_view_modification_notifier::start_view_modification() {
   mysql_mutex_lock(&wait_for_view_mutex);
   view_changing = true;
   cancelled_view_change = false;
-  injected_view_modification = false;
   error = 0;
   mysql_mutex_unlock(&wait_for_view_mutex);
 }
 
-void Plugin_gcs_view_modification_notifier::start_injected_view_modification() {
+bool Plugin_gcs_view_modification_notifier::is_view_modification_ongoing() {
   mysql_mutex_lock(&wait_for_view_mutex);
-  view_changing = true;
-  cancelled_view_change = false;
-  injected_view_modification = true;
-  error = 0;
-  mysql_mutex_unlock(&wait_for_view_mutex);
-}
-
-bool Plugin_gcs_view_modification_notifier::is_injected_view_modification() {
-  mysql_mutex_lock(&wait_for_view_mutex);
-  bool result = injected_view_modification;
+  bool result = view_changing;
   mysql_mutex_unlock(&wait_for_view_mutex);
   return result;
 }
@@ -93,7 +81,6 @@ bool Plugin_gcs_view_modification_notifier::is_cancelled() {
 
 bool Plugin_gcs_view_modification_notifier::wait_for_view_modification(
     long timeout) {
-  struct timespec ts;
   int result = 0;
 
   mysql_mutex_lock(&wait_for_view_mutex);
@@ -102,6 +89,7 @@ bool Plugin_gcs_view_modification_notifier::wait_for_view_modification(
                   { view_changing = false; };);
 
   while (view_changing && !cancelled_view_change) {
+    struct timespec ts;
     set_timespec(&ts, timeout);
     result =
         mysql_cond_timedwait(&wait_for_view_cond, &wait_for_view_mutex, &ts);

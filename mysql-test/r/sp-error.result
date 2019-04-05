@@ -2861,6 +2861,8 @@ ERROR 42000: Incorrect database name 'mysqltest111111111122222222223333333333444
 # WL#7897 -- Use DD API for Stored Routines.
 # Test cases to verify error scenarios.
 #
+Warnings:
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 # Case 1. Test case to verify length of stored routine name length.
 #         STORED PROCEDURE -- name with maximum length
 my_column
@@ -2898,3 +2900,26 @@ ERROR HY000: Invalid utf8 character string: 'F09D8C'
 ERROR HY000: Invalid utf8 character string: 'F09D8C'
 ERROR HY000: Invalid utf8 character string: 'F09D8C'
 # Cleanup
+#
+# Bug #24357244: CANNOT CREATE A STORED FUNCTION IF A DATABASE IS NOT
+#                SELECTED
+#
+CREATE DATABASE mysqltest;
+USE mysqltest;
+DROP DATABASE mysqltest;
+SELECT DATABASE();
+DATABASE()
+NULL
+CREATE DATABASE mysqltest;
+CREATE FUNCTION mysqltest.f1() RETURNS INT RETURN 0;
+CREATE FUNCTION mysqltest.f2() RETURNS INT RETURN f1();
+USE mysqltest;
+SELECT f1();
+f1()
+0
+SELECT f2();
+f2()
+0
+DROP FUNCTION IF EXISTS f2;
+DROP FUNCTION IF EXISTS f1;
+DROP DATABASE mysqltest;

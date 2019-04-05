@@ -1,4 +1,4 @@
-/* Copyright (c) 2006, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2006, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -113,8 +113,8 @@ class Query_result_update final : public Query_result_interceptor {
   COPY_INFO **update_operations;
 
  public:
-  Query_result_update(THD *thd, List<Item> *field_list, List<Item> *value_list)
-      : Query_result_interceptor(thd),
+  Query_result_update(List<Item> *field_list, List<Item> *value_list)
+      : Query_result_interceptor(),
         update_table_count(0),
         update_tables(NULL),
         tmp_tables(NULL),
@@ -130,20 +130,19 @@ class Query_result_update final : public Query_result_interceptor {
         transactional_tables(false),
         error_handled(false),
         update_operations(NULL) {}
-  ~Query_result_update() {}
   bool need_explain_interceptor() const override { return true; }
-  bool prepare(List<Item> &list, SELECT_LEX_UNIT *u) override;
+  bool prepare(THD *thd, List<Item> &list, SELECT_LEX_UNIT *u) override;
   bool optimize() override;
-  bool start_execution() override {
+  bool start_execution(THD *) override {
     update_completed = false;
     return false;
   }
-  bool send_data(List<Item> &items) override;
-  void send_error(uint errcode, const char *err) override;
-  bool do_updates();
-  bool send_eof() override;
-  void abort_result_set() override;
-  void cleanup() override;
+  bool send_data(THD *thd, List<Item> &items) override;
+  void send_error(THD *thd, uint errcode, const char *err) override;
+  bool do_updates(THD *thd);
+  bool send_eof(THD *thd) override;
+  void abort_result_set(THD *thd) override;
+  void cleanup(THD *thd) override;
 };
 
 class Sql_cmd_update final : public Sql_cmd_dml {
@@ -168,6 +167,10 @@ class Sql_cmd_update final : public Sql_cmd_dml {
   bool update_single_table(THD *thd);
 
   bool multitable;
+
+  bool accept(THD *thd, Select_lex_visitor *visitor) override;
+
+ public:
   List<Item> *update_value_list;
 };
 

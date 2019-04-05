@@ -159,11 +159,7 @@
     {"tls-version",
      OPT_TLS_VERSION,
      "TLS version to use, "
-#ifndef HAVE_WOLFSSL
      "permitted values are: TLSv1, TLSv1.1, TLSv1.2",
-#else
-     "permitted values are: TLSv1, TLSv1.1",
-#endif
      &opt_tls_version,
      &opt_tls_version,
      0,
@@ -177,7 +173,7 @@
      0},
     {"ssl-fips-mode",
      OPT_SSL_FIPS_MODE,
-     "SSL FIPS mode to use, "
+     "SSL FIPS mode (applies only for OpenSSL); "
 #ifndef HAVE_WOLFSSL
      "permitted values are: OFF, ON, STRICT",
 #else

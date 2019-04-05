@@ -1,3 +1,5 @@
+--source include/have_ndb.inc
+
 #
 # Test ndb_perror which is a small tool used to
 # lookup the textual description for various error
@@ -49,12 +51,4 @@
 --echo # 8) Should print all
 --exec $NDB_PERROR --verbose 4008 2>&1
 
-
-#
-# Added for Bug #26966826
-# below command should give an depricated warning in mysql's perror
-#
-
---error 1
---exec $MY_PERROR --ndb 123456 2>&1
 

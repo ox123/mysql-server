@@ -32,8 +32,6 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "buf0lru.h"
 
-#include "my_inttypes.h"
-
 #include "btr0btr.h"
 #include "btr0sea.h"
 #include "buf0buddy.h"
@@ -45,7 +43,6 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "fil0fil.h"
 #include "hash0hash.h"
 #include "ibuf0ibuf.h"
-#include "lock0lock.h"
 #include "log0recv.h"
 #include "my_dbug.h"
 #include "os0event.h"
@@ -54,6 +51,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "srv0mon.h"
 #include "srv0srv.h"
 #include "sync0rw.h"
+#include "trx0trx.h"
 #include "ut0byte.h"
 #include "ut0rnd.h"
 
@@ -654,10 +652,12 @@ the tail of the LRU list.
 @param[in]	flush		flush to disk if true, otherwise remove
                                 the pages without flushing
 @param[in]	trx		transaction to check if the operation
-                                must be interrupted */
+                                must be interrupted
+@param[in]	strict		true, if no page from tablespace
+                                can be in buffer pool just after flush */
 static void buf_flush_dirty_pages(buf_pool_t *buf_pool, space_id_t id,
                                   FlushObserver *observer, bool flush,
-                                  const trx_t *trx) {
+                                  const trx_t *trx, bool strict) {
   dberr_t err;
 
   do {
@@ -689,7 +689,7 @@ static void buf_flush_dirty_pages(buf_pool_t *buf_pool, space_id_t id,
 
   } while (err == DB_FAIL);
 
-  ut_ad(err == DB_INTERRUPTED ||
+  ut_ad(err == DB_INTERRUPTED || !strict ||
         buf_pool_get_dirty_pages_count(buf_pool, id, observer) == 0);
 }
 
@@ -838,8 +838,10 @@ static void buf_LRU_remove_pages(
     buf_pool_t *buf_pool,    /*!< buffer pool instance */
     space_id_t id,           /*!< in: space id */
     buf_remove_t buf_remove, /*!< in: remove or flush strategy */
-    const trx_t *trx)        /*!< to check if the operation must
+    const trx_t *trx,        /*!< to check if the operation must
                              be interrupted */
+    bool strict)             /*!< in: true if no page from tablespace
+                             can be in buffer pool just after flush */
 {
   FlushObserver *observer = (trx == NULL) ? NULL : trx->flush_observer;
 
@@ -850,11 +852,11 @@ static void buf_LRU_remove_pages(
 
     case BUF_REMOVE_FLUSH_NO_WRITE:
       /* Pass trx as NULL to avoid interruption check. */
-      buf_flush_dirty_pages(buf_pool, id, observer, false, NULL);
+      buf_flush_dirty_pages(buf_pool, id, observer, false, NULL, strict);
       break;
 
     case BUF_REMOVE_FLUSH_WRITE:
-      buf_flush_dirty_pages(buf_pool, id, observer, true, trx);
+      buf_flush_dirty_pages(buf_pool, id, observer, true, trx, strict);
 
       if (observer == NULL) {
         /* Ensure that all asynchronous IO is completed. */
@@ -873,8 +875,10 @@ static void buf_LRU_remove_pages(
 void buf_LRU_flush_or_remove_pages(
     space_id_t id,           /*!< in: space id */
     buf_remove_t buf_remove, /*!< in: remove or flush strategy */
-    const trx_t *trx)        /*!< to check if the operation must
+    const trx_t *trx,        /*!< to check if the operation must
                              be interrupted */
+    bool strict)             /*!< in: true if no page from tablespace
+                             can be in buffer pool just after flush */
 {
   ulint i;
 
@@ -905,7 +909,7 @@ void buf_LRU_flush_or_remove_pages(
         break;
     }
 
-    buf_LRU_remove_pages(buf_pool, id, buf_remove, trx);
+    buf_LRU_remove_pages(buf_pool, id, buf_remove, trx, strict);
   }
 }
 
@@ -1246,7 +1250,6 @@ loop:
       srv_print_innodb_monitor = static_cast<bool>(mon_value_was);
     }
 
-    block->skip_flush_check = false;
     block->page.flush_observer = NULL;
     return (block);
   }
@@ -2202,7 +2205,6 @@ static bool buf_LRU_block_remove_hashed(buf_page_t *bpage, bool zip,
   }
 
   ut_error;
-  return (false);
 }
 
 /** Puts a file page whose has no hash index to the free list. */
@@ -2213,7 +2215,7 @@ static void buf_LRU_block_free_hashed_page(
   buf_pool_t *buf_pool = buf_pool_from_block(block);
 
   if (buf_pool->flush_rbt == NULL) {
-    block->page.id.reset(ULINT32_UNDEFINED, ULINT32_UNDEFINED);
+    block->page.id.reset(UINT32_UNDEFINED, UINT32_UNDEFINED);
   }
 
   buf_block_set_state(block, BUF_BLOCK_MEMORY);

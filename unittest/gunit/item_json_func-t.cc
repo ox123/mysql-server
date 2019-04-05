@@ -1,4 +1,4 @@
-/* Copyright (c) 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -673,6 +673,30 @@ TEST_F(ItemJsonFuncTest, PartialUpdate) {
   }
 }
 
+TEST(FieldJSONTest, TruncatedSortKey) {
+  my_testing::Server_initializer initializer;
+  initializer.SetUp();
+
+  const Json_wrapper doc(parse_json("47"));
+
+  Base_mock_field_json field;
+  Fake_TABLE table(&field);
+  field.make_writable();
+  EXPECT_EQ(TYPE_OK, field.store_json(&doc));
+
+  uchar reference[1024];
+  size_t reference_len = field.make_sort_key(reference, sizeof(reference));
+  ASSERT_LT(reference_len, sizeof(reference));
+
+  for (size_t max_len = 0; max_len < 100; ++max_len) {
+    std::unique_ptr<uchar[]> buf(new uchar[max_len]);
+    size_t len = field.make_sort_key(buf.get(), max_len);
+    EXPECT_EQ(len, std::min(max_len, reference_len));
+    EXPECT_EQ(0, memcmp(buf.get(), reference, len));
+  }
+  initializer.TearDown();
+}
+
 /**
   Microbenchmark which tests the performance of the JSON_SEARCH function.
 */
@@ -709,7 +733,7 @@ static void BM_JsonSearch(size_t num_iterations) {
   StopBenchmarkTiming();
   initializer.TearDown();
 }
-BENCHMARK(BM_JsonSearch);
+BENCHMARK(BM_JsonSearch)
 
 /**
   Microbenchmark which tests the performance of the JSON_SEARCH
@@ -758,6 +782,6 @@ static void BM_JsonSearch_Wildcard(size_t num_iterations) {
   StopBenchmarkTiming();
   initializer.TearDown();
 }
-BENCHMARK(BM_JsonSearch_Wildcard);
+BENCHMARK(BM_JsonSearch_Wildcard)
 
 }  // namespace item_json_func_unittest

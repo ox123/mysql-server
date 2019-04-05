@@ -117,7 +117,7 @@ drop table t1;
 CREATE TABLE t1(c1 TEXT, UNIQUE (c1(1)), cnt INT DEFAULT 1)
 ENGINE=INNODB CHARACTER SET UTF8;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 INSERT INTO t1 (c1) VALUES ('1a');
 SELECT * FROM t1;
 c1	cnt
@@ -130,7 +130,7 @@ DROP TABLE t1;
 CREATE TABLE t1(c1 VARCHAR(2), UNIQUE (c1(1)), cnt INT DEFAULT 1)
 ENGINE=INNODB CHARACTER SET UTF8;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 INSERT INTO t1 (c1) VALUES ('1a');
 SELECT * FROM t1;
 c1	cnt
@@ -143,7 +143,7 @@ DROP TABLE t1;
 CREATE TABLE t1(c1 CHAR(2), UNIQUE (c1(1)), cnt INT DEFAULT 1)
 ENGINE=INNODB CHARACTER SET UTF8;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 INSERT INTO t1 (c1) VALUES ('1a');
 SELECT * FROM t1;
 c1	cnt
@@ -246,7 +246,7 @@ select 1, max(1) from t1i where 1=99;
 1	NULL
 explain select count(*), min(7), max(7) from t1m, t1i;
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
-1	SIMPLE	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	Select tables optimized away
+1	SIMPLE	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	no matching row in const table
 Warnings:
 Note	1003	/* select#1 */ select count(0) AS `count(*)`,min(7) AS `min(7)`,max(7) AS `max(7)` from `test`.`t1m` join `test`.`t1i`
 select count(*), min(7), max(7) from t1m, t1i;
@@ -254,7 +254,7 @@ count(*)	min(7)	max(7)
 0	NULL	NULL
 explain select count(*), min(7), max(7) from t1m, t2i;
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
-1	SIMPLE	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	Select tables optimized away
+1	SIMPLE	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	no matching row in const table
 Warnings:
 Note	1003	/* select#1 */ select count(0) AS `count(*)`,min(7) AS `min(7)`,max(7) AS `max(7)` from `test`.`t1m` join `test`.`t2i`
 select count(*), min(7), max(7) from t1m, t2i;
@@ -262,9 +262,10 @@ count(*)	min(7)	max(7)
 0	NULL	NULL
 explain select count(*), min(7), max(7) from t2m, t1i;
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
-1	SIMPLE	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	Select tables optimized away
+1	SIMPLE	t2m	NULL	system	NULL	NULL	NULL	NULL	1	100.00	NULL
+1	SIMPLE	t1i	NULL	ALL	NULL	NULL	NULL	NULL	1	100.00	NULL
 Warnings:
-Note	1003	/* select#1 */ select count(0) AS `count(*)`,min(7) AS `min(7)`,max(7) AS `max(7)` from `test`.`t2m` join `test`.`t1i`
+Note	1003	/* select#1 */ select count(0) AS `count(*)`,min(7) AS `min(7)`,max(7) AS `max(7)` from `test`.`t1i`
 select count(*), min(7), max(7) from t2m, t1i;
 count(*)	min(7)	max(7)
 0	NULL	NULL
@@ -383,10 +384,10 @@ EXPLAIN
 SELECT COUNT(*) FROM t2 LEFT JOIN t1 ON t2.fkey = t1.id
 WHERE t1.name LIKE 'A%' OR FALSE;
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
-1	SIMPLE	t2	NULL	index	NULL	fkey	5	NULL	5	100.00	Using index
-1	SIMPLE	t1	NULL	eq_ref	PRIMARY	PRIMARY	4	test.t2.fkey	1	33.33	Using where
+1	SIMPLE	t1	NULL	range	PRIMARY,name	name	83	NULL	2	100.00	Using where; Using index
+1	SIMPLE	t2	NULL	ref	fkey	fkey	5	test.t1.id	1	100.00	Using index
 Warnings:
-Note	1003	/* select#1 */ select count(0) AS `COUNT(*)` from `test`.`t2` left join `test`.`t1` on((`test`.`t1`.`id` = `test`.`t2`.`fkey`)) where (`test`.`t1`.`name` like 'A%')
+Note	1003	/* select#1 */ select count(0) AS `COUNT(*)` from `test`.`t2` join `test`.`t1` where ((`test`.`t2`.`fkey` = `test`.`t1`.`id`) and (`test`.`t1`.`name` like 'A%'))
 DROP TABLE t1,t2;
 CREATE TABLE t1 (
 id int NOT NULL,
@@ -403,7 +404,7 @@ INSERT INTO t1(id, dept, age, name) VALUES
 (4020, 'cs10', 20, 'rs5'),(4027, 'cs11', 10, 'rs6'),(4028, 'cs12', 20, 'rs6');
 EXPLAIN SELECT DISTINCT t1.name, t1.dept FROM t1 WHERE t1.name='rs5';
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
-1	SIMPLE	t1	NULL	ref	name	name	82	const	2	100.00	Using where; Using index
+1	SIMPLE	t1	NULL	ref	name	name	82	const	2	100.00	Using index
 Warnings:
 Note	1003	/* select#1 */ select distinct `test`.`t1`.`name` AS `name`,`test`.`t1`.`dept` AS `dept` from `test`.`t1` where (`test`.`t1`.`name` = 'rs5')
 SELECT DISTINCT t1.name, t1.dept FROM t1 WHERE t1.name='rs5';
@@ -414,7 +415,7 @@ DELETE FROM t1;
 # Masking (#) number in "rows" column of the following EXPLAIN output, as it may vary (bug#47746).
 EXPLAIN SELECT DISTINCT t1.name, t1.dept FROM t1 WHERE t1.name='rs5';
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
-1	SIMPLE	t1	NULL	ref	name	name	82	const	#	100.00	Using where; Using index
+1	SIMPLE	t1	NULL	ref	name	name	82	const	#	100.00	Using index
 Warnings:
 Note	1003	/* select#1 */ select distinct `test`.`t1`.`name` AS `name`,`test`.`t1`.`dept` AS `dept` from `test`.`t1` where (`test`.`t1`.`name` = 'rs5')
 SELECT DISTINCT t1.name, t1.dept FROM t1 WHERE t1.name='rs5';
@@ -593,7 +594,7 @@ t1	CREATE TABLE `t1` (
 drop table t1;
 CREATE TABLE t1 (a CHAR(2), KEY (a)) ENGINE = InnoDB DEFAULT CHARSET=UTF8;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 INSERT INTO t1 VALUES ('uk'),('bg');
 SELECT * FROM t1 WHERE a = 'uk';
 a
@@ -897,7 +898,7 @@ key_len	5
 ref	const
 rows	16
 filtered	100.00
-Extra	Using where; Using index
+Extra	Using index
 Warnings:
 Level	Note
 Code	1003
@@ -1039,7 +1040,7 @@ key_len	5
 ref	const
 rows	16
 filtered	100.00
-Extra	Using where; Using index; Using filesort
+Extra	Using index; Using filesort
 Warnings:
 Level	Note
 Code	1003
@@ -1074,7 +1075,7 @@ key_len	10
 ref	const,const
 rows	16
 filtered	100.00
-Extra	Using where; Using index
+Extra	Using index
 Warnings:
 Level	Note
 Code	1003
@@ -1109,7 +1110,7 @@ key_len	10
 ref	const,const
 rows	16
 filtered	100.00
-Extra	Using where; Using index
+Extra	Using index
 Warnings:
 Level	Note
 Code	1003
@@ -1144,7 +1145,7 @@ key_len	10
 ref	const,const
 rows	16
 filtered	100.00
-Extra	Using where; Using index
+Extra	Using index
 Warnings:
 Level	Note
 Code	1003
@@ -1196,7 +1197,7 @@ DROP TABLE t1;
 SET sql_mode='NO_ENGINE_SUBSTITUTION';
 create table t1(a text) engine=innodb row_format=dynamic default charset=utf8;
 Warnings:
-Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, which will be replaced by UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 insert into t1 values('aaa');
 alter table t1 add index(a(1025));
 Warnings:
@@ -1300,11 +1301,11 @@ key_len	5
 ref	const
 rows	2
 filtered	100.00
-Extra	Using where; Using index
+Extra	Using index
 Warnings:
 Level	Note
 Code	1003
-Message	/* select#1 */ select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b` from `test`.`t1` where (`test`.`t1`.`b` = 2) order by `test`.`t1`.`a` asc
+Message	/* select#1 */ select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b` from `test`.`t1` where (`test`.`t1`.`b` = 2) order by `test`.`t1`.`a`
 SELECT * FROM t1 WHERE b=2 ORDER BY a ASC;
 a	b
 2	2
@@ -1321,7 +1322,7 @@ key_len	5
 ref	const
 rows	2
 filtered	100.00
-Extra	Using where; Backward index scan; Using index
+Extra	Backward index scan; Using index
 Warnings:
 Level	Note
 Code	1003
@@ -1346,7 +1347,7 @@ Extra	Using index
 Warnings:
 Level	Note
 Code	1003
-Message	/* select#1 */ select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b` from `test`.`t1` order by `test`.`t1`.`b` asc,`test`.`t1`.`a` asc
+Message	/* select#1 */ select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b` from `test`.`t1` order by `test`.`t1`.`b`,`test`.`t1`.`a`
 SELECT * FROM t1 ORDER BY b ASC, a ASC;
 a	b
 1	1
@@ -1390,7 +1391,7 @@ Extra	Using index; Using filesort
 Warnings:
 Level	Note
 Code	1003
-Message	/* select#1 */ select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b` from `test`.`t1` order by `test`.`t1`.`b` asc,`test`.`t1`.`a` desc
+Message	/* select#1 */ select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b` from `test`.`t1` order by `test`.`t1`.`b`,`test`.`t1`.`a` desc
 SELECT * FROM t1 ORDER BY b ASC, a DESC;
 a	b
 1	1
@@ -1412,7 +1413,7 @@ Extra	Using index; Using filesort
 Warnings:
 Level	Note
 Code	1003
-Message	/* select#1 */ select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b` from `test`.`t1` order by `test`.`t1`.`b` desc,`test`.`t1`.`a` asc
+Message	/* select#1 */ select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b` from `test`.`t1` order by `test`.`t1`.`b` desc,`test`.`t1`.`a`
 SELECT * FROM t1 ORDER BY b DESC, a ASC;
 a	b
 2	2
@@ -1687,10 +1688,14 @@ insert into t1(f1) values(1);
 select @a:=f2 from t1;
 @a:=f2
 #
+Warnings:
+#	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
 update t1 set f1=1;
 select @b:=f2 from t1;
 @b:=f2
 #
+Warnings:
+#	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
 select if(@a=@b,"ok","wrong");
 if(@a=@b,"ok","wrong")
 ok
@@ -1698,6 +1703,8 @@ insert into t1(f1) values (1) on duplicate key update f1="1";
 select @b:=f2 from t1;
 @b:=f2
 #
+Warnings:
+#	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
 select if(@a=@b,"ok","wrong");
 if(@a=@b,"ok","wrong")
 ok
@@ -1705,6 +1712,8 @@ insert into t1(f1) select f1 from t1 on duplicate key update f1="1";
 select @b:=f2 from t1;
 @b:=f2
 #
+Warnings:
+#	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
 select if(@a=@b,"ok","wrong");
 if(@a=@b,"ok","wrong")
 ok
@@ -1879,7 +1888,7 @@ SELECT 1 FROM (SELECT COUNT(DISTINCT c1)
 FROM t1 WHERE c2 IN (1, 1) AND c3 = 2 GROUP BY c2) x;
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
 1	PRIMARY	<derived2>	NULL	ALL	NULL	NULL	NULL	NULL	2	100.00	NULL
-2	DERIVED	t1	NULL	ref	c3,c2	c3	5	const	2	40.00	Using index condition; Using where; Using filesort
+2	DERIVED	t1	NULL	ref	c3,c2	c3	5	const	2	40.00	Using where; Using filesort
 Warnings:
 Note	1003	/* select#1 */ select 1 AS `1` from (/* select#2 */ select count(distinct `test`.`t1`.`c1`) AS `COUNT(DISTINCT c1)` from `test`.`t1` where ((`test`.`t1`.`c3` = 2) and (`test`.`t1`.`c2` in (1,1))) group by `test`.`t1`.`c2`) `x`
 DROP TABLE t1;
@@ -1895,7 +1904,7 @@ SELECT 1 FROM (SELECT COUNT(DISTINCT c1)
 FROM t1 WHERE c2 IN (1, 1) AND c3 = 2 GROUP BY c2) x;
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
 1	PRIMARY	<derived2>	NULL	ALL	NULL	NULL	NULL	NULL	2	100.00	NULL
-2	DERIVED	t1	NULL	ref	c3,c2	c3	9	const	2	40.00	Using index condition; Using where; Using filesort
+2	DERIVED	t1	NULL	ref	c3,c2	c3	9	const	2	40.00	Using where; Using filesort
 Warnings:
 Note	1003	/* select#1 */ select 1 AS `1` from (/* select#2 */ select count(distinct `test`.`t1`.`c1`) AS `COUNT(DISTINCT c1)` from `test`.`t1` where ((`test`.`t1`.`c2` in (1,1)) and (`test`.`t1`.`c3` = 2)) group by `test`.`t1`.`c2`) `x`
 DROP TABLE t1;
@@ -1912,7 +1921,7 @@ SELECT 1 FROM (SELECT COUNT(DISTINCT c1)
 FROM t1 WHERE c2 IN (1, 1) AND c3 = 2 GROUP BY c2) x;
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
 1	PRIMARY	<derived2>	NULL	ALL	NULL	NULL	NULL	NULL	2	100.00	NULL
-2	DERIVED	t1	NULL	ref	c3,c2	c3	7	const	2	40.00	Using index condition; Using where; Using filesort
+2	DERIVED	t1	NULL	ref	c3,c2	c3	7	const	2	40.00	Using where; Using filesort
 Warnings:
 Note	1003	/* select#1 */ select 1 AS `1` from (/* select#2 */ select count(distinct `test`.`t1`.`c1`) AS `COUNT(DISTINCT c1)` from `test`.`t1` where ((`test`.`t1`.`c2` in (1,1)) and (`test`.`t1`.`c3` = 2)) group by `test`.`t1`.`c2`) `x`
 DROP TABLE t1;
@@ -1984,6 +1993,8 @@ create table t1(a int);
 insert into t1 values (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);
 create table t2 (a int, b int, pk int, key(a,b), primary key(pk)) engine=innodb;
 insert into t2 select @a:=A.a+10*(B.a + 10*C.a),@a, @a from t1 A, t1 B, t1 C;
+Warnings:
+Warning	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
 # this must use key 'a', not PRIMARY:
 explain select a from t2 where a=b;
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
@@ -2151,6 +2162,9 @@ Warnings:
 Level	Warning
 Code	1739
 Message	Cannot use range access on index 'PRIMARY' due to type or collation conversion on field 'c'
+Level	Warning
+Code	1739
+Message	Cannot use range access on index 'b' due to type or collation conversion on field 'c'
 Level	Note
 Code	1003
 Message	/* select#1 */ select `test`.`foo2`.`c` AS `c` from `test`.`foo2` where (`test`.`foo2`.`c` > 2)
@@ -2491,7 +2505,7 @@ KEY (c3)
 ) ENGINE=InnoDB;
 explain SELECT * FROM t2 WHERE c1 = 99999999 AND c3 > 1 ORDER BY c3;
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
-1	SIMPLE	t2	NULL	ref	c1,c3	c1	4	const	1	100.00	Using index condition; Using where; Using filesort
+1	SIMPLE	t2	NULL	ref	c1,c3	c1	4	const	1	100.00	Using where; Using filesort
 Warnings:
 Note	1003	/* select#1 */ select `test`.`t2`.`c1` AS `c1`,`test`.`t2`.`c2` AS `c2`,`test`.`t2`.`c3` AS `c3` from `test`.`t2` where ((`test`.`t2`.`c1` = 99999999) and (`test`.`t2`.`c3` > 1)) order by `test`.`t2`.`c3`
 DROP TABLE t1,t2;
@@ -2516,12 +2530,12 @@ INSERT INTO t1 (b,c,d,e) SELECT RAND()*10000, RAND()*10000, d, e FROM t1;
 ANALYZE TABLE t1;
 EXPLAIN SELECT * FROM t1 WHERE b=1 AND c=1 ORDER BY a;
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
-1	SIMPLE	t1	NULL	ref	i2	i2	8	const,const	1	100.00	Using index condition; Using filesort
+1	SIMPLE	t1	NULL	ref	i2	i2	8	const,const	1	100.00	Using filesort
 Warnings:
 Note	1003	/* select#1 */ select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b`,`test`.`t1`.`c` AS `c`,`test`.`t1`.`d` AS `d`,`test`.`t1`.`e` AS `e` from `test`.`t1` where ((`test`.`t1`.`c` = 1) and (`test`.`t1`.`b` = 1)) order by `test`.`t1`.`a`
 EXPLAIN SELECT * FROM t1 FORCE INDEX(i2) WHERE b=1 and c=1 ORDER BY a;
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
-1	SIMPLE	t1	NULL	ref	i2	i2	8	const,const	1	100.00	Using index condition; Using filesort
+1	SIMPLE	t1	NULL	ref	i2	i2	8	const,const	1	100.00	Using filesort
 Warnings:
 Note	1003	/* select#1 */ select `test`.`t1`.`a` AS `a`,`test`.`t1`.`b` AS `b`,`test`.`t1`.`c` AS `c`,`test`.`t1`.`d` AS `d`,`test`.`t1`.`e` AS `e` from `test`.`t1` FORCE INDEX (`i2`) where ((`test`.`t1`.`c` = 1) and (`test`.`t1`.`b` = 1)) order by `test`.`t1`.`a`
 EXPLAIN SELECT * FROM t1 FORCE INDEX(PRIMARY) WHERE b=1 AND c=1 ORDER BY a;
@@ -2638,16 +2652,16 @@ test.t1	analyze	status	OK
 EXPLAIN SELECT COUNT(*) FROM t1;
 id	1
 select_type	SIMPLE
-table	NULL
+table	t1
 partitions	NULL
-type	NULL
+type	index
 possible_keys	NULL
-key	NULL
-key_len	NULL
+key	b
+key_len	10
 ref	NULL
-rows	NULL
-filtered	NULL
-Extra	Select tables optimized away
+rows	10
+filtered	100.00
+Extra	Using index
 Warnings:
 Level	Note
 Code	1003
@@ -2678,6 +2692,7 @@ Index_type	BTREE
 Comment	
 Index_comment	
 Visible	YES
+Expression	NULL
 Table	t1
 Non_unique	0
 Key_name	k
@@ -2692,6 +2707,7 @@ Index_type	BTREE
 Comment	
 Index_comment	
 Visible	YES
+Expression	NULL
 DROP TABLE t1;
 #
 # Bug #53334: wrong result for outer join with impossible ON condition
@@ -2838,16 +2854,16 @@ INSERT INTO t1 VALUES (1,1,1,1), (2,2,2,2), (3,3,3,3);
 EXPLAIN SELECT COUNT(*) FROM t1;
 id	1
 select_type	SIMPLE
-table	NULL
+table	t1
 partitions	NULL
-type	NULL
+type	index
 possible_keys	NULL
-key	NULL
-key_len	NULL
+key	b
+key_len	4
 ref	NULL
-rows	NULL
-filtered	NULL
-Extra	Select tables optimized away
+rows	3
+filtered	100.00
+Extra	Using index
 Warnings:
 Level	Note
 Code	1003
@@ -2857,16 +2873,16 @@ CREATE INDEX b ON t1(a,b);
 EXPLAIN SELECT COUNT(*) FROM t1;
 id	1
 select_type	SIMPLE
-table	NULL
+table	t1
 partitions	NULL
-type	NULL
+type	index
 possible_keys	NULL
-key	NULL
-key_len	NULL
+key	b
+key_len	8
 ref	NULL
-rows	NULL
-filtered	NULL
-Extra	Select tables optimized away
+rows	3
+filtered	100.00
+Extra	Using index
 Warnings:
 Level	Note
 Code	1003
@@ -2876,16 +2892,16 @@ CREATE INDEX b ON t1(a,b,c);
 EXPLAIN SELECT COUNT(*) FROM t1;
 id	1
 select_type	SIMPLE
-table	NULL
+table	t1
 partitions	NULL
-type	NULL
+type	index
 possible_keys	NULL
-key	NULL
-key_len	NULL
+key	b
+key_len	13
 ref	NULL
-rows	NULL
-filtered	NULL
-Extra	Select tables optimized away
+rows	3
+filtered	100.00
+Extra	Using index
 Warnings:
 Level	Note
 Code	1003
@@ -2895,16 +2911,16 @@ CREATE INDEX b ON t1(a,b,c,d);
 EXPLAIN SELECT COUNT(*) FROM t1;
 id	1
 select_type	SIMPLE
-table	NULL
+table	t1
 partitions	NULL
-type	NULL
+type	index
 possible_keys	NULL
-key	NULL
-key_len	NULL
+key	PRIMARY
+key_len	8
 ref	NULL
-rows	NULL
-filtered	NULL
-Extra	Select tables optimized away
+rows	3
+filtered	100.00
+Extra	Using index
 Warnings:
 Level	Note
 Code	1003

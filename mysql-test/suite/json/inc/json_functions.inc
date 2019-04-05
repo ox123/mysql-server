@@ -327,14 +327,6 @@ SELECT j, JSON_TYPE(j) AS tp FROM t ORDER BY j DESC, id limit 2 offset 2;
 # Ordering on a JSON expression should give the same result.
 SELECT JSON_EXTRACT(j, '$') AS je, JSON_TYPE(j) AS tp FROM t ORDER BY je, id;
 
-# Set max_sort_length as small as possible and order again. Since we'll now just
-# look at a prefix of the values, distinct values with a common prefix may order
-# as equal.
-SET @@max_sort_length=8;
-SELECT j, JSON_TYPE(j) AS tp FROM t ORDER BY j, id;
-SELECT j, JSON_TYPE(j) AS tp FROM t ORDER BY j, id limit 2 offset 2;
-SET @@max_sort_length=default;
-
 --disable_query_log
 set @@sort_buffer_size=default;
 --enable_query_log
@@ -2113,7 +2105,8 @@ select a, json_array_append( '[]', '$', a is true ) from t_bool_literals order b
 select a, json_array( a is not true ) from t_bool_literals order by a;
 select a, json_array_append( '[]', '$', a is not true ) from t_bool_literals order by a;
 
-# NULLIF which coalesce booleans should evaluate to boolean literals
+# NULLIF which coalesce booleans should evaluate to integer
+# in order to be consistent with CASE WHEN
 select a, json_array(nullif(true, false)  ) from t_bool_literals order by a;
 select a, json_array_append
 (

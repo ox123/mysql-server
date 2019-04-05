@@ -1,5 +1,5 @@
 /* Copyright (c) 2002 MySQL AB & tommy@valley.ne.jp
-   Copyright (c) 2002, 2017, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2002, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This library is free software; you can redistribute it and/or
    modify it under the terms of the GNU Library General Public
@@ -27,7 +27,16 @@
    Software Foundation, Inc., 51 Franklin St, Fifth Floor, Boston,
    MA 02110-1301  USA */
 
-/* This file is for binary pseudo charset, created by bar@mysql.com */
+/**
+  @file ctype-bin.cc
+  The “binary” pseudo-charset. binary is special in that it's not really
+  a character set; conversions from another charset _to_ binary means
+  “erase the charset information” and conversions _from_ binary to another
+  charset means “interpret these bytes as the destination charset”.
+  In other words, in no event are the bytes changed; you can think of
+  binary as the charset equivalent of void * that you can cast through.
+  Needless to say, this also means that using it can be rather dangerous.
+ */
 
 #include <string.h>
 #include <sys/types.h>
@@ -38,6 +47,7 @@
 #include "my_compiler.h"
 #include "my_inttypes.h"
 #include "my_macros.h"
+#include "template_utils.h"
 
 static const uchar ctype_bin[] = {
     0,  32,  32,  32,  32,  32,  32,  32,  32,  32,  40,  40, 40, 40, 40, 32,
@@ -349,7 +359,7 @@ static int my_wildcmp_bin_impl(const CHARSET_INFO *cs, const char *str,
                                   w_one, w_many, recurse_level + 1);
           if (tmp <= 0) return (tmp);
         }
-      } while (str != str_end && wildstr[0] != w_many);
+      } while (str != str_end);
       return (-1);
     }
   }
@@ -370,7 +380,7 @@ static size_t my_strnxfrm_8bit_bin_pad_space(const CHARSET_INFO *cs, uchar *dst,
                                              uint flags) {
   srclen = std::min(srclen, dstlen);
   srclen = std::min<size_t>(srclen, nweights);
-  if (dst != src) memcpy(dst, src, srclen);
+  if (dst != src && srclen > 0) memcpy(dst, src, srclen);
   return my_strxfrm_pad(cs, dst, dst + srclen, dst + dstlen,
                         static_cast<uint>(nweights - srclen), flags);
 }
@@ -381,7 +391,7 @@ static size_t my_strnxfrm_8bit_bin_no_pad(const CHARSET_INFO *cs, uchar *dst,
                                           uint flags) {
   srclen = std::min(srclen, dstlen);
   srclen = std::min<size_t>(srclen, nweights);
-  if (dst != src) memcpy(dst, src, srclen);
+  if (dst != src && srclen > 0) memcpy(dst, src, srclen);
   if ((flags & MY_STRXFRM_PAD_TO_MAXLEN) && srclen < dstlen) {
     cs->cset->fill(cs, pointer_cast<char *>(dst) + srclen, dstlen - srclen,
                    cs->pad_char);

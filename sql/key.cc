@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -20,7 +20,8 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
-/* Functions to handle keys and fields in forms */
+// Functions to handle KEY objects, ie., our internal representation of
+// keys as used in SQL indexes.
 
 #include "sql/key.h"  // key_rec_cmp
 
@@ -45,6 +46,15 @@
 
 using std::max;
 using std::min;
+
+bool KEY::is_functional_index() const {
+  for (uint i = 0; i < actual_key_parts; ++i) {
+    if (key_part[i].field->is_field_for_functional_index()) {
+      return true;
+    }
+  }
+  return false;
+}
 
 /*
   Search after a key that starts with 'field'

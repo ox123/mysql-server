@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2016, 2017, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2016, 2018, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
@@ -150,9 +150,9 @@ std::ostream &index_entry_t::print(std::ostream &out) const {
         << ", modifier_trxid=" << get_trx_id_modifier()
         << ", trx_undo_no=" << get_trx_undo_no()
         << ", page_no=" << get_page_no() << ", data_len=" << get_data_len()
-        << ", index_id=" << m_index->id << ", next=" << get_next()
-        << ", prev=" << get_prev() << ", versions=" << get_versions_mem()
-        << "]";
+        << ", lob version=" << get_lob_version() << ", index_id=" << m_index->id
+        << ", next=" << get_next() << ", prev=" << get_prev()
+        << ", versions=" << get_versions_mem() << "]";
   }
   return (out);
 }
@@ -163,7 +163,7 @@ fil_addr_t index_entry_t::get_self() const {
   }
   page_t *frame = page_align(m_node);
   page_no_t page_no = mach_read_from_4(frame + FIL_PAGE_OFFSET);
-  ulint offset = m_node - frame;
+  uint32_t offset = static_cast<uint32_t>(m_node - frame);
   ut_ad(offset < UNIV_PAGE_SIZE);
 
   return (fil_addr_t(page_no, offset));
@@ -248,4 +248,4 @@ std::ostream &index_entry_mem_t::print(std::ostream &out) const {
   return (out);
 }
 
-}; /* namespace lob */
+} /* namespace lob */

@@ -1,4 +1,4 @@
-# Copyright (c) 2008, 2017, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2008, 2018, Oracle and/or its affiliates. All rights reserved.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -30,20 +30,33 @@ IF(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
           "unused-but-set-variable"
           "strict-aliasing"
           "unused-parameter"
-          # Missing falltrough in switch/case/break statements
-          "implicit-fallthrough"
           # Downgrade -Werror to warning for "may be used uninitialized"
-          # and "is used uninitialized in this function"
           "error=maybe-uninitialized"
-          "error=uninitialized"
           # Downgrade placement-new as part of Bug #24822203
-          "error=placement-new")
+          "error=placement-new"
+          # Downgrade -Werror=deprecated-copy to warning for gcc 9
+          "error=deprecated-copy"
+          )
     STRING(REPLACE "-" "_" warning_ ${warning})
     STRING(TOUPPER ${warning_} WARNING)
     CHECK_CXX_COMPILER_FLAG("-W${warning}" HAVE_${WARNING})
     IF(HAVE_${WARNING})
       SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-${warning}")
       SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-${warning}")
+    ENDIF()
+  ENDFOREACH()
+  ##################
+  # Temporary C++ 8 workarounds:
+  # (not supported for C, so only set CXX_FLAGS)
+  FOREACH(warning
+          # Workaround for bug#28387760, also failed other places then in NdbEvent*
+          "class-memaccess"
+    )
+    STRING(REPLACE "-" "_" warning_ ${warning})
+    STRING(TOUPPER ${warning_} WARNING)
+    CHECK_CXX_COMPILER_FLAG("-W${warning}" HAVE_${WARNING})
+    IF(HAVE_${WARNING})
+      SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-${warning}")
     ENDIF()
   ENDFOREACH()
 ENDIF()
@@ -57,6 +70,19 @@ IF(NOT WITHOUT_SERVER)
 ENDIF()
 ADD_SUBDIRECTORY(mgmclient)
 ADD_SUBDIRECTORY(mgmsrv)
+
+IF(BUILD_IS_SINGLE_CONFIG)
+  SET(JAVA_SUBDIR)
+ELSE()
+  set(JAVA_SUBDIR
+  $<$<CONFIG:Debug>:Debug>$<$<CONFIG:RelWithDebInfo>:RelWithDebInfo>)
+ENDIF()
+
+IF(WIN32)
+  SET(JAVA_SEPERATOR ";")
+ELSE()
+  set(JAVA_SEPERATOR :)
+ENDIF()
 
 SET(NDBJTIE_LIB)
 IF(HAVE_JDK)
@@ -82,8 +108,33 @@ SET(NDBCLIENT_LIBS
   ndbgeneral
   ndbconf)
 
+SET(LIBS_TO_MERGE
+  mysys dbug strings mysys_ssl
+  ndbapi
+  ndbtransport
+  ndbtrace
+  ndbsignaldata
+  ndbmgmapi
+  ndbmgmcommon
+  ndblogger
+  ndbportlib
+  ndbgeneral
+  ndbconf)
+
+IF(WITH_ZLIB STREQUAL "bundled")
+  LIST(APPEND LIBS_TO_MERGE ${ZLIB_LIBRARY})
+ENDIF()
+IF(WITH_SSL STREQUAL "wolfssl")
+  LIST(APPEND LIBS_TO_MERGE wolfssl wolfcrypt)
+ENDIF()
+
+
+MESSAGE(STATUS "LIBS_TO_MERGE ${LIBS_TO_MERGE}")
+MESSAGE(STATUS "NDBCLIENT_LIBS ${NDBCLIENT_LIBS}")
+
 MERGE_CONVENIENCE_LIBRARIES(
-  ndbclient_static ${NDBCLIENT_LIBS} COMPONENT Development)
+  ndbclient_static ${LIBS_TO_MERGE} COMPONENT Development)
+TARGET_LINK_LIBRARIES(ndbclient_static PRIVATE ${SSL_LIBRARIES})
 
 # Build test program to check linking against ndclient_static
 ADD_EXECUTABLE(ndbclient_static_link_test ndbclient_link_test.cpp)
@@ -92,20 +143,54 @@ TARGET_LINK_LIBRARIES(ndbclient_static_link_test ndbclient_static)
 #
 # Build shared ndbclient library
 #
-SET(NDBCLIENT_SO_LIBS ${NDBCLIENT_LIBS} ${NDBJTIE_LIB})
-
-# Extract version from storage/ndb/VERSION
-INCLUDE(ndb_get_config_value)
-NDB_GET_CONFIG_VALUE(NDB_SHARED_LIB_VERSION_MAJOR major)
-NDB_GET_CONFIG_VALUE(NDB_SHARED_LIB_VERSION_MINOR minor)
-NDB_GET_CONFIG_VALUE(NDB_SHARED_LIB_VERSION_BUILD build)
-SET(NDB_SHARED_LIB_VERSION "${major}.${minor}.${build}")
+SET(NDBCLIENT_SO_LIBS ${LIBS_TO_MERGE} ${NDBJTIE_LIB})
+SET(NDB_SHARED_LIB_VERSION "6.1.0")
 
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/libndbclient.ver.in
                ${CMAKE_CURRENT_BINARY_DIR}/libndbclient.ver)
 
 ADD_LIBRARY(ndbclient_so SHARED ndbclient_exports.cpp)
+
+# Collect all dynamic libraries in the same directory
+SET_TARGET_PROPERTIES(ndbclient_so PROPERTIES
+  LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/library_output_directory)
+IF(LINUX_INSTALL_RPATH_ORIGIN)
+  SET_PROPERTY(TARGET ndbclient_so PROPERTY INSTALL_RPATH "\$ORIGIN/")
+ENDIF()
+IF(WIN32_CLANG AND WITH_ASAN)
+  TARGET_LINK_LIBRARIES(ndbclient_so "${ASAN_LIB_DIR}/clang_rt.asan_dll_thunk-x86_64.lib")
+ENDIF()
+
+IF(WIN32)
+  # This must be a cmake bug on windows ...
+  # Anyways, with this the .dll ends up in the desired directory.
+  SET_TARGET_PROPERTIES(ndbclient_so PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/library_output_directory)
+ENDIF()
+
 TARGET_LINK_LIBRARIES(ndbclient_so ${NDBCLIENT_SO_LIBS})
+
+IF(APPLE AND HAVE_CRYPTO_DYLIB AND HAVE_OPENSSL_DYLIB)
+  ADD_CUSTOM_COMMAND(TARGET ndbclient_so POST_BUILD
+    COMMAND install_name_tool -change
+    "${CRYPTO_VERSION}" "@loader_path/${CRYPTO_VERSION}"
+    $<TARGET_SONAME_FILE:ndbclient_so>
+    COMMAND install_name_tool -change
+    "${OPENSSL_VERSION}" "@loader_path/${OPENSSL_VERSION}"
+    $<TARGET_SONAME_FILE:ndbclient_so>
+    )
+  # All executables have dependencies:  "@loader_path/../lib/xxx.dylib
+  # Create a symlink so that this works for Xcode also.
+  IF(NOT BUILD_IS_SINGLE_CONFIG)
+    ADD_CUSTOM_COMMAND(TARGET ndbclient_so POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E create_symlink
+      $<TARGET_SONAME_FILE_DIR:ndbclient_so> lib
+      WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/runtime_output_directory
+      )
+  ENDIF()
+ENDIF()
+
+
 IF(APPLE)
   SET_TARGET_PROPERTIES(ndbclient_so PROPERTIES
     MACOSX_RPATH ON
@@ -145,15 +230,6 @@ ELSE()
          dep_lib MATCHES "debug" OR
          dep_lib MATCHES "optimized")
         # MESSAGE(STATUS "Ignoring keyword ${dep_lib}")
-        SET(ignore_dep_lib 1)
-      ENDIF()
-
-      # Ignore libs already in NDBCLIENT_SO_LIBS list, manily used
-      # to ignore mysys, strings etc. since those targets have not
-      # been added yet
-      LIST(FIND NDBCLIENT_SO_LIBS ${dep_lib} dep_lib_found)
-      IF(dep_lib_found GREATER -1)
-        # MESSAGE(STATUS "Ignoring lib ${dep_lib} since it's already in NDBCLIENT_SO_LIBS")
         SET(ignore_dep_lib 1)
       ENDIF()
 
@@ -207,7 +283,7 @@ SET_TARGET_PROPERTIES(ndbclient_so PROPERTIES
   SOVERSION ${NDB_SHARED_LIB_VERSION})
 MYSQL_INSTALL_TARGETS(ndbclient_so
   DESTINATION "${INSTALL_LIBDIR}"
-  COMPONENT Developement)
+  COMPONENT Development)
 # Build test program to check linking against ndclient_so
 ADD_EXECUTABLE(ndbclient_shared_link_test ndbclient_link_test.cpp)
 TARGET_LINK_LIBRARIES(ndbclient_shared_link_test ndbclient_so)

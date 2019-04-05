@@ -34,6 +34,8 @@
 #include "plugin/group_replication/include/sql_service/sql_service_command.h"
 
 const std::string Certifier::GTID_EXTRACTED_NAME = "gtid_extracted";
+const std::string Certifier::CERTIFICATION_INFO_ERROR_NAME =
+    "certification_info_error";
 
 static void *launch_broadcast_thread(void *arg) {
   Certifier_broadcast_thread *handler = (Certifier_broadcast_thread *)arg;
@@ -138,7 +140,6 @@ void Certifier_broadcast_thread::dispatcher() {
   mysql_cond_broadcast(&broadcast_run_cond);
   mysql_mutex_unlock(&broadcast_run_lock);
 
-  struct timespec abstime;
   while (!aborted) {
     // Broadcast Transaction identifiers every 30 seconds
     if (broadcast_counter % 30 == 0) {
@@ -156,17 +157,11 @@ void Certifier_broadcast_thread::dispatcher() {
       mysql_mutex_unlock(&broadcast_dispatcher_lock); /* purecov: inspected */
       break;                                          /* purecov: inspected */
     }
+    struct timespec abstime;
     set_timespec(&abstime, 1);
     mysql_cond_timedwait(&broadcast_dispatcher_cond, &broadcast_dispatcher_lock,
                          &abstime);
     mysql_mutex_unlock(&broadcast_dispatcher_lock);
-
-    /*
-      Clear server sessions open caches on transactions observer.
-      TODO: move this to a global scheduler.
-    */
-    if (broadcast_counter % 300 == 0)
-      observer_trans_clear_io_cache_unused_list(); /* purecov: inspected */
 
     broadcast_counter++;
   }
@@ -176,10 +171,10 @@ void Certifier_broadcast_thread::dispatcher() {
 
   thd->release_resources();
   global_thd_manager_remove_thd(thd);
-  delete thd;
 
   mysql_mutex_lock(&broadcast_run_lock);
   broadcast_thd_state.set_terminated();
+  delete thd;
   mysql_cond_broadcast(&broadcast_run_cond);
   mysql_mutex_unlock(&broadcast_run_lock);
 
@@ -1118,7 +1113,7 @@ void Certifier::garbage_collect() {
   Certification_info::iterator it = certification_info.begin();
   stable_gtid_set_lock->wrlock();
   while (it != certification_info.end()) {
-    if (it->second->is_subset(stable_gtid_set)) {
+    if (it->second->is_subset_not_equals(stable_gtid_set)) {
       if (it->second->unlink() == 0) delete it->second;
       certification_info.erase(it++);
     } else
@@ -1399,6 +1394,18 @@ int Certifier::set_certification_info(
     std::map<std::string, std::string> *cert_info) {
   DBUG_ENTER("Certifier::set_certification_info");
   DBUG_ASSERT(cert_info != NULL);
+
+  if (cert_info->size() == 1) {
+    std::map<std::string, std::string>::iterator it =
+        cert_info->find(CERTIFICATION_INFO_ERROR_NAME);
+    if (it != cert_info->end()) {
+      // The certification database could not be transmitted
+      LogPluginErr(ERROR_LEVEL, ER_GRP_RPL_ERROR_ON_CERT_DB_INSTALL,
+                   it->second.c_str());
+      DBUG_RETURN(1);
+    }
+  }
+
   mysql_mutex_lock(&LOCK_certification_info);
 
   clear_certification_info();
@@ -1476,8 +1483,9 @@ void Certifier::update_certified_transaction_count(bool result,
   else
     negative_cert++;
 
-  if (local_member_info->get_recovery_status() ==
-      Group_member_info::MEMBER_ONLINE) {
+  const Group_member_info::Group_member_status member_status =
+      local_member_info->get_recovery_status();
+  if (member_status == Group_member_info::MEMBER_ONLINE) {
     applier_module->get_pipeline_stats_member_collector()
         ->increment_transactions_certified();
 
@@ -1488,6 +1496,14 @@ void Certifier::update_certified_transaction_count(bool result,
     if (local_transaction && !result) {
       applier_module->get_pipeline_stats_member_collector()
           ->increment_transactions_local_rollback();
+    }
+  } else if (member_status == Group_member_info::MEMBER_IN_RECOVERY) {
+    applier_module->get_pipeline_stats_member_collector()
+        ->increment_transactions_certified_during_recovery();
+
+    if (!result) {
+      applier_module->get_pipeline_stats_member_collector()
+          ->increment_transactions_certified_negatively_during_recovery();
     }
   }
 }
@@ -1528,7 +1544,6 @@ size_t Certifier::get_local_certified_gtid(
 
 void Certifier::enable_conflict_detection() {
   DBUG_ENTER("Certifier::enable_conflict_detection");
-  DBUG_ASSERT(local_member_info->in_primary_mode());
 
   mysql_mutex_lock(&LOCK_certification_info);
   conflict_detection_enable = true;

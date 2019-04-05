@@ -227,7 +227,7 @@ static Field *create_tmp_field_from_item(Item *item, TABLE *table,
     in the beginning of create_tmp_field().
    */
   if (copy_func && item->real_item()->is_result_field())
-    copy_func->push_back(item);
+    copy_func->push_back(Func_ptr(item));
   if (modify_item) item->set_result_field(new_field);
   if (item->type() == Item::NULL_ITEM)
     new_field->is_created_from_null_item = true;
@@ -371,7 +371,7 @@ Field *create_tmp_field(THD *thd, TABLE *table, Item *item, Item::Type type,
           DBUG_ASSERT(item_func_sp->result_field);
           *from_field = item_func_sp->result_field;
         } else {
-          copy_func->push_back(item);
+          copy_func->push_back(Func_ptr(item));
         }
 
         result = create_tmp_field_from_field(
@@ -503,7 +503,7 @@ void Cache_temp_engine_properties::init(THD *thd) {
   db_plugin = ha_lock_engine(0, heap_hton);
   handler = get_new_handler((TABLE_SHARE *)0, false, thd->mem_root, heap_hton);
   HEAP_MAX_KEY_LENGTH = handler->max_key_length();
-  HEAP_MAX_KEY_PART_LENGTH = handler->max_key_part_length();
+  HEAP_MAX_KEY_PART_LENGTH = handler->max_key_part_length(nullptr);
   HEAP_MAX_KEY_PARTS = handler->max_key_parts();
   destroy(handler);
   plugin_unlock(0, db_plugin);
@@ -512,7 +512,7 @@ void Cache_temp_engine_properties::init(THD *thd) {
   handler =
       get_new_handler((TABLE_SHARE *)0, false, thd->mem_root, temptable_hton);
   TEMPTABLE_MAX_KEY_LENGTH = handler->max_key_length();
-  TEMPTABLE_MAX_KEY_PART_LENGTH = handler->max_key_part_length();
+  TEMPTABLE_MAX_KEY_PART_LENGTH = handler->max_key_part_length(nullptr);
   TEMPTABLE_MAX_KEY_PARTS = handler->max_key_parts();
   destroy(handler);
   plugin_unlock(0, db_plugin);
@@ -521,7 +521,7 @@ void Cache_temp_engine_properties::init(THD *thd) {
   handler =
       get_new_handler((TABLE_SHARE *)0, false, thd->mem_root, myisam_hton);
   MYISAM_MAX_KEY_LENGTH = handler->max_key_length();
-  MYISAM_MAX_KEY_PART_LENGTH = handler->max_key_part_length();
+  MYISAM_MAX_KEY_PART_LENGTH = handler->max_key_part_length(nullptr);
   MYISAM_MAX_KEY_PARTS = handler->max_key_parts();
   destroy(handler);
   plugin_unlock(0, db_plugin);
@@ -702,13 +702,13 @@ void sort_copy_func(const SELECT_LEX *select, Func_ptr_array *copy_func) {
 
     Let's go through the process of writing to the tmp table
     (e.g. end_write(), end_write_group()). We also include here the
-    "pseudo-tmp table" embedded into REF_ITEM_SLICE3, used by
+    "pseudo-tmp table" embedded into REF_SLICE_ORDERED_GROUP_BY, used by
     end_send_group().
     (1) we switch to the REF_SLICE used to read from that tmp table
     (2.1) we (copy_fields() part 1) copy some columns from the
     output of the previous step of execution (e.g. the join's output) to the
     tmp table
-    (2.2) (specifically for REF_SLICE_TMP3 in end_send_group()) we
+    (2.2) (specifically for REF_SLICE_ORDERED_GROUP_BY in end_send_group()) we
     (copy_fields() part 2) evaluate some expressions from the same previous
     step of execution, with Item_copy::copy(). The mechanism of Item_copy is:
     * copy() evaluates the expression and caches its value in memory
@@ -884,7 +884,6 @@ TABLE *create_tmp_table(THD *thd, Temp_table_param *param, List<Item> &fields,
   uchar *null_flags;
   Field **reg_field, **from_field, **default_field;
   uint *blob_field;
-  Copy_field *copy = 0;
   KEY *keyinfo;
   KEY_PART_INFO *key_part_info;
   MI_COLUMNDEF *recinfo;
@@ -959,12 +958,13 @@ TABLE *create_tmp_table(THD *thd, Temp_table_param *param, List<Item> &fields,
           &bitmaps, bitmap_buffer_size(field_count + 1) * 3, NullS)) {
     DBUG_RETURN(NULL); /* purecov: inspected */
   }
-  /* Copy_field belongs to Temp_table_param, allocate it in THD mem_root */
-  if (!(param->copy_field = copy =
-            new (thd->mem_root) Copy_field[field_count])) {
-    free_root(&own_root, MYF(0)); /* purecov: inspected */
-    DBUG_RETURN(NULL);            /* purecov: inspected */
+
+  try {
+    param->copy_fields.reserve(field_count);
+  } catch (std::bad_alloc &) {
+    DBUG_RETURN(nullptr);
   }
+
   param->items_to_copy = copy_func;
   /* make table according to fields */
 
@@ -1136,7 +1136,7 @@ TABLE *create_tmp_table(THD *thd, Temp_table_param *param, List<Item> &fields,
                      item->is_result_field()));
 
       if (!new_field) {
-        DBUG_ASSERT(thd->is_fatal_error);
+        DBUG_ASSERT(thd->is_fatal_error());
         goto err;  // Got OOM
       }
       /*
@@ -1295,7 +1295,7 @@ TABLE *create_tmp_table(THD *thd, Temp_table_param *param, List<Item> &fields,
     */
     DBUG_PRINT("info", ("hidden_field_count: %d", param->hidden_field_count));
     share->keys = 1;
-    table->distinct = 1;
+    table->is_distinct = true;
     if (!using_unique_constraint) {
       Field **reg_field;
       keyinfo->user_defined_key_parts = field_count - param->hidden_field_count;
@@ -1348,7 +1348,7 @@ TABLE *create_tmp_table(THD *thd, Temp_table_param *param, List<Item> &fields,
         Field_longlong(sizeof(ulonglong), false, "<hash_field>", true);
     if (!field) {
       /* purecov: begin inspected */
-      DBUG_ASSERT(thd->is_fatal_error);
+      DBUG_ASSERT(thd->is_fatal_error());
       goto err;  // Got OOM
       /* purecov: end */
     }
@@ -1456,8 +1456,8 @@ TABLE *create_tmp_table(THD *thd, Temp_table_param *param, List<Item> &fields,
       Field *orig_field = default_field[i];
       /*
         Get the value from default_values. Note that orig_field->ptr might not
-        point into record[0] if previous step is REF_SLICE_TMP3 and we are
-        creating a tmp table to materialize the query's result.
+        point into record[0] if previous step is REF_SLICE_ORDERED_GROUP_BY and
+        we are creating a tmp table to materialize the query's result.
       */
       my_ptrdiff_t diff = orig_field->table->default_values_offset();
       Field *f_in_record0 = orig_field->table->field[orig_field->field_index];
@@ -1471,17 +1471,17 @@ TABLE *create_tmp_table(THD *thd, Temp_table_param *param, List<Item> &fields,
       f_in_record0->move_field_offset(-diff);  // Back to record[0]
     }
 
-    if (from_field[i]) { /* Not a table Item */
+    if (from_field[i]) {
+      /* This column is directly mapped to a column in the GROUP BY clause. */
       if (param->m_window && param->m_window->frame_buffer_param() &&
           field->flags & FIELD_IS_MARKED) {
         Temp_table_param *window_fb = param->m_window->frame_buffer_param();
         // Grep for FIELD_IS_MARKED in this file.
         field->flags ^= FIELD_IS_MARKED;
-        window_fb->copy_field_end->set(from_field[i], field, save_sum_fields);
-        window_fb->copy_field_end++;
+        window_fb->copy_fields.emplace_back(from_field[i], field,
+                                            save_sum_fields);
       } else {
-        copy->set(field, from_field[i], save_sum_fields);
-        copy++;
+        param->copy_fields.emplace_back(field, from_field[i], save_sum_fields);
       }
     }
     length = field->pack_length();
@@ -1506,7 +1506,6 @@ TABLE *create_tmp_table(THD *thd, Temp_table_param *param, List<Item> &fields,
     field->table_name = &table->alias;
   }
 
-  param->copy_field_end = copy;
   param->recinfo = recinfo;
   store_record(table, s->default_values);  // Make empty default record
 
@@ -1597,8 +1596,8 @@ TABLE *create_tmp_table(THD *thd, Temp_table_param *param, List<Item> &fields,
     param->keyinfo = hash_key;
   }
 
-  if (thd->is_fatal_error)  // If end of memory
-    goto err;               /* purecov: inspected */
+  if (thd->is_fatal_error())  // If end of memory
+    goto err;                 /* purecov: inspected */
 
   set_real_row_type(table);
 
@@ -1716,7 +1715,7 @@ TABLE *create_duplicate_weedout_tmp_table(THD *thd, uint uniq_tuple_length_arg,
     Field_longlong *field = new (&share->mem_root)
         Field_longlong(sizeof(ulonglong), false, "<hash_field>", true);
     if (!field) {
-      DBUG_ASSERT(thd->is_fatal_error);
+      DBUG_ASSERT(thd->is_fatal_error());
       goto err;  // Got OOM
     }
     // Mark hash_field as NOT NULL
@@ -1842,7 +1841,7 @@ TABLE *create_duplicate_weedout_tmp_table(THD *thd, uint uniq_tuple_length_arg,
     table->key_info->name = (char *)"weedout_key";
   }
 
-  if (thd->is_fatal_error)  // If end of memory
+  if (thd->is_fatal_error())  // If end of memory
     goto err;
 
   set_real_row_type(table);
@@ -1941,12 +1940,11 @@ TABLE *create_tmp_table_from_fields(THD *thd, List<Create_field> &field_list,
   List_iterator_fast<Create_field> it(field_list);
   uint idx = 0;
   while ((cdef = it++)) {
-    *reg_field = make_field(
-        share, 0, cdef->length, (uchar *)(cdef->maybe_null ? "" : 0),
-        cdef->maybe_null ? 1 : 0, cdef->sql_type, cdef->charset,
-        cdef->geom_type, cdef->auto_flags, cdef->interval, cdef->field_name,
-        cdef->maybe_null, cdef->is_zerofill, cdef->is_unsigned, cdef->decimals,
-        cdef->treat_bit_as_char, cdef->pack_length_override, cdef->m_srid);
+    *reg_field =
+        cdef->maybe_null
+            ? make_field(*cdef, share, nullptr,
+                         pointer_cast<uchar *>(const_cast<char *>("")), 1)
+            : make_field(*cdef, share, nullptr, nullptr, 0);
     if (!*reg_field) goto error;
     (*reg_field)->init(table);
     record_length += (*reg_field)->pack_length();
@@ -2014,6 +2012,53 @@ error:
 }
 
 /**
+  Checks if disk storage engine should be used for temporary table.
+
+  @param table            table to allocate SE for
+  @param select_options   current select's options
+  @param force_disk_table true <=> Use MyISAM or InnoDB
+  @param mem_engine       Selected in-memory storage engine.
+
+  @return
+    true if disk storage engine should be used
+    false if disk storage engine is not required
+ */
+static bool use_tmp_disk_storage_engine(
+    TABLE *table, ulonglong select_options, bool force_disk_table,
+    enum_internal_tmp_mem_storage_engine mem_engine) {
+  THD *thd = table->in_use;
+  TABLE_SHARE *share = table->s;
+
+  /* Caller needs SE to be disk-based (@see create_tmp_table()). */
+  if (force_disk_table) {
+    return true;
+  }
+
+  /* During bootstrap, the heap engine is not available, so we force using
+    disk storage engine. This is especially hit when creating a I_S system
+    view definition with a UNION in it. */
+  if (opt_initialize) {
+    return true;
+  }
+
+  if (mem_engine == TMP_TABLE_MEMORY) {
+    /* MEMORY do not support BLOBs */
+    if (share->blob_fields) {
+      return true;
+    }
+  } else {
+    DBUG_ASSERT(mem_engine == TMP_TABLE_TEMPTABLE);
+  }
+
+  /* User said the result would be big, so may not fit in memory */
+  if ((thd->variables.big_tables) && !(select_options & SELECT_SMALL_RESULT)) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
   Helper function to create_tmp_table_* family for setting up table's SE
 
   @param table            table to allocate SE for
@@ -2025,29 +2070,29 @@ error:
     false on success
     true  otherwise
 */
-
 static bool setup_tmp_table_handler(TABLE *table, ulonglong select_options,
                                     bool force_disk_table, bool schema_table) {
   THD *thd = table->in_use;
-  TABLE_SHARE *share = table->s;
-  if (select_options & TMP_TABLE_FORCE_MYISAM)
-    share->db_plugin = ha_lock_engine(0, myisam_hton);
-  else if (share->blob_fields ||          // 1
-           (thd->variables.big_tables &&  // 2
-            !(select_options & SELECT_SMALL_RESULT)) ||
-           force_disk_table ||  // 3
-           opt_initialize)      // 4
-  {
-    /*
-      1: MEMORY and TempTable do not support BLOBs
-      2: User said the result would be big, so may not fit in memory
-      3: Caller needs SE to be disk-based (@see create_tmp_table())
-      4: During bootstrap, the heap engine is not available, so we force using
-      InnoDB. This is especially hit when creating a I_S system view
-      definition with a UNION in it.
 
-      Except for special conditions, tmp table engine will be chosen by user.
-    */
+  TABLE_SHARE *share = table->s;
+  enum_internal_tmp_mem_storage_engine mem_engine =
+      static_cast<enum_internal_tmp_mem_storage_engine>(
+          thd->variables.internal_tmp_mem_storage_engine);
+
+  /* Except for special conditions, tmp table engine will be chosen by user. */
+
+  /* For information_schema tables we use the Heap engine because we do
+  not allow user-created TempTable tables and even though information_schema
+  tables are not user-created, an ingenious user may execute:
+  CREATE TABLE myowntemptabletable LIKE information_schema.some; */
+  if (schema_table && (mem_engine == TMP_TABLE_TEMPTABLE)) {
+    mem_engine = TMP_TABLE_MEMORY;
+  }
+
+  if (select_options & TMP_TABLE_FORCE_MYISAM) {
+    share->db_plugin = ha_lock_engine(0, myisam_hton);
+  } else if (use_tmp_disk_storage_engine(table, select_options,
+                                         force_disk_table, mem_engine)) {
     switch (internal_tmp_disk_storage_engine) {
       case TMP_TABLE_MYISAM:
         share->db_plugin = ha_lock_engine(0, myisam_hton);
@@ -2061,19 +2106,10 @@ static bool setup_tmp_table_handler(TABLE *table, ulonglong select_options,
     }
   } else {
     share->db_plugin = nullptr;
-    switch ((enum_internal_tmp_mem_storage_engine)
-                thd->variables.internal_tmp_mem_storage_engine) {
+    switch (mem_engine) {
       case TMP_TABLE_TEMPTABLE:
-        if (!schema_table) {
-          share->db_plugin = ha_lock_engine(0, temptable_hton);
-          break;
-        }
-        /* For information_schema tables we use the Heap engine because we do
-        not allow user-created TempTable tables and even though
-        information_schema tables are not user-created, an ingenious user may
-        execute: CREATE TABLE myowntemptabletable LIKE information_schema.some;
-      */
-        /* Fall-through. */
+        share->db_plugin = ha_lock_engine(0, temptable_hton);
+        break;
       case TMP_TABLE_MEMORY:
         share->db_plugin = ha_lock_engine(0, heap_hton);
         break;
@@ -2084,6 +2120,7 @@ static bool setup_tmp_table_handler(TABLE *table, ulonglong select_options,
   if (!(table->file =
             get_new_handler(share, false, &share->mem_root, share->db_type())))
     return true;
+
   // Update the handler with information about the table object
   table->file->change_table_ptr(table, share);
   if (table->file->set_ha_share_ref(&share->ha_share)) {
@@ -2146,7 +2183,7 @@ static bool alloc_record_buffers(TABLE *table) {
 }
 
 bool open_tmp_table(TABLE *table) {
-  DBUG_ASSERT(table->s->ref_count == 1 ||          // not shared, or:
+  DBUG_ASSERT(table->s->ref_count() == 1 ||        // not shared, or:
               table->s->db_type() == heap_hton ||  // using right engines
               table->s->db_type() == temptable_hton ||
               table->s->db_type() == innodb_hton);
@@ -2358,7 +2395,7 @@ static void trace_tmp_table(Opt_trace_context *trace, const TABLE *table) {
       .add("key_length", table->key_info ? table->key_info->key_length : 0)
       .add("unique_constraint", table->hash_field ? true : false)
       .add("makes_grouped_rows", table->group != nullptr)
-      .add("cannot_insert_duplicates", table->distinct);
+      .add("cannot_insert_duplicates", table->is_distinct);
 
   if (s->db_type() == myisam_hton) {
     trace_tmp.add_alnum("location", "disk (MyISAM)");
@@ -2473,7 +2510,7 @@ void free_tmp_table(THD *thd, TABLE *entry) {
 
   filesort_free_buffers(entry, true);
 
-  DBUG_ASSERT(entry->s->tmp_handler_count <= entry->s->ref_count);
+  DBUG_ASSERT(entry->s->tmp_handler_count <= entry->s->ref_count());
 
   if (entry->is_created()) {
     DBUG_ASSERT(entry->s->tmp_handler_count >= 1);
@@ -2494,8 +2531,8 @@ void free_tmp_table(THD *thd, TABLE *entry) {
 
   DBUG_ASSERT(entry->mem_root.allocated_size() == 0);
 
-  DBUG_ASSERT(entry->s->ref_count >= 1);
-  if (--entry->s->ref_count == 0)  // no more TABLE objects
+  DBUG_ASSERT(entry->s->ref_count() >= 1);
+  if (entry->s->decrement_ref_count() == 0)  // no more TABLE objects
   {
     plugin_unlock(0, entry->s->db_plugin);
     /*
@@ -2505,6 +2542,7 @@ void free_tmp_table(THD *thd, TABLE *entry) {
       So we need a copy to free it.
     */
     MEM_ROOT own_root = std::move(entry->s->mem_root);
+    destroy(entry);
     free_root(&own_root, MYF(0));
   }
 
@@ -2667,7 +2705,7 @@ bool create_ondisk_from_heap(THD *thd, TABLE *wtable,
     new_table.key_info = table->key_info;
     new_table.hash_field = table->hash_field;
     new_table.group = table->group;
-    new_table.distinct = table->distinct;
+    new_table.is_distinct = table->is_distinct;
     new_table.alias = table->alias;
     new_table.pos_in_table_list = table->pos_in_table_list;
     new_table.reginfo = table->reginfo;
@@ -2736,9 +2774,6 @@ bool create_ondisk_from_heap(THD *thd, TABLE *wtable,
           new_table.file->extra(HA_EXTRA_NO_ROWS);
           new_table.no_rows = 1;
         }
-
-        /* HA_EXTRA_WRITE_CACHE can stay until close, no need to disable it */
-        new_table.file->extra(HA_EXTRA_WRITE_CACHE);
 
         /*
           copy all old rows from heap table to on-disk table

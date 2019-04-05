@@ -1,4 +1,4 @@
-/* Copyright (c) 2011, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2011, 2018, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -59,6 +59,7 @@ static const char *traditional_extra_tags[ET_total] = {
     "Open_full_table",                    // ET_OPEN_FULL_TABLE
     "Scanned",                            // ET_SCANNED_DATABASES
     "Using index for group-by",           // ET_USING_INDEX_FOR_GROUP_BY
+    "Using index for skip scan",          // ET_USING_INDEX_FOR_SKIP_SCAN,
     "Distinct",                           // ET_DISTINCT
     "LooseScan",                          // ET_LOOSESCAN
     "Start temporary",                    // ET_START_TEMPORARY
@@ -77,7 +78,9 @@ static const char *traditional_extra_tags[ET_total] = {
     "Backward index scan",                // ET_BACKWARD_SCAN
     "Recursive",                          // ET_RECURSIVE
     "Table function:",                    // ET_TABLE_FUNCTION
-    "Index dive skipped due to FORCE"     // ET_SKIP_RECORDS_IN_RANGE
+    "Index dive skipped due to FORCE",    // ET_SKIP_RECORDS_IN_RANGE
+    "Using secondary engine",             // ET_USING_SECONDARY_ENGINE
+    "Rematerialize"                       // ET_REMATERIALIZE
 };
 
 static const char *mod_type_name[] = {"NONE", "INSERT", "UPDATE", "DELETE",
@@ -206,6 +209,7 @@ bool Explain_format_traditional::flush_entry() {
           case ET_USING_INDEX_FOR_GROUP_BY:
           case ET_USING_JOIN_BUFFER:
           case ET_FIRST_MATCH:
+          case ET_REMATERIALIZE:
             brackets = true;  // for backward compatibility
             break;
           default:
@@ -230,6 +234,6 @@ bool Explain_format_traditional::flush_entry() {
     if (push(&items, column_buffer.col_message, nil)) return true;
   }
 
-  if (output->send_data(items)) return true;
+  if (output->send_data(current_thd, items)) return true;
   return false;
 }

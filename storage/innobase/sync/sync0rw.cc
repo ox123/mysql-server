@@ -44,7 +44,6 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "ha_prototypes.h"
 #include "mem0mem.h"
-#include "my_inttypes.h"
 #include "os0event.h"
 #include "os0thread.h"
 #include "srv0mon.h"
@@ -869,7 +868,6 @@ bool rw_lock_is_locked(rw_lock_t *lock, /*!< in: rw-lock */
     default:
       ut_error;
   }
-  return (false); /* avoid compiler warnings */
 }
 
 /** Inserts the debug information for an rw-lock. */

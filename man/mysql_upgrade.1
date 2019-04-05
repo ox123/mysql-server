@@ -2,12 +2,12 @@
 .\"     Title: \fBmysql_upgrade\fR
 .\"    Author: [FIXME: author] [see http://docbook.sf.net/el/author]
 .\" Generator: DocBook XSL Stylesheets v1.79.1 <http://docbook.sf.net/>
-.\"      Date: 04/04/2018
+.\"      Date: 11/23/2018
 .\"    Manual: MySQL Database System
 .\"    Source: MySQL 8.0
 .\"  Language: English
 .\"
-.TH "\FBMYSQL_UPGRADE\FR" "1" "04/04/2018" "MySQL 8\&.0" "MySQL Database System"
+.TH "\FBMYSQL_UPGRADE\FR" "1" "11/23/2018" "MySQL 8\&.0" "MySQL Database System"
 .\" -----------------------------------------------------------------
 .\" * Define some portability stuff
 .\" -----------------------------------------------------------------
@@ -42,7 +42,7 @@ also upgrades the system tables so that you can take advantage of new privileges
 If
 \fBmysql_upgrade\fR
 finds that a table has a possible incompatibility, it performs a table check and, if problems are found, attempts a table repair\&. If the table cannot be repaired, see
-Section\ \&2.10.3, \(lqRebuilding or Repairing Tables or Indexes\(rq
+Section\ \&2.11.3, \(lqRebuilding or Repairing Tables or Indexes\(rq
 for manual table repair strategies\&.
 .PP
 You should execute
@@ -51,24 +51,6 @@ each time you upgrade MySQL\&.
 .PP
 \fBmysql_upgrade\fR
 communicates directly with the MySQL server, sending it the SQL statements required to perform an upgrade\&.
-.if n \{\
-.sp
-.\}
-.RS 4
-.it 1 an-trap
-.nr an-no-space-flag 1
-.nr an-break-flag 1
-.br
-.ps +1
-\fBNote\fR
-.ps -1
-.br
-.PP
-On Windows Server 2008, Vista, and newer, you must run
-\fBmysql_upgrade\fR
-with administrator privileges\&. You can do this by running a Command Prompt as Administrator and running the command\&. Failure to do so may result in the upgrade failing to execute correctly\&.
-.sp .5v
-.RE
 .if n \{\
 .sp
 .\}
@@ -89,7 +71,7 @@ Section\ \&7.2, \(lqDatabase Backup Methods\(rq\&.
 .PP
 Some upgrade incompatibilities may require special handling before you upgrade your MySQL installation and run
 \fBmysql_upgrade\fR\&. See
-Section\ \&2.10.1, \(lqUpgrading MySQL\(rq, for instructions on determining whether any such incompatibilities apply to your installation and how to handle them\&.
+Section\ \&2.11.1, \(lqUpgrading MySQL\(rq, for instructions on determining whether any such incompatibilities apply to your installation and how to handle them\&.
 .sp .5v
 .RE
 .PP
@@ -128,6 +110,46 @@ shell> \fBmysql_upgrade \-\-protocol=tcp \-P 3308 [\fR\fB\fIother_options\fR\fR\
 For local host connections on Unix, the
 \fB\-\-protocol=tcp\fR
 option forces a connection using TCP/IP rather than the Unix socket file\&.
+.if n \{\
+.sp
+.\}
+.RS 4
+.it 1 an-trap
+.nr an-no-space-flag 1
+.nr an-break-flag 1
+.br
+.ps +1
+\fBNote\fR
+.ps -1
+.br
+.PP
+If you run the server with the
+disabled_storage_engines
+system variable set to disable certain storage engines (for example,
+MyISAM),
+\fBmysql_upgrade\fR
+might fail with an error like this:
+.sp
+.if n \{\
+.RS 4
+.\}
+.nf
+mysql_upgrade: [ERROR] 3161: Storage engine MyISAM is disabled
+(Table creation is disallowed)\&.
+.fi
+.if n \{\
+.RE
+.\}
+.PP
+To handle this, restart the server with
+disabled_storage_engines
+disabled\&. Then you should be able to run
+\fBmysql_upgrade\fR
+successfully\&. After that, restart the server with
+disabled_storage_engines
+set to its original value\&.
+.sp .5v
+.RE
 .PP
 \fBmysql_upgrade\fR
 processes all tables in all databases, which might take a long time to complete\&. Each table is locked and therefore unavailable to other sessions while it is being processed\&. Check and repair operations can be time\-consuming, particularly for large tables\&.
@@ -161,7 +183,7 @@ if the credentials use a hash format compatible with that plugin\&. Rows with a 
 .PP
 \fBmysql_upgrade\fR
 does not upgrade the contents of the help tables\&. For upgrade instructions, see
-Section\ \&5.1.11, \(lqServer-Side Help\(rq\&.
+Section\ \&5.1.15, \(lqServer-Side Help\(rq\&.
 .PP
 Unless invoked with the
 \fB\-\-skip\-sys\-schema\fR
@@ -266,7 +288,7 @@ supports the following options, which can be specified on the command line or in
 and
 [client]
 groups of an option file\&. For information about option files used by MySQL programs, see
-Section\ \&4.2.6, \(lqUsing Option Files\(rq\&.
+Section\ \&4.2.7, \(lqUsing Option Files\(rq\&.
 .sp
 .RS 4
 .ie n \{\
@@ -423,6 +445,9 @@ Section\ \&10.14, \(lqCharacter Set Configuration\(rq\&.
 Read this option file after the global option file but (on Unix) before the user option file\&. If the file does not exist or is otherwise inaccessible, an error occurs\&.
 \fIfile_name\fR
 is interpreted relative to the current directory if given as a relative path name rather than a full path name\&.
+.sp
+For additional information about this and other option\-file options, see
+Section\ \&4.2.8, \(lqCommand-Line Options that Affect Option-File Handling\(rq\&.
 .RE
 .sp
 .RS 4
@@ -438,6 +463,9 @@ is interpreted relative to the current directory if given as a relative path nam
 Use only the given option file\&. If the file does not exist or is otherwise inaccessible, an error occurs\&.
 \fIfile_name\fR
 is interpreted relative to the current directory if given as a relative path name rather than a full path name\&.
+.sp
+For additional information about this and other option\-file options, see
+Section\ \&4.2.8, \(lqCommand-Line Options that Affect Option-File Handling\(rq\&.
 .RE
 .sp
 .RS 4
@@ -466,6 +494,9 @@ also reads the
 and
 [mysql_upgrade_other]
 groups\&.
+.sp
+For additional information about this and other option\-file options, see
+Section\ \&4.2.8, \(lqCommand-Line Options that Affect Option-File Handling\(rq\&.
 .RE
 .sp
 .RS 4
@@ -542,6 +573,9 @@ is an option group containing options that specify which MySQL server to connect
 \fBmysql_config_editor\fR
 utility\&. See
 \fBmysql_config_editor\fR(1)\&.
+.sp
+For additional information about this and other option\-file options, see
+Section\ \&4.2.8, \(lqCommand-Line Options that Affect Option-File Handling\(rq\&.
 .RE
 .sp
 .RS 4
@@ -593,6 +627,9 @@ is created by the
 \fBmysql_config_editor\fR
 utility\&. See
 \fBmysql_config_editor\fR(1)\&.)
+.sp
+For additional information about this and other option\-file options, see
+Section\ \&4.2.8, \(lqCommand-Line Options that Affect Option-File Handling\(rq\&.
 .RE
 .sp
 .RS 4
@@ -793,6 +830,87 @@ Options that begin with
 \fB\-\-ssl\fR
 specify whether to connect to the server using SSL and indicate where to find SSL keys and certificates\&. See
 Section\ \&6.4.2, \(lqCommand Options for Encrypted Connections\(rq\&.
+.RE
+.sp
+.RS 4
+.ie n \{\
+\h'-04'\(bu\h'+03'\c
+.\}
+.el \{\
+.sp -1
+.IP \(bu 2.3
+.\}
+\fB\-\-ssl\-fips\-mode={OFF|ON|STRICT}\fR
+Controls whether to enable FIPS mode on the client side\&. The
+\fB\-\-ssl\-fips\-mode\fR
+option differs from other
+\fB\-\-ssl\-\fR\fB\fIxxx\fR\fR
+options in that it is not used to establish encrypted connections, but rather to affect which cryptographic operations are permitted\&. See
+Section\ \&6.6, \(lqFIPS Support\(rq\&.
+.sp
+These
+\fB\-\-ssl\-fips\-mode\fR
+values are permitted:
+.sp
+.RS 4
+.ie n \{\
+\h'-04'\(bu\h'+03'\c
+.\}
+.el \{\
+.sp -1
+.IP \(bu 2.3
+.\}
+OFF: Disable FIPS mode\&.
+.RE
+.sp
+.RS 4
+.ie n \{\
+\h'-04'\(bu\h'+03'\c
+.\}
+.el \{\
+.sp -1
+.IP \(bu 2.3
+.\}
+ON: Enable FIPS mode\&.
+.RE
+.sp
+.RS 4
+.ie n \{\
+\h'-04'\(bu\h'+03'\c
+.\}
+.el \{\
+.sp -1
+.IP \(bu 2.3
+.\}
+STRICT: Enable
+\(lqstrict\(rq
+FIPS mode\&.
+.RE
+.sp
+.if n \{\
+.sp
+.\}
+.RS 4
+.it 1 an-trap
+.nr an-no-space-flag 1
+.nr an-break-flag 1
+.br
+.ps +1
+\fBNote\fR
+.ps -1
+.br
+If the OpenSSL FIPS Object Module is not available, the only permitted value for
+\fB\-\-ssl\-fips\-mode\fR
+is
+OFF\&. In this case, setting
+\fB\-\-ssl\-fips\-mode\fR
+to
+ON
+or
+STRICT
+causes the client to produce a warning at startup and to operate in non\-FIPS mode\&.
+.sp .5v
+.RE
 .RE
 .sp
 .RS 4
